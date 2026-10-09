@@ -806,3 +806,10 @@ html[data-skin="ink"] .clamp-btn { border-radius: 0; border-color: var(--ink); }
 
 /* 各皮肤给 .pill 改了背景，选中状态要盖过去，否则选中后文字和背景同色看不见 */
 html[data-skin] .pill.active { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
+
+/* 插件里悬浮弹窗的下圆角，和上面各风格弹窗的上圆角一致 */
+html[data-skin="atelier"] { --sheet-r: 10px; }
+html[data-skin="minimal"] { --sheet-r: 14px; }
+html[data-skin="tavern"] { --sheet-r: 6px; }
+html[data-skin="sakura"] { --sheet-r: 28px; }
+html[data-skin="ink"], html[data-skin="neon"] { --sheet-r: 0px; }

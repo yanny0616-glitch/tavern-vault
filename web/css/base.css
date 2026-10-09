@@ -379,6 +379,18 @@ html[data-route="settings"] .fab, html[data-route="tavern"] .fab, html[data-rout
 .sheet-foot .btn { flex: 1; }
 .overlay.center { align-items: center; }
 .sheet.dialog { max-width: 400px; margin: 0 18px; border-radius: var(--radius-lg); }
+/* 弹窗悬浮显示，四角都是圆角：手机浏览器底下有工具栏、酒馆插件底下有酒馆的选项栏，
+   贴底弹窗的直角会像被截断；电脑上居中的弹窗也一样。下圆角跟各风格弹窗的上圆角一样（--sheet-r 在 skins.css 里；
+   各风格只写了上圆角，这里要比 html[data-skin] .sheet 更具体才盖得过） */
+html body .overlay .sheet { border-bottom-left-radius: var(--sheet-r, var(--radius-lg)); border-bottom-right-radius: var(--sheet-r, var(--radius-lg)); }
+@media (max-width: 899px) {
+  .overlay:not(.center) { padding: 0 8px max(8px, var(--sb)); }
+  .sheet { max-height: calc(var(--app-h) - var(--safe-top) - 20px - max(8px, var(--sb))); }
+  .sheet.full { height: calc(var(--app-h) - var(--safe-top) - 10px - max(8px, var(--sb))); }
+  /* 弹窗已经离开底边，Home 条的位置由外面留，里面不用再空 */
+  .overlay:not(.center) .sheet-foot { padding-bottom: 12px; }
+  .overlay:not(.center) .sheet-body:last-child { padding-bottom: 20px; }
+}
 .sheet.dialog .sheet-grip { display: none; }
 .sheet.dialog .sheet-head { padding-top: 16px; }
 .sheet.dialog .sheet-foot { border-radius: 0 0 var(--radius-lg) var(--radius-lg); }
