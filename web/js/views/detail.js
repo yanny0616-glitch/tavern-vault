@@ -9,6 +9,7 @@ import { importItemsToTavern, TAVERN_IMPORTABLE } from './tavern.js';
 import { openDiff } from './diff.js';
 import { startOrganize, aiReady, aiStamp } from './ai.js';
 import { richText, dialogView } from '../richtext.js';
+import { coverImg, coverSrc } from '../thumbs.js';
 
 const TOP_LEVEL_FIELDS = new Set(['source', 'author', 'version', 'rating']);
 const SHOWN_IN_HERO = new Set(['author', 'version', 'rating']);
@@ -17,11 +18,29 @@ const PEEK_TYPES = new Set(['worldbook', 'preset', 'regex', 'quickreply', 'theme
 const isEmpty = (v) => v == null || v === '' || v === false || (Array.isArray(v) && !v.length);
 
 /** 长文本先收起，点开看全文 */
-function clampBox(node, len) {
-    if (!len || len <= LONG) return node;
-    const box = h('div', { class: 'clamp' }, node);
-    const more = h('button', { class: 'clamp-btn', onclick: () => { box.classList.toggle('open'); more.textContent = box.classList.contains('open') ? '收起' : `展开全文 · ${len} 字`; } }, `展开全文 · ${len} 字`);
+// 长文只显示开头一段；「阅读全文」在单独的页面里打开，不把当前页面拉长
+function clampBox(build, text, title = '全文') {
+    const len = text.length;
+    if (len <= LONG) return build(text);
+    const box = h('div', { class: 'clamp' }, build(text.slice(0, 1000)));
+    const more = h('button', { class: 'clamp-btn', onclick: () => readFull(title, build(text), len) },
+        icon('book', { size: 14 }), h('span', {}, `阅读全文 · ${len} 字`));
     return h('div', { class: 'clamp-wrap' }, box, more);
+}
+
+function readFull(title, node, len) {
+    const s = sheet({ title, body: h('div', { class: 'read-full' }, h('div', { class: 'read-full-meta' }, `${len} 字`), node), full: true });
+    s.el.classList.add('read-sheet');
+}
+
+/** 折叠块：第一次展开时才生成里面的内容 */
+function lazyDetails(props, summary, build) {
+    let built = false;
+    const el = h('details', props, summary);
+    const fill = () => { if (built || !el.open) return; built = true; el.append(build()); };
+    el.addEventListener('toggle', fill);
+    fill();
+    return el;
 }
 
 /** 字段的只读展示 */
@@ -42,7 +61,7 @@ function fieldDisplay(f, v) {
 }
 
 export function openDetail(id) {
-    let tab = 'overview';
+    let tab = state.prefs.detailTab === 'content' ? 'content' : 'overview';
     let content = null;
     let contentSha = '';
     let loading = false;
@@ -56,12 +75,22 @@ export function openDetail(id) {
         if (primary(it)?.sha !== contentSha) content = null;
         const ae = document.activeElement;
         const typing = ae && s.el.contains(ae) && /^(INPUT|TEXTAREA|SELECT)$/.test(ae.tagName) && ae.type !== 'checkbox';
-        if (!typing) render();
+        if (!typing && sigOf(it) !== lastSig) render();
     });
+    // 别处的改动也会通知到这里；这个条目没变就不重画
+    let lastSig = '';
+    const sigOf = (it) => JSON.stringify([it, state.fields, state.collections.map((c) => c.name)]);
+    let tabCache = null;
+    const contentTabCached = (it) => {
+        if (tabCache && tabCache.content === content && tabCache.at === it.updatedAt) return tabCache.node;
+        const node = contentTab(it);
+        tabCache = content ? { content, at: it.updatedAt, node } : null;
+        return node;
+    };
 
     const primary = (it) => it.files.find((f) => f.primary) || it.files[0];
     const save = (patch) => api.patch(`/api/items/${id}`, patch).catch((e) => toast(e.message, 'err'));
-    const names = (it) => ({ char: content?.data?.name || it.name, user: '你' });
+    const names = (it) => ({ char: content?.data?.name || it.name, user: state.prefs.userName?.trim() || '你' });
 
     async function loadContent(it) {
         if (loading) return;
@@ -76,6 +105,7 @@ export function openDetail(id) {
     function render() {
         const it = state.byId.get(id);
         if (!it) return;
+        lastSig = sigOf(it);
         s.title.textContent = typeMeta(it.type).label;
         const scroll = s.body.scrollTop;
         clear(headMore, btn('', { icon: 'more', cls: 'ghost icon', title: '更多操作', onclick: () => moreMenu(it) }));
@@ -84,7 +114,7 @@ export function openDetail(id) {
             h('div', { class: 'detail-main' },
                 h('div', { class: 'tabs-bar' }, h('div', { class: 'tabs' }, [['overview', '介绍'], ['content', '内容'], ['files', `文件 · ${it.files.length}`]].map(([k, label]) =>
                     h('button', { class: tab === k ? 'active' : '', onclick: () => switchTab(k) }, label)))),
-                h('div', { class: 'detail-body' }, tab === 'overview' ? overview(it) : tab === 'content' ? contentTab(it) : filesTab(it)))));
+                h('div', { class: 'detail-body' }, tab === 'overview' ? overview(it) : tab === 'content' ? contentTabCached(it) : filesTab(it)))));
         s.body.scrollTop = scroll;
         if (!s.foot) { s.foot = h('div', { class: 'sheet-foot' }); s.el.append(s.foot); }
         const p = primary(it);
@@ -149,10 +179,10 @@ export function openDetail(id) {
             `约 ${c.estTokens} tokens`,
         ].filter(Boolean) : [it.version && `v${it.version}`].filter(Boolean);
         return h('div', { class: `hero ${it.cover ? 'has-cover' : 'no-cover'}`, style: { '--tc': tm.color } },
-            it.cover ? h('div', { class: 'hero-bg', style: { backgroundImage: `url("${api.fileUrl(it.cover)}")` } }) : null,
+            it.cover ? h('div', { class: 'hero-bg', style: { backgroundImage: `url("${coverSrc(it)}")` } }) : null,
             h('div', { class: 'hero-inner' },
                 h('div', { class: 'hero-cover', onclick: () => it.cover && lightbox(api.fileUrl(it.cover)) },
-                    it.cover ? h('img', { src: api.fileUrl(it.cover), alt: '' }) : h('div', { class: 'hero-ph' }, icon(tm.icon, { size: 40, stroke: 1.3 }))),
+                    it.cover ? coverImg(it, { loading: null }) : h('div', { class: 'hero-ph' }, icon(tm.icon, { size: 40, stroke: 1.3 }))),
                 h('div', { class: 'hero-info' },
                     h('div', { class: 'hero-badges' }, typeBadge(it.type),
                         it.subtype ? h('span', { class: 'chip-s' }, it.subtype.replace('chara_card_', '').toUpperCase()) : null,
@@ -206,7 +236,7 @@ export function openDetail(id) {
         const next = btn('', { icon: 'chevronRight', cls: 'sm ghost icon', title: '下一条', onclick: () => { greetIdx++; draw(); } });
         const draw = () => {
             const g = String(list[greetIdx]);
-            clear(body, clampBox(richText(g, names(it)), g.length));
+            clear(body, clampBox((t) => richText(t, names(it)), g, greetIdx === 0 ? '开场白' : `备选开场白 ${greetIdx}`));
             label.textContent = greetIdx === 0 ? '开场白' : `备选开场白 ${greetIdx}`;
             count.textContent = `${greetIdx + 1} / ${list.length}`;
             prev.disabled = greetIdx === 0;
@@ -215,7 +245,7 @@ export function openDetail(id) {
         draw();
         return h('section', { class: 'greet' },
             h('div', { class: 'greet-head' },
-                h('div', { class: 'greet-avatar', style: { '--tc': typeMeta(it.type).color } }, it.cover ? h('img', { src: api.fileUrl(it.cover), alt: '' }) : icon('user', { size: 16 })),
+                h('div', { class: 'greet-avatar', style: { '--tc': typeMeta(it.type).color } }, it.cover ? coverImg(it) : icon('user', { size: 16 })),
                 h('div', { class: 'greet-who' }, h('b', {}, d.name || it.name), label),
                 list.length > 1 ? h('div', { class: 'greet-nav' }, prev, count, next) : null),
             body);
@@ -413,9 +443,9 @@ export function openDetail(id) {
     }
 
     function fold(title, body, { open = false, count = '', ic = null } = {}) {
-        return h('details', { class: 'fold', open },
+        return lazyDetails({ class: 'fold', open },
             h('summary', {}, icon('chevronRight', { size: 14, cls: 'fold-chev' }), ic ? icon(ic, { size: 15 }) : null, h('span', { class: 'fold-title' }, title), count !== '' ? h('span', { class: 'fold-count' }, count) : null),
-            h('div', { class: 'fold-body' }, body));
+            () => h('div', { class: 'fold-body' }, typeof body === 'function' ? body() : body));
     }
 
     /** 角色卡阅读视图：分节、目录、排版 */
@@ -428,7 +458,7 @@ export function openDetail(id) {
         const secs = [];
         const txt = (key, title, v, { dialog = false } = {}) => {
             const t = String(v ?? '').trim();
-            if (t) secs.push({ key, title, meta: `${t.length} 字`, node: clampBox(dialog ? dialogView(t, n) : richText(t, n), t.length) });
+            if (t) secs.push({ key, title, meta: `${t.length} 字`, node: clampBox((x) => (dialog ? dialogView(x, n) : richText(x, n)), t, title) });
         };
         txt('desc', '描述', d.description);
         txt('personality', '性格', d.personality);
@@ -436,7 +466,7 @@ export function openDetail(id) {
         const greetings = [d.first_mes, ...(d.alternate_greetings || [])].filter((x) => x && String(x).trim());
         if (greetings.length) {
             secs.push({ key: 'greet', title: '开场白', meta: `${greetings.length} 条`, node: h('div', { class: 'greet-list' }, greetings.map((g, i) => h('div', { class: 'greet-item' },
-                h('div', { class: 'sub-label' }, i === 0 ? '主开场白' : `备选 ${i}`), clampBox(richText(g, n), String(g).length)))) });
+                h('div', { class: 'sub-label' }, i === 0 ? '主开场白' : `备选 ${i}`), clampBox((x) => richText(x, n), String(g), i === 0 ? '主开场白' : `备选开场白 ${i}`)))) });
         }
         txt('example', '对话示例', d.mes_example, { dialog: true });
         txt('system', '系统提示词', d.system_prompt);
@@ -457,7 +487,7 @@ export function openDetail(id) {
             secs.length ? secs.map((sc) => h('section', { class: 'read-sec', id: anchor(sc.key) },
                 h('div', { class: 'read-head' }, h('h3', {}, sc.title), h('span', { class: 'fold-count' }, sc.meta)), sc.node))
                 : emptyState('fileText', '角色卡里没有文字内容', ''),
-            fold('原始 JSON', h('pre', { class: 'code' }, JSON.stringify(c.card, null, 2)), { ic: 'braces' }));
+            fold('原始 JSON', () => h('pre', { class: 'code' }, JSON.stringify(c.card, null, 2)), { ic: 'braces' }));
     }
 
     function worldbookView(d, n) {
@@ -470,15 +500,15 @@ export function openDetail(id) {
                 const keys = [].concat(e.key || e.keys || []);
                 const keys2 = [].concat(e.keysecondary || e.secondary_keys || []);
                 const off = e.disable || e.enabled === false;
-                return h('details', { class: `fold entry ${off ? 'off' : ''}` },
+                return lazyDetails({ class: `fold entry ${off ? 'off' : ''}` },
                     h('summary', {}, icon('chevronRight', { size: 14, cls: 'fold-chev' }), h('span', { class: `entry-dot ${e.constant ? 'const' : ''}` }),
                         h('span', { class: 'fold-title' }, e.comment || e.name || keys[0] || '（无标题）'),
                         h('span', { class: 'peek-keys' }, keys.slice(0, 2).map((k) => h('span', { class: 'key' }, k))),
                         e.constant ? h('span', { class: 'chip-s' }, '常驻') : null, off ? h('span', { class: 'chip-s' }, '禁用') : null),
-                    h('div', { class: 'fold-body' },
+                    () => h('div', { class: 'fold-body' },
                         keys.length ? h('div', { class: 'entry-keys' }, h('span', { class: 'sub-label' }, '关键词'), keys.map((k) => h('span', { class: 'key' }, k))) : null,
                         keys2.length ? h('div', { class: 'entry-keys' }, h('span', { class: 'sub-label' }, '次要'), keys2.map((k) => h('span', { class: 'key' }, k))) : null,
-                        richText(e.content || '', n, { cls: 'rt-entry' })));
+                        clampBox((x) => richText(x, n, { cls: 'rt-entry' }), String(e.content || ''), e.comment || e.name || keys[0] || '世界书条目')));
             }), f.length > 300 ? h('div', { class: 'muted small' }, `仅显示前 300 条，共 ${f.length} 条`) : null,
             !f.length ? h('div', { class: 'muted small' }, '没有匹配的条目') : null);
         };
@@ -494,16 +524,16 @@ export function openDetail(id) {
         const params = ['temperature', 'top_p', 'top_k', 'frequency_penalty', 'presence_penalty', 'repetition_penalty', 'openai_max_context', 'openai_max_tokens'].filter((k) => d[k] !== undefined);
         return h('div', { class: 'stack' },
             params.length ? h('section', { class: 'panel facts-panel' }, h('div', { class: 'facts' }, params.map((k) => h('div', { class: 'fact' }, h('b', {}, String(d[k])), h('span', {}, k))))) : null,
-            h('div', { class: 'stack-s' }, d.prompts.map((p) => h('details', { class: `fold entry ${enabled.get(p.identifier) === false ? 'off' : ''}` },
+            h('div', { class: 'stack-s' }, d.prompts.map((p) => lazyDetails({ class: `fold entry ${enabled.get(p.identifier) === false ? 'off' : ''}` },
                 h('summary', {}, icon('chevronRight', { size: 14, cls: 'fold-chev' }), h('span', { class: 'entry-dot' }), h('span', { class: 'fold-title' }, p.name || p.identifier), p.role ? h('span', { class: 'chip-s' }, p.role) : null, p.marker ? h('span', { class: 'chip-s' }, '占位') : null),
-                p.content ? h('div', { class: 'fold-body' }, h('div', { class: 'prose' }, p.content)) : null))),
-            fold('原始 JSON', h('pre', { class: 'code' }, JSON.stringify(d, null, 2)), { ic: 'braces' }));
+                () => (p.content ? h('div', { class: 'fold-body' }, h('div', { class: 'prose' }, p.content)) : h('div'))))),
+            fold('原始 JSON', () => h('pre', { class: 'code' }, JSON.stringify(d, null, 2)), { ic: 'braces' }));
     }
 
     function regexView(list) {
-        return h('div', { class: 'stack-s' }, list.map((r) => h('details', { class: `fold entry ${r.disabled ? 'off' : ''}` },
+        return h('div', { class: 'stack-s' }, list.map((r) => lazyDetails({ class: `fold entry ${r.disabled ? 'off' : ''}` },
             h('summary', {}, icon('chevronRight', { size: 14, cls: 'fold-chev' }), h('span', { class: 'entry-dot' }), h('span', { class: 'fold-title' }, r.scriptName || '（未命名）'), r.disabled ? h('span', { class: 'chip-s' }, '禁用') : null),
-            h('div', { class: 'fold-body' },
+            () => h('div', { class: 'fold-body' },
                 h('div', { class: 'sub-label' }, '查找'), h('pre', { class: 'code' }, r.findRegex || ''),
                 h('div', { class: 'sub-label' }, '替换为'), h('pre', { class: 'code' }, r.replaceString || '')))));
     }
@@ -517,7 +547,7 @@ export function openDetail(id) {
         return h('div', { class: 'stack' },
             colors.length ? h('section', { class: 'panel' }, h('div', { class: 'swatch-list' }, colors.map(([k, v]) => h('div', { class: 'swatch-item' }, h('i', { style: { background: v } }), h('span', {}, k))))) : null,
             d.custom_css ? fold('自定义 CSS', h('pre', { class: 'code' }, d.custom_css), { ic: 'braces', count: `${d.custom_css.length} 字` }) : null,
-            fold('原始 JSON', codeView(d), { ic: 'braces' }));
+            fold('原始 JSON', () => codeView(d), { ic: 'braces' }));
     }
 
     const codeView = (d) => h('pre', { class: 'code' }, JSON.stringify(d, null, 2));

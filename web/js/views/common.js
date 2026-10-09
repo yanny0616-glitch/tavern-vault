@@ -1,6 +1,7 @@
 // 视图共用组件：标题栏、卡片、列表行
 // 卡片包含所有可能用到的元素（编号、叠字、角标、评分……），由各风格的 CSS 决定显示哪些。
 import { h, icon, starsEl } from '../ui.js';
+import { coverImg } from '../thumbs.js';
 import { api } from '../api.js';
 import { typeMeta, state, SKINS } from '../state.js';
 
@@ -36,9 +37,6 @@ export function typeBadge(type) {
     return h('span', { class: 'type-badge', style: { '--tc': tm.color } }, icon(tm.icon, { size: 12 }), h('span', {}, tm.label));
 }
 
-function coverImg(it) {
-    return h('img', { src: api.fileUrl(it.cover), loading: 'lazy', decoding: 'async', alt: '' });
-}
 
 /** 非图片条目的内容预览 */
 function docPreview(it) {
@@ -79,14 +77,37 @@ export function metaLine(it) {
     return parts.join(' · ');
 }
 
+// 列表重画时，没变过的卡片直接复用（图片不用重新解码）
+const cardCache = new Map();
+const cardNo = (i) => `No.${String(i + 1).padStart(3, '0')}`;
+
 export function itemCard(it, { onClick, selected = false, selecting = false, index = 0 } = {}) {
+    const key = [it.updatedAt, it.thumb, it.cover, it.favorite, it.rating].join('|');
+    const hit = cardCache.get(it.id);
+    if (hit && hit.key === key) {
+        hit.el.tvClick = onClick;
+        hit.el.classList.toggle('selected', selected);
+        hit.el.classList.toggle('selecting', selecting);
+        const no = hit.el.querySelector('.card-no');
+        if (no) no.textContent = cardNo(index);
+        return hit.el;
+    }
+    const el = buildCard(it, { selected, selecting, index });
+    el.tvClick = onClick;
+    el.addEventListener('click', (e) => el.tvClick?.(e));
+    cardCache.set(it.id, { key, el });
+    if (cardCache.size > 2000) cardCache.delete(cardCache.keys().next().value);
+    return el;
+}
+
+function buildCard(it, { selected, selecting, index }) {
     const tm = typeMeta(it.type);
     const media = it.cover ? coverImg(it) : docPreview(it);
     const sub = metaLine(it);
-    return h('article', { class: `card ${it.cover ? 'has-cover' : 'is-doc'} ${selected ? 'selected' : ''} ${selecting ? 'selecting' : ''}`, style: { '--tc': tm.color }, onclick: onClick, dataset: { type: it.type } },
+    return h('article', { class: `card ${it.cover ? 'has-cover' : 'is-doc'} ${it.fields?.nsfw ? 'nsfw' : ''} ${selected ? 'selected' : ''} ${selecting ? 'selecting' : ''}`, style: { '--tc': tm.color }, dataset: { type: it.type } },
         h('div', { class: 'card-media' },
             h('div', { class: 'card-frame' }, media),
-            h('span', { class: 'card-no' }, `No.${String(index + 1).padStart(3, '0')}`),
+            h('span', { class: 'card-no' }, cardNo(index)),
             h('span', { class: 'card-type' }, icon(tm.icon, { size: 11 }), h('span', {}, tm.label)),
             it.favorite ? h('span', { class: 'card-fav' }, icon('star', { size: 13, fill: true })) : null,
             it.rating ? h('span', { class: 'card-rank' }, icon('star', { size: 10, fill: true }), String(it.rating)) : null,
@@ -99,9 +120,26 @@ export function itemCard(it, { onClick, selected = false, selecting = false, ind
             it.rating ? h('div', { class: 'card-stars' }, starsEl(it.rating, null, { size: 11 })) : null));
 }
 
-export function itemRow(it, { onClick, selected = false, right = null, index = null } = {}) {
+// 仓库列表视图的行同样复用；其他地方（right 是按钮等）每次新建
+const rowCache = new Map();
+
+export function itemRow(it, opts = {}) {
+    if (!opts.cache) return buildRow(it, opts);
+    const { onClick, selected = false, right = null, index = null } = opts;
+    const key = [it.updatedAt, it.thumb, it.cover, selected, index, right ? right.className : ''].join('|');
+    const hit = rowCache.get(it.id);
+    if (hit && hit.key === key) { hit.el.tvClick = onClick; return hit.el; }
+    const el = buildRow(it, { selected, right, index });
+    el.tvClick = onClick;
+    el.addEventListener('click', (e) => el.tvClick?.(e));
+    rowCache.set(it.id, { key, el });
+    if (rowCache.size > 2000) rowCache.delete(rowCache.keys().next().value);
+    return el;
+}
+
+function buildRow(it, { onClick, selected = false, right = null, index = null } = {}) {
     const tm = typeMeta(it.type);
-    return h('div', { class: `row-item ${selected ? 'selected' : ''}`, style: { '--tc': tm.color }, onclick: onClick },
+    return h('div', { class: `row-item ${it.fields?.nsfw ? 'nsfw' : ''} ${selected ? 'selected' : ''}`, style: { '--tc': tm.color }, onclick: onClick },
         index != null ? h('span', { class: 'row-no' }, String(index + 1).padStart(2, '0')) : null,
         h('div', { class: 'row-thumb' }, it.cover ? coverImg(it) : icon(tm.icon, { size: 20 })),
         h('div', { class: 'row-main' },

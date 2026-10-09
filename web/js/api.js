@@ -93,6 +93,12 @@ export const api = {
         if (token) q.set('token', token);
         return `/api/files/${sha}?${q}`;
     },
+    thumbUrl(sha) {
+        return `/api/thumbs/${sha}${token ? `?token=${encodeURIComponent(token)}` : ''}`;
+    },
+    putThumb(sha, blob) {
+        return api.req('PUT', `/api/thumbs/${sha}`, blob, { raw: true, headers: { 'Content-Type': blob.type } });
+    },
     fetchFile(sha) {
         return api.req('GET', `/api/files/${sha}`, undefined, { blob: true });
     },

@@ -6,8 +6,9 @@ import { state, TYPE_META, typeMeta } from '../state.js';
 import { openDetail } from './detail.js';
 import { openDiff } from './diff.js';
 import { filesFromDrop, filesFromInput, canPickFolder, topFolder } from '../files.js';
+import { coverImg } from '../thumbs.js';
 
-const CONCURRENCY = 3;
+const concurrency = () => Math.min(6, Math.max(1, Number(state.prefs.uploadConc) || 3));
 const PREF_KEY = 'tv_import_opts';
 const MATCH_LABEL = { ask: '每次询问', version: '自动存为新版本', new: '另存为新条目', skip: '跳过' };
 
@@ -143,7 +144,7 @@ export function openImporter(initialFiles = []) {
 
         const openable = it && state.byId.has(it.id) && ['created', 'version', 'duplicate'].includes(r.status);
         return h('div', { class: `row-item import-row ${r.status === 'conflict' ? 'is-conflict' : ''}`, style: { '--tc': tm.color }, onclick: () => openable && openDetail(it.id) },
-            h('div', { class: 'row-thumb' }, it?.cover && r.status !== 'conflict' ? h('img', { src: api.fileUrl(it.cover), alt: '', loading: 'lazy' }) : icon(r.isZip && !it ? 'archive' : tm.icon, { size: 20 })),
+            h('div', { class: 'row-thumb' }, it?.cover && r.status !== 'conflict' ? coverImg(it) : icon(r.isZip && !it ? 'archive' : tm.icon, { size: 20 })),
             h('div', { class: 'row-main' },
                 h('div', { class: 'row-title' }, h('span', {}, r.status === 'conflict' ? r.result.detected.name : it?.name || r.label)),
                 h('div', { class: 'row-sub' }, h('span', {}, sub))),
@@ -162,11 +163,13 @@ export function openImporter(initialFiles = []) {
         r.status = res.status || (res.duplicate ? 'duplicate' : 'created');
         r.state = 'done';
         draw(r);
+        // 设置里选了同名默认处理方式，就不再逐个询问
+        if (r.status === 'conflict' && ['version', 'new', 'skip'].includes(state.prefs.conflict)) resolveOne(r, state.prefs.conflict);
     }
 
     // ---------- 上传 ----------
     function pump() {
-        while (running < CONCURRENCY && queue.length) {
+        while (running < concurrency() && queue.length) {
             const task = queue.shift();
             running++;
             task().finally(() => { running--; pump(); });
@@ -212,6 +215,7 @@ export function openImporter(initialFiles = []) {
             child.el = rowEl(child);
             anchor.after(child.el);
             anchor = child.el;
+            if (child.status === 'conflict' && ['version', 'new', 'skip'].includes(state.prefs.conflict)) resolveOne(child, state.prefs.conflict);
         }
         if (!n) el.append(h('span', { class: 'muted' }, '（没有可导入的文件）'));
         drawSummary();
@@ -272,7 +276,8 @@ export function openImporter(initialFiles = []) {
 
     async function resolveAll(action) {
         const list = rows.filter((r) => r.status === 'conflict');
-        for (let i = 0; i < list.length; i += CONCURRENCY) await Promise.all(list.slice(i, i + CONCURRENCY).map((r) => resolveOne(r, action)));
+        const n = concurrency();
+        for (let i = 0; i < list.length; i += n) await Promise.all(list.slice(i, i + n).map((r) => resolveOne(r, action)));
         toast(`已处理 ${list.length} 项`, 'ok');
     }
 

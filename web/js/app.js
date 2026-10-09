@@ -32,7 +32,7 @@ let navEl;
 let tabEl;
 
 function routeName() {
-    const r = location.hash.replace(/^#\/?/, '').split('?')[0].split('/')[0];
+    const r = location.hash.replace(/^#\/?/, '').split('?')[0].split('/')[0] || state.prefs.start;
     return ROUTES[r] && (!ROUTES[r].tavernOnly || bridge.host) ? r : 'library';
 }
 

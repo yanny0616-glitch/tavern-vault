@@ -10,7 +10,8 @@ import { Store, newId, DEFAULT_FIELDS } from './lib/store.js';
 import { detectFile, mimeOf, normalizeCard, summarizeCard, TYPES } from './lib/detect.js';
 import { extractCardFromPng, isPng, writeCardToPng } from './lib/png.js';
 import { buildZip, readZip, isJunkPath } from './lib/zip.js';
-import { fileSig } from './lib/content.js';
+import { fileSig, parseFile } from './lib/content.js';
+import { stripSyncEntries, DEFAULT_SYNC_EXCLUDE } from '../web/js/sig.js';
 import { diffFiles, diffSummary } from './lib/diff.js';
 import { AiConfig, listModels, chat, AiError } from './lib/ai.js';
 import { createAiTasks } from './lib/ai-tasks.js';
@@ -105,7 +106,7 @@ const getItem = (id) => {
 /** 列表用的精简条目 */
 function slim(it) {
     const { searchText, ...rest } = it;
-    return { ...rest, searchText: searchText ? searchText.slice(0, 600) : '' };
+    return { ...rest, searchText: searchText ? searchText.slice(0, 600) : '', thumb: !!it.cover && store.hasThumb(it.cover) };
 }
 
 function safeFilename(name) {
@@ -379,7 +380,7 @@ route('GET', '/api/state', () => {
         items: Object.values(store.db.items).map(slim),
         collections: Object.values(store.db.collections),
         fields: store.db.fields,
-        settings: { ...settings, auth: authEnabled(), version: VERSION, ai: { ready: aiConfig.ready, ...aiTasks.summary() } },
+        settings: { ...settings, syncExclude: syncExclude(), auth: authEnabled(), version: VERSION, ai: { ready: aiConfig.ready, ...aiTasks.summary() } },
         stats: store.stats(),
     };
 });
@@ -407,13 +408,31 @@ route('GET', '/api/items/:id/content', ({ p }) => {
 
 route('POST', '/api/items', async ({ req, url }) => {
     const opts = parseOpts(url);
-    const buf = await readBody(req);
+    let buf = await readBody(req);
     if (!buf.length) throw new HttpError(400, '空文件');
+    if (opts.origin === 'tavern') buf = await stripFromTavern(buf, opts.filename);
     const result = ingestAny(buf, opts.filename, opts);
     const ids = changedIds(result);
     if (ids.length || result.batch) broadcast('change', { ids });
     return result;
 });
+
+const syncExclude = () => store.db.settings.syncExclude ?? DEFAULT_SYNC_EXCLUDE;
+
+/** 从酒馆来的角色卡 / 世界书：去掉总结脚本写进去的条目（规则见 设置 → 导入） */
+async function stripFromTavern(buf, filename) {
+    let parsed;
+    try { parsed = parseFile(buf, filename); } catch { return buf; }
+    const obj = parsed?.obj;
+    if (!obj || typeof obj !== 'object' || (!parsed.image && path.extname(filename).toLowerCase() === '.charx')) return buf;
+    const type = parsed.image || obj.data || obj.spec || obj.first_mes != null ? 'character' : obj.entries ? 'worldbook' : '';
+    if (!type) return buf;
+    const { obj: out, removed } = stripSyncEntries(type, obj, syncExclude());
+    if (!removed) return buf;
+    console.log(`  从酒馆同步：去掉 ${removed} 个排除规则内的世界书条目（${filename}）`);
+    if (parsed.image) return writeCardToPng(buf, out);
+    return Buffer.from(JSON.stringify(out, null, 4));
+}
 
 // 处理导入冲突：用户选择「存为新版本 / 另存为新条目 / 跳过」
 route('POST', '/api/ingest/resolve', async ({ req }) => {
@@ -743,6 +762,43 @@ route('GET', '/api/files/:sha', ({ req, res, p, url }) => {
     return null;
 });
 
+// 回收站自动清空：设置了天数后，删除超过这个天数的条目会被彻底清除
+function purgeTrash() {
+    const days = store.db.settings.trashDays;
+    if (!days) return 0;
+    const before = Date.now() - days * 86400e3;
+    const old = Object.values(store.db.items).filter((it) => it.deletedAt && Date.parse(it.deletedAt) < before);
+    if (!old.length) return 0;
+    for (const it of old) delete store.db.items[it.id];
+    store.save();
+    store.gcBlobs();
+    broadcast('change', {});
+    console.log(`  回收站：自动清除 ${old.length} 个超过 ${days} 天的条目`);
+    return old.length;
+}
+setTimeout(purgeTrash, 5000).unref();
+setInterval(purgeTrash, 6 * 3600e3).unref();
+
+// 封面缩略图：浏览器第一次显示封面时生成（宽 480），之后列表只加载缩略图
+const thumbType = (b) => (b.length > 12 && b.toString('latin1', 0, 4) === 'RIFF' && b.toString('latin1', 8, 12) === 'WEBP' ? 'image/webp'
+    : b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff ? 'image/jpeg' : '');
+route('GET', '/api/thumbs/:sha', ({ req, res, p }) => {
+    if (!/^[a-f0-9]{64}$/.test(p.sha) || !store.hasThumb(p.sha)) throw new HttpError(404, '缩略图不存在');
+    const etag = `"t-${p.sha}"`;
+    if (req.headers['if-none-match'] === etag) { res.writeHead(304); res.end(); return null; }
+    const buf = store.readThumb(p.sha);
+    send(res, 200, buf, { 'Content-Type': thumbType(buf) || 'application/octet-stream', 'Content-Length': buf.length, 'Cache-Control': 'private, max-age=31536000, immutable', ETag: etag });
+    return null;
+});
+route('DELETE', '/api/thumbs', () => ({ removed: store.clearThumbs() }));
+route('PUT', '/api/thumbs/:sha', async ({ req, p }) => {
+    if (!/^[a-f0-9]{64}$/.test(p.sha) || !Object.values(store.db.items).some((it) => it.cover === p.sha)) throw new HttpError(404, '不是封面');
+    const buf = await readBody(req, 600 * 1024);
+    if (!thumbType(buf)) throw new HttpError(400, '缩略图格式不对');
+    store.writeThumb(p.sha, buf);
+    return { ok: true };
+});
+
 // 合集
 route('POST', '/api/collections', async ({ req }) => {
     const body = await readJson(req);
@@ -796,7 +852,10 @@ route('PUT', '/api/settings', async ({ req }) => {
     const body = await readJson(req);
     for (const k of ['title', 'accent']) if (typeof body[k] === 'string') store.db.settings[k] = body[k].slice(0, 80);
     if (['atelier', 'minimal', 'tavern', 'sakura', 'ink', 'neon'].includes(body.skin)) store.db.settings.skin = body.skin;
+    if ([0, 7, 14, 30, 90].includes(body.trashDays)) store.db.settings.trashDays = body.trashDays;
+    if (Array.isArray(body.syncExclude)) store.db.settings.syncExclude = [...new Set(body.syncExclude.map((x) => String(x).trim().slice(0, 60)).filter(Boolean))].slice(0, 30);
     store.save();
+    if (body.trashDays) purgeTrash();
     broadcast('change', {});
     return { ok: true };
 });
@@ -809,18 +868,56 @@ route('GET', '/api/extension.zip', ({ res }) => {
     return null;
 }, { open: true });
 route('POST', '/api/maintenance/gc', () => ({ removed: store.gcBlobs() }));
+route('GET', '/api/storage', () => {
+    const size = (dir) => { let n = 0; for (const e of fs.readdirSync(dir, { withFileTypes: true })) n += e.isDirectory() ? size(path.join(dir, e.name)) : fs.statSync(path.join(dir, e.name)).size; return n; };
+    let blobs = 0;
+    try { blobs = size(store.filesDir); } catch { /* ignore */ }
+    return { blobs, thumbs: (() => { try { return size(store.thumbsDir); } catch { return 0; } })(), thumbCount: store.thumbs.size, db: fs.statSync(store.dbPath).size };
+});
 
 // ---------------- 静态文件 ----------------
+// 页面引用的脚本和样式都带上版本目录 /v/<版本>/…：代码一改版本就变，浏览器可以放心长期缓存，更新后也不会用到旧文件。
+// private：Cloudflare 不缓存、也不改写缓存时间。
+const ASSET_CACHE = 'private, max-age=31536000, immutable';
+const PAGE_CACHE = 'private, no-cache';
+
+function assetFiles(dir = WEB_DIR) {
+    return fs.readdirSync(dir, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? assetFiles(path.join(dir, e.name)) : /\.(js|css)$/.test(e.name) ? [path.join(dir, e.name)] : []));
+}
+function assetVersion() {
+    const h = crypto.createHash('sha1');
+    for (const f of assetFiles().sort()) { const st = fs.statSync(f); h.update(`${f}:${st.size}:${st.mtimeMs}\n`); }
+    return h.digest('hex').slice(0, 10);
+}
+function indexHtml(v) {
+    const pre = (p) => `/v/${v}/${p}`;
+    const preloads = assetFiles(path.join(WEB_DIR, 'js')).map((f) => `<link rel="modulepreload" href="${pre(path.relative(WEB_DIR, f).split(path.sep).join('/'))}">`).join('\n');
+    return fs.readFileSync(path.join(WEB_DIR, 'index.html'), 'utf8')
+        .replace(/(href|src)="\/(css|js)\//g, (m, attr, d) => `${attr}="/v/${v}/${d}/`)
+        .replace('</head>', `${preloads}\n</head>`);
+}
+
 function serveStatic(req, res, url) {
     let rel = decodeURIComponent(url.pathname);
-    if (rel === '/' || !path.extname(rel)) rel = '/index.html';
+    const versioned = rel.match(/^\/v\/[0-9a-f]{1,40}(\/.*)$/);
+    if (versioned) rel = versioned[1];
+    if (rel === '/' || rel === '/index.html' || !path.extname(rel)) {
+        const v = assetVersion();
+        const etag = `W/"i-${v}-${Math.floor(fs.statSync(path.join(WEB_DIR, 'index.html')).mtimeMs).toString(36)}"`;
+        if (req.headers['if-none-match'] === etag) { res.writeHead(304, { ETag: etag, 'Cache-Control': PAGE_CACHE }); res.end(); return; }
+        send(res, 200, Buffer.from(indexHtml(v)), { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': PAGE_CACHE, ETag: etag });
+        return;
+    }
     const file = path.normalize(path.join(WEB_DIR, rel));
     if (!file.startsWith(WEB_DIR) || !fs.existsSync(file) || fs.statSync(file).isDirectory()) {
         send(res, 404, 'Not Found', { 'Content-Type': 'text/plain' });
         return;
     }
-    const buf = fs.readFileSync(file);
-    send(res, 200, buf, { 'Content-Type': mimeOf(file), 'Cache-Control': rel === '/index.html' || rel === '/sw.js' ? 'no-cache' : 'no-cache' });
+    const st = fs.statSync(file);
+    const etag = `W/"${st.size.toString(36)}-${Math.floor(st.mtimeMs).toString(36)}"`;
+    const cache = versioned ? ASSET_CACHE : PAGE_CACHE;
+    if (req.headers['if-none-match'] === etag) { res.writeHead(304, { ETag: etag, 'Cache-Control': cache }); res.end(); return; }
+    send(res, 200, fs.readFileSync(file), { 'Content-Type': mimeOf(file), 'Cache-Control': cache, ETag: etag });
 }
 
 const CORS = {

@@ -76,6 +76,37 @@ export function sigSource(type, obj) {
     }
 }
 
+/**
+ * 从酒馆同步时排除的世界书条目。
+ * 酒馆保存角色卡时会把主绑定世界书整本写进卡里，总结类脚本（如「数据库」）写进这本世界书的条目也会跟着进来；
+ * 条目标题（备注）包含任一规则文字的，同步和比对时都去掉。
+ */
+export const DEFAULT_SYNC_EXCLUDE = ['TavernDB-ACU'];
+
+export function stripSyncEntries(type, obj, rules) {
+    const rs = (rules || []).map((r) => String(r).trim()).filter(Boolean);
+    if (!rs.length || !obj || typeof obj !== 'object') return { obj, removed: 0 };
+    const hit = (e) => { const t = String(e?.comment ?? e?.name ?? ''); return rs.some((r) => t.includes(r)); };
+    let removed = 0;
+    const strip = (book) => {
+        if (!book || typeof book !== 'object' || !book.entries) return book;
+        if (Array.isArray(book.entries)) {
+            const keep = book.entries.filter((e) => !hit(e));
+            removed += book.entries.length - keep.length;
+            return { ...book, entries: keep };
+        }
+        const keep = Object.fromEntries(Object.entries(book.entries).filter(([, e]) => !hit(e)));
+        removed += Object.keys(book.entries).length - Object.keys(keep).length;
+        return { ...book, entries: keep };
+    };
+    let out = obj;
+    if (type === 'character') {
+        if (obj.data?.character_book) out = { ...obj, data: { ...obj.data, character_book: strip(obj.data.character_book) } };
+        else if (obj.character_book) out = { ...obj, character_book: strip(obj.character_book) };
+    } else if (type === 'worldbook') out = strip(obj);
+    return { obj: removed ? out : obj, removed };
+}
+
 /** 返回 "类型:哈希"，不支持的类型返回空串 */
 export function sigOf(type, obj) {
     const src = sigSource(type, obj);

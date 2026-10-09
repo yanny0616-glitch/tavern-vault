@@ -4,6 +4,7 @@ import { api } from '../api.js';
 import { state, live } from '../state.js';
 import { COLLECTION_ICONS } from '../icons.js';
 import { topbar, ensureView } from './common.js';
+import { coverImg } from '../thumbs.js';
 
 const COLORS = ['', '#b4637a', '#c2554a', '#c08a2b', '#5e8a2e', '#2f8f6f', '#3a8aa6', '#3e7cb1', '#8a5cb8'];
 
@@ -26,7 +27,7 @@ export function renderCollections(root, { go }) {
         const members = items.filter((i) => i.collections.includes(c.id));
         const covers = members.filter((i) => i.cover).slice(0, 3);
         return h('article', { class: 'shelf', style: { '--cc': c.color || 'var(--accent)' }, onclick: () => { Object.assign(state.filter, { collection: c.id, type: 'all', tag: '', fav: false }); go('library'); } },
-            h('div', { class: 'shelf-covers' }, covers.length ? covers.map((i) => h('img', { src: api.fileUrl(i.cover), loading: 'lazy', alt: '' })) : h('div', { class: 'shelf-ph' }, icon(c.icon, { size: 34, stroke: 1.3 }))),
+            h('div', { class: 'shelf-covers' }, covers.length ? covers.map((i) => coverImg(i)) : h('div', { class: 'shelf-ph' }, icon(c.icon, { size: 34, stroke: 1.3 }))),
             h('div', { class: 'shelf-body' },
                 h('div', { class: 'shelf-ic' }, icon(c.icon, { size: 16 })),
                 h('div', { class: 'grow min0' }, h('div', { class: 'shelf-name' }, c.name), h('div', { class: 'shelf-meta' }, `${members.length} 件`, c.description ? ` · ${c.description}` : '')),

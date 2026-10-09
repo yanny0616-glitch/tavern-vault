@@ -9,7 +9,7 @@ import { openImporter } from './importer.js';
 import { importItemsToTavern } from './tavern.js';
 import { startOrganize, aiReady } from './ai.js';
 
-const SORTS = {
+export const SORTS = {
     updated: ['最近更新', (a, b) => b.updatedAt.localeCompare(a.updatedAt)],
     created: ['最近添加', (a, b) => b.createdAt.localeCompare(a.createdAt)],
     name: ['名称', (a, b) => a.name.localeCompare(b.name, 'zh')],
@@ -91,17 +91,23 @@ export function renderLibrary(root) {
     } else if (!list.length) {
         clear(refs.content, emptyState('search', '没有符合条件的内容', '换个关键词，或清除筛选条件', btn('清除筛选', { icon: 'x', onclick: () => { refs.search.value = ''; setFilter(root, { q: '', type: 'all', tag: '', collection: '', fav: false, ai: '' }); } })));
     } else {
-        const click = (it) => () => {
+        const click = (it) => (e) => {
             if (state.selecting) {
                 state.selection.has(it.id) ? state.selection.delete(it.id) : state.selection.add(it.id);
-                renderLibrary(root);
+                // 多选时只改这一张的选中样式和底部操作栏，不重画整页
+                const el = e?.currentTarget;
+                const on = state.selection.has(it.id);
+                if (!el) { renderLibrary(root); return; }
+                el.classList.toggle('selected', on);
+                el.querySelector('.row-check')?.classList.toggle('on', on);
+                renderSelbar(refs.selbar, list, root);
             } else openDetail(it.id);
         };
         const LIMIT = 300;
         const shown = list.slice(0, refs.limit || LIMIT);
         const container = state.prefs.view === 'grid'
             ? h('div', { class: `grid ${state.prefs.dense ? 'dense' : ''} ${state.prefs.cols ? `fixed-cols c${state.prefs.cols}` : ''}`, style: { '--cols': state.prefs.cols || null } }, shown.map((it, i) => itemCard(it, { onClick: click(it), selected: state.selection.has(it.id), selecting: state.selecting, index: i })))
-            : h('div', { class: 'rows' }, shown.map((it, i) => itemRow(it, { onClick: click(it), selected: state.selection.has(it.id), index: i,
+            : h('div', { class: 'rows' }, shown.map((it, i) => itemRow(it, { cache: true, onClick: click(it), selected: state.selection.has(it.id), index: i,
                 right: state.selecting ? h('span', { class: `row-check ${state.selection.has(it.id) ? 'on' : ''}` }, icon('check', { size: 13, stroke: 3 })) : null })));
         clear(refs.content, container,
             list.length > shown.length ? h('div', { class: 'more' }, btn(`显示更多（剩余 ${list.length - shown.length}）`, { onclick: () => { refs.limit = (refs.limit || LIMIT) + LIMIT; renderLibrary(root); } })) : null);

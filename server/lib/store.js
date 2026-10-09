@@ -24,7 +24,11 @@ export class Store {
         this.dir = dir;
         this.filesDir = path.join(dir, 'files');
         this.dbPath = path.join(dir, 'db.json');
+        this.thumbsDir = path.join(dir, 'thumbs');
         fs.mkdirSync(this.filesDir, { recursive: true });
+        fs.mkdirSync(this.thumbsDir, { recursive: true });
+        // 缩略图由浏览器生成后上传，不进备份，丢了会自动重新生成
+        this.thumbs = new Set(fs.readdirSync(this.thumbsDir).filter((f) => /^[a-f0-9]{64}$/.test(f)));
         this.db = this.#load();
         this.saveTimer = null;
     }
@@ -94,6 +98,22 @@ export class Store {
         return fs.readFileSync(this.blobPath(sha));
     }
 
+    hasThumb(sha) { return this.thumbs.has(sha); }
+    readThumb(sha) { return fs.readFileSync(path.join(this.thumbsDir, sha)); }
+    writeThumb(sha, buf) {
+        const file = path.join(this.thumbsDir, sha);
+        fs.writeFileSync(`${file}.tmp`, buf);
+        fs.renameSync(`${file}.tmp`, file);
+        this.thumbs.add(sha);
+    }
+
+    clearThumbs() {
+        let n = 0;
+        for (const f of fs.readdirSync(this.thumbsDir)) { fs.unlinkSync(path.join(this.thumbsDir, f)); n++; }
+        this.thumbs.clear();
+        return n;
+    }
+
     /** 删除不再被引用的文件 */
     gcBlobs() {
         const used = new Set();
@@ -108,6 +128,9 @@ export class Store {
             for (const f of fs.readdirSync(d)) {
                 if (!used.has(f)) { fs.unlinkSync(path.join(d, f)); removed++; }
             }
+        }
+        for (const f of fs.readdirSync(this.thumbsDir)) {
+            if (!used.has(f)) { fs.unlinkSync(path.join(this.thumbsDir, f)); this.thumbs.delete(f); }
         }
         return removed;
     }

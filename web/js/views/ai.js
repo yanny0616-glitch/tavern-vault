@@ -4,6 +4,7 @@ import { api } from '../api.js';
 import { state, typeMeta } from '../state.js';
 import { typeBadge } from './common.js';
 import { openDetail } from './detail.js';
+import { coverImg } from '../thumbs.js';
 
 const AI_KINDS = new Set(['text', 'textarea', 'select', 'checkbox', 'number', 'tags']);
 const SKIP_FIELDS = new Set(['source', 'author', 'version', 'rating', 'downloadedAt', 'status']);
@@ -350,7 +351,7 @@ export function openAiReview() {
         const tm = typeMeta(it.type);
         const status = { queued: ['排队中', ''], running: ['整理中', 'info'], done: ['待审核', 'ok'], error: ['失败', 'danger'] }[d.status];
         const top = h('div', { class: 'ai-card-head', onclick: () => openDetail(it.id) },
-            h('div', { class: 'row-thumb', style: { '--tc': tm.color } }, it.cover ? h('img', { src: api.fileUrl(it.cover), alt: '', loading: 'lazy' }) : icon(tm.icon, { size: 18 })),
+            h('div', { class: 'row-thumb', style: { '--tc': tm.color } }, it.cover ? coverImg(it) : icon(tm.icon, { size: 18 })),
             h('div', { class: 'grow min0' }, h('div', { class: 'row-title' }, h('span', {}, it.name)), h('div', { class: 'row-sub' }, typeBadge(it.type), d.extra ? h('span', { class: 'muted' }, `要求：${d.extra}`) : null)),
             d.status === 'running' ? h('span', { class: 'spinner sm' }) : null,
             h('span', { class: `chip-s ${status[1]}` }, status[0]));

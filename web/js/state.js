@@ -40,7 +40,13 @@ export const state = {
     online: false,
     loaded: false,
     // 视图偏好（存本地）
-    prefs: Object.assign({ view: 'grid', dense: false, sort: 'updated', mode: 'auto', cols: 0 }, lsGet('tv_prefs', {})),
+    prefs: Object.assign({
+        view: 'grid', dense: false, sort: 'updated', mode: 'auto', cols: 0,
+        start: 'library', readSize: 'md', reduceMotion: false,
+        showTags: true, showRating: true, showNo: true, blurNsfw: false,
+        detailTab: 'overview', userName: '',
+        uploadConc: 3, conflict: 'ask',
+    }, lsGet('tv_prefs', {})),
     // 仓库筛选（会话内）
     filter: { q: '', type: 'all', tag: '', collection: '', fav: false, ai: '' },
     selection: new Set(),
@@ -53,8 +59,13 @@ const subs = new Set();
 export function subscribe(fn) { subs.add(fn); return () => subs.delete(fn); }
 export function notify() { for (const fn of subs) fn(); }
 
+let lastState = '';
 export async function reload() {
     const s = await api.get('/api/state');
+    // 切回页面、别处的改动通知都会触发重新加载；内容没变就不重画
+    const sig = JSON.stringify(s);
+    if (sig === lastState && state.loaded) return;
+    lastState = sig;
     state.items = s.items;
     state.byId = new Map(s.items.map((i) => [i.id, i]));
     state.collections = s.collections.sort((a, b) => a.name.localeCompare(b.name, 'zh'));
@@ -80,6 +91,15 @@ export function applyAccent() {
     root.dataset.mode = mode;
     if (state.settings.accent) root.style.setProperty('--accent', state.settings.accent);
     else root.style.removeProperty('--accent');
+    // 每台设备自己的显示偏好，通过 html 上的属性交给 CSS
+    const p = state.prefs;
+    root.dataset.read = p.readSize || 'md';
+    const flag = (k, on) => { if (on) root.dataset[k] = ''; else delete root.dataset[k]; };
+    flag('motion', p.reduceMotion);
+    flag('hideTags', !p.showTags);
+    flag('hideRating', !p.showRating);
+    flag('hideNo', !p.showNo);
+    flag('blurNsfw', p.blurNsfw);
     const bg = getComputedStyle(root).getPropertyValue('--bg').trim();
     document.querySelector('meta[name="theme-color"]')?.setAttribute('content', bg || '#000');
 }

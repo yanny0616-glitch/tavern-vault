@@ -3,7 +3,7 @@ import { h, clear, toast, sheet, icon, btn, emptyState, choiceDialog } from '../
 import { api } from '../api.js';
 import { bridge } from '../bridge.js';
 import { state, findByName, typeMeta, reload } from '../state.js';
-import { sigOf } from '../sig.js';
+import { sigOf, stripSyncEntries } from '../sig.js';
 import { topbar, ensureView } from './common.js';
 import { openDetail } from './detail.js';
 import { openDiff } from './diff.js';
@@ -189,7 +189,7 @@ async function checkSigs(kind, list, { force = false } = {}) {
         const chunk = todo.slice(i, i + 20);
         try {
             const res = await bridge.call('raw', { kind, ids: chunk.map((r) => r.id) }, [], 60000);
-            for (const { id, data } of res) ui.sigs.set(sigKey(kind, id), sigOf(kind, data));
+            for (const { id, data } of res) ui.sigs.set(sigKey(kind, id), sigOf(kind, stripSyncEntries(kind, data, state.settings.syncExclude).obj));
         } catch { /* 读取失败的保持「已收藏」 */ }
         for (const r of chunk) if (!ui.sigs.has(sigKey(kind, r.id))) ui.sigs.set(sigKey(kind, r.id), '');
         job.done += chunk.length;
