@@ -11,6 +11,14 @@ import { renderSettings } from './views/settings.js';
 import { renderTrash } from './views/trash.js';
 import { openImporter } from './views/importer.js';
 import { filesFromDrop } from './files.js';
+
+// 手机浏览器的 100vh 按「工具栏收起」时算，比实际能看到的高，弹窗底部会被截掉。
+// 这里量出真实的可见高度给 CSS 用（地址栏伸缩、旋转屏幕时更新）
+const setAppHeight = () => document.documentElement.style.setProperty('--app-h', `${window.innerHeight}px`);
+setAppHeight();
+window.addEventListener('resize', setAppHeight);
+window.addEventListener('orientationchange', () => setTimeout(setAppHeight, 300));
+window.visualViewport?.addEventListener('resize', setAppHeight);
 import { openDetail } from './views/detail.js';
 import { handleAiEvent, renderChip } from './views/ai.js';
 

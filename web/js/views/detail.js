@@ -2,7 +2,7 @@
 import { h, clear, sheet, toast, confirmDialog, promptDialog, lightbox, fmtBytes, fmtDate, timeAgo, downloadBlob, switchEl, icon, btn, starsEl, emptyState } from '../ui.js';
 import { api } from '../api.js';
 import { bridge } from '../bridge.js';
-import { state, typeMeta, TYPE_META, fieldsFor, subscribe, allTags, notify } from '../state.js';
+import { state, typeMeta, TYPE_META, fieldsFor, subscribe, allTags, notify, savePrefs, applyAccent } from '../state.js';
 import { collectionName, typeBadge } from './common.js';
 import { pickCollection } from './library.js';
 import { importItemsToTavern, TAVERN_IMPORTABLE } from './tavern.js';
@@ -10,27 +10,103 @@ import { openDiff } from './diff.js';
 import { startOrganize, aiReady, aiStamp } from './ai.js';
 import { richText, dialogView } from '../richtext.js';
 import { coverImg, coverSrc } from '../thumbs.js';
+import { runRegex, applyScripts, displayScripts, looksHtml, htmlFrame, PLACEMENT } from '../stview.js';
+import { cardPng } from '../pngcard.js';
 
 const TOP_LEVEL_FIELDS = new Set(['source', 'author', 'version', 'rating']);
 const SHOWN_IN_HERO = new Set(['author', 'version', 'rating']);
-const LONG = 700; // 超过这个字数的段落先折叠
+// 超过这个字数的段落只显示开头（设置 → 浏览 → 长文折叠，0 = 不折叠）
+const foldAt = () => (Number.isFinite(Number(state.prefs.foldAt)) ? Number(state.prefs.foldAt) : 500);
 const PEEK_TYPES = new Set(['worldbook', 'preset', 'regex', 'quickreply', 'theme']);
 const isEmpty = (v) => v == null || v === '' || v === false || (Array.isArray(v) && !v.length);
 
 /** 长文本先收起，点开看全文 */
 // 长文只显示开头一段；「阅读全文」在单独的页面里打开，不把当前页面拉长
-function clampBox(build, text, title = '全文') {
+function clampBox(build, text, title = '全文', onMore = null) {
     const len = text.length;
-    if (len <= LONG) return build(text);
+    const limit = foldAt();
+    if (!limit || len <= limit) return build(text);
     const box = h('div', { class: 'clamp' }, build(text.slice(0, 1000)));
-    const more = h('button', { class: 'clamp-btn', onclick: () => readFull(title, build(text), len) },
+    const more = h('button', { class: 'clamp-btn', onclick: () => (onMore ? onMore() : readFull(title, build(text), len)) },
         icon('book', { size: 14 }), h('span', {}, `阅读全文 · ${len} 字`));
     return h('div', { class: 'clamp-wrap' }, box, more);
 }
 
-function readFull(title, node, len) {
-    const s = sheet({ title, body: h('div', { class: 'read-full' }, h('div', { class: 'read-full-meta' }, `${len} 字`), node), full: true });
+const READ_SIZES = ['sm', 'md', 'lg', 'xl'];
+
+/** 阅读页右上角的字号加减，和「设置 → 阅读字号」是同一个设置 */
+function readTools() {
+    const idx = () => Math.max(0, READ_SIZES.indexOf(state.prefs.readSize || 'md'));
+    const step = (d) => {
+        state.prefs.readSize = READ_SIZES[Math.min(READ_SIZES.length - 1, Math.max(0, idx() + d))];
+        savePrefs();
+        applyAccent();
+        sync();
+    };
+    const minus = btn('', { icon: 'minus', cls: 'ghost icon sm', title: '字小一点', onclick: () => step(-1) });
+    const plus = btn('', { icon: 'plus', cls: 'ghost icon sm', title: '字大一点', onclick: () => step(1) });
+    const sync = () => { minus.disabled = idx() === 0; plus.disabled = idx() === READ_SIZES.length - 1; };
+    sync();
+    return h('div', { class: 'read-tools' }, minus, h('span', { class: 'read-tools-label' }, '字号'), plus);
+}
+
+/** 对话示例有多段时，可以直接跳到第几段 */
+function segmentJump(node, scroller) {
+    const blocks = [...node.querySelectorAll('.dlg')];
+    if (blocks.length < 2) return null;
+    return h('select', { class: 'select sm read-jump', onchange: (e) => {
+        const b = blocks[Number(e.target.value)];
+        if (b) scroller.scrollTop += b.getBoundingClientRect().top - scroller.getBoundingClientRect().top - 8;
+    } }, blocks.map((b, i) => h('option', { value: i }, `第 ${i + 1} 段 · ${(b.textContent || '').replace(/\s+/g, ' ').slice(0, 14)}`)));
+}
+
+/**
+ * 单独的阅读页。pager：{ count, index, get(i, styled) → { title, node, len }, styled }
+ * 有 pager 时底部可以翻到上一条 / 下一条（键盘左右键也可以）
+ */
+function readFull(title, node, len, { pager = null } = {}) {
+    const wrap = h('div', { class: 'read-full' });
+    const tools = readTools();
+    let styled = pager?.styled ?? false;
+    let i = pager?.index || 0;
+    const prev = btn('上一条', { icon: 'chevronLeft', onclick: () => show(i - 1) });
+    const next = btn('下一条', { icon: 'chevronRight', onclick: () => show(i + 1) });
+    const count = h('span', { class: 'read-count' });
+    const styleBtn = pager?.canStyle ? h('div', { class: 'seg read-mode' },
+        h('button', { class: 'seg-item', onclick: () => { styled = false; show(i); } }, '文字'),
+        h('button', { class: 'seg-item', onclick: () => { styled = true; show(i); } }, '酒馆效果')) : null;
+    const onKey = (e) => {
+        if (!pager || /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName)) return;
+        if ([...document.querySelectorAll('.overlay')].pop() !== s.el.parentElement) return;
+        if (e.key === 'ArrowLeft' && i > 0) show(i - 1);
+        if (e.key === 'ArrowRight' && i < pager.count - 1) show(i + 1);
+    };
+    const s = sheet({ title, body: wrap, full: true, headExtra: tools,
+        foot: pager && pager.count > 1 ? [prev, count, next] : null,
+        onClose: () => document.removeEventListener('keydown', onKey) });
     s.el.classList.add('read-sheet');
+    const fill = (n, l) => {
+        const meta = h('div', { class: 'read-full-meta' }, h('span', {}, `${l} 字`), h('span', { class: 'grow' }), styleBtn);
+        clear(wrap, meta, n);
+        const jump = segmentJump(n, s.body);
+        if (jump) meta.insertBefore(jump, styleBtn || null);
+        styleBtn?.querySelectorAll('.seg-item').forEach((b, k) => b.classList.toggle('active', (k === 1) === styled));
+    };
+    function show(k) {
+        i = Math.max(0, Math.min(pager.count - 1, k));
+        const p = pager.get(i, styled);
+        s.title.textContent = p.title;
+        fill(p.node, p.len);
+        count.textContent = `${i + 1} / ${pager.count}`;
+        prev.disabled = i === 0;
+        next.disabled = i === pager.count - 1;
+        s.body.scrollTop = 0;
+    }
+    if (pager) {
+        document.addEventListener('keydown', onKey);
+        show(i);
+    } else fill(node, len);
+    return s;
 }
 
 /** 折叠块：第一次展开时才生成里面的内容 */
@@ -92,6 +168,32 @@ export function openDetail(id) {
     const save = (patch) => api.patch(`/api/items/${id}`, patch).catch((e) => toast(e.message, 'err'));
     const names = (it) => ({ char: content?.data?.name || it.name, user: state.prefs.userName?.trim() || '你' });
 
+    /** 开场白阅读页：可以左右翻，有美化正则或 HTML 时可以切到「酒馆效果」 */
+    function readGreetings(it, list, start = 0) {
+        const n = names(it);
+        const scripts = displayScripts(content?.data?.extensions?.regex_scripts);
+        const styledOf = (t) => applyScripts(t, scripts, n);
+        const canStyle = list.some((g) => looksHtml(g) || (scripts.length && styledOf(String(g)).hits));
+        const label = (k) => (k === 0 ? '开场白' : `备选开场白 ${k}`);
+        readFull(label(start), null, 0, { pager: {
+            count: list.length,
+            index: start,
+            canStyle,
+            styled: canStyle && state.prefs.greetStyled !== false,
+            get: (k, styled) => {
+                const g = String(list[k]);
+                if (styled) {
+                    state.prefs.greetStyled = true;
+                    savePrefs();
+                    return { title: label(k), node: h('div', { class: 'st-wrap' }, htmlFrame(macroNames(styledOf(g).out, n))), len: g.length };
+                }
+                if (canStyle) { state.prefs.greetStyled = false; savePrefs(); }
+                return { title: label(k), node: richText(g, n), len: g.length };
+            },
+        } });
+    }
+    const macroNames = (t, n) => String(t).replace(/\{\{char\}\}/gi, n.char).replace(/\{\{user\}\}/gi, n.user);
+
     async function loadContent(it) {
         if (loading) return;
         loading = true;
@@ -150,9 +252,11 @@ export function openDetail(id) {
                 !it.deletedAt ? item('pencil', '编辑资料', () => editItem(it)) : null,
                 aiReady() && !it.deletedAt ? item('sparkles', 'AI 整理（标签、简介、字段）', () => startOrganize([it.id])) : null,
                 it.type === 'character' && p && !it.deletedAt ? item('user', '编辑角色卡内容（保存为新版本）', () => withCard((c) => editCard(it, c))) : null,
+                it.type === 'character' && p && it.cover ? item('image', '导出 PNG 角色卡（用当前封面）', () => exportPng(it)) : null,
                 it.type === 'character' && p ? item('braces', '导出角色卡 JSON', () => withCard((c) => downloadBlob(new Blob([JSON.stringify(c.card, null, 2)], { type: 'application/json' }), `${c.data?.name || it.name}.json`))) : null,
                 p ? item('download', '下载当前文件', () => { h('a', { href: api.fileUrl(p.sha, p.name, true), download: p.name }).click(); }) : null,
-                it.cover ? item('image', '查看大图', () => lightbox(api.fileUrl(it.cover))) : null,
+                it.cover ? item('maximize', '查看大图', () => lightbox(api.fileUrl(it.cover))) : null,
+                !it.deletedAt ? item('image', '更换封面 / 添加图片', () => switchTab('files')) : null,
                 it.deletedAt
                     ? item('restore', '恢复', async () => { await api.post(`/api/items/${id}/restore`); toast('已恢复', 'ok'); })
                     : item('trash', '移入回收站', async () => {
@@ -208,15 +312,24 @@ export function openDetail(id) {
     function overview(it) {
         const c = it.meta?.card;
         const desc = (it.description || '').trim();
-        const note = (c?.creatorNotesPreview || '').trim();
         if (it.type === 'character' || PEEK_TYPES.has(it.type)) ensureContent(it);
+        // 导入时简介是从作者注释（前 500 字）或描述（前 300 字）截出来的；找到原文就提供「阅读全文」
+        const card = content?.kind === 'card' ? (content.data?.data || content.data) : null;
+        const fullNotes = String(card?.creator_notes || '').trim();
+        const fullDesc = String(card?.description || '').trim();
+        const source = desc && [fullNotes, fullDesc].find((t) => t.length > desc.length && t.startsWith(desc));
+        const note = fullNotes || (c?.creatorNotesPreview || '').trim();
+        const lead = !desc ? null : source
+            ? h('div', { class: 'clamp-wrap' }, h('p', { class: 'lead' }, `${desc}…`),
+                h('button', { class: 'clamp-btn', onclick: () => readFull(source === fullNotes ? '作者注释' : '角色描述', richText(source, names(it)), source.length) },
+                    icon('book', { size: 14 }), h('span', {}, `阅读全文 · ${source.length} 字`)))
+            : clampBox((t) => h('p', { class: 'lead' }, t), desc, '简介');
         return h('div', { class: 'stack' },
-            desc ? h('p', { class: 'lead' }, desc)
-                : !it.deletedAt ? h('button', { class: 'lead-empty', onclick: () => editItem(it, 'description') }, icon('pencil', { size: 14 }), '写一句简介') : null,
+            lead || (!it.deletedAt ? h('button', { class: 'lead-empty', onclick: () => editItem(it, 'description') }, icon('pencil', { size: 14 }), '写一句简介') : null),
             aiStamp(it),
             it.type === 'character' && it.files.length ? greetingCard(it) : null,
             quickInfo(it),
-            note && note !== desc ? section('作者的话', 'feather', h('blockquote', { class: 'quote' }, note)) : null,
+            note && !(desc && note.startsWith(desc)) ? section('作者的话', 'feather', clampBox((t) => h('blockquote', { class: 'quote' }, t), note, '作者的话')) : null,
             peek(it),
             infoPanel(it),
             it.notes ? section('笔记', 'feather', richText(it.notes, null, { cls: 'rt-notes' }), editLink(it, 'notes')) : null);
@@ -236,7 +349,7 @@ export function openDetail(id) {
         const next = btn('', { icon: 'chevronRight', cls: 'sm ghost icon', title: '下一条', onclick: () => { greetIdx++; draw(); } });
         const draw = () => {
             const g = String(list[greetIdx]);
-            clear(body, clampBox((t) => richText(t, names(it)), g, greetIdx === 0 ? '开场白' : `备选开场白 ${greetIdx}`));
+            clear(body, clampBox((t) => richText(t, names(it)), g, greetIdx === 0 ? '开场白' : `备选开场白 ${greetIdx}`, () => readGreetings(it, list, greetIdx)));
             label.textContent = greetIdx === 0 ? '开场白' : `备选开场白 ${greetIdx}`;
             count.textContent = `${greetIdx + 1} / ${list.length}`;
             prev.disabled = greetIdx === 0;
@@ -247,7 +360,8 @@ export function openDetail(id) {
             h('div', { class: 'greet-head' },
                 h('div', { class: 'greet-avatar', style: { '--tc': typeMeta(it.type).color } }, it.cover ? coverImg(it) : icon('user', { size: 16 })),
                 h('div', { class: 'greet-who' }, h('b', {}, d.name || it.name), label),
-                list.length > 1 ? h('div', { class: 'greet-nav' }, prev, count, next) : null),
+                list.length > 1 ? h('div', { class: 'greet-nav' }, prev, count, next) : null,
+                btn('', { icon: 'maximize', cls: 'sm ghost icon', title: '全屏阅读', onclick: () => readGreetings(it, list, greetIdx) })),
             body);
     }
 
@@ -433,7 +547,7 @@ export function openDetail(id) {
             const d = content.data;
             if (it.type === 'worldbook') return worldbookView(d, names(it));
             if (it.type === 'preset' && Array.isArray(d.prompts)) return presetView(d);
-            if (it.type === 'regex') return regexView(Array.isArray(d) ? d : [d]);
+            if (it.type === 'regex') return regexView(Array.isArray(d) ? d : [d], { n: names(it) });
             if (it.type === 'quickreply' && Array.isArray(d.qrList)) return qrView(d);
             if (it.type === 'theme') return themeView(d);
             return codeView(d);
@@ -465,16 +579,22 @@ export function openDetail(id) {
         txt('scenario', '场景', d.scenario);
         const greetings = [d.first_mes, ...(d.alternate_greetings || [])].filter((x) => x && String(x).trim());
         if (greetings.length) {
-            secs.push({ key: 'greet', title: '开场白', meta: `${greetings.length} 条`, node: h('div', { class: 'greet-list' }, greetings.map((g, i) => h('div', { class: 'greet-item' },
-                h('div', { class: 'sub-label' }, i === 0 ? '主开场白' : `备选 ${i}`), clampBox((x) => richText(x, n), String(g), i === 0 ? '主开场白' : `备选开场白 ${i}`)))) });
+            secs.push({ key: 'greet', title: '开场白', meta: `${greetings.length} 条`,
+                action: btn('全屏阅读', { icon: 'maximize', cls: 'sm ghost', onclick: () => readGreetings(it, greetings, 0) }),
+                node: h('div', { class: 'greet-list' }, greetings.map((g, i) => h('div', { class: 'greet-item' },
+                    h('div', { class: 'greet-item-head' }, h('span', { class: 'sub-label' }, i === 0 ? '主开场白' : `备选 ${i}`), h('span', { class: 'grow' }),
+                        btn('', { icon: 'maximize', cls: 'sm ghost icon', title: '全屏阅读', onclick: () => readGreetings(it, greetings, i) })),
+                    clampBox((x) => richText(x, n), String(g), i === 0 ? '主开场白' : `备选开场白 ${i}`, () => readGreetings(it, greetings, i))))) });
         }
         txt('example', '对话示例', d.mes_example, { dialog: true });
+        const ex = secs.find((x) => x.key === 'example');
+        if (ex && (String(d.mes_example).match(/<START>/gi) || []).length > 1) ex.action = btn('全屏阅读', { icon: 'maximize', cls: 'sm ghost', onclick: () => readFull('对话示例', dialogView(String(d.mes_example).trim(), n), String(d.mes_example).trim().length) });
         txt('system', '系统提示词', d.system_prompt);
         txt('post', '后置指令', d.post_history_instructions);
         txt('depth', '深度提示词', ext.depth_prompt?.prompt);
         txt('notes', '作者注释', d.creator_notes);
         if (book?.entries?.length) secs.push({ key: 'book', title: '内嵌世界书', meta: `${book.entries.length} 条`, node: worldbookView(book, n) });
-        if (regex.length) secs.push({ key: 'regex', title: '内嵌正则', meta: `${regex.length} 条`, node: regexView(regex) });
+        if (regex.length) secs.push({ key: 'regex', title: '内嵌正则', meta: `${regex.length} 条`, node: regexView(regex, { sample: String(greetings[0] || ''), n }) });
         const anchor = (k) => `sec-${id}-${k}`;
         return h('div', { class: 'reader' },
             h('div', { class: 'reader-tools' },
@@ -485,7 +605,7 @@ export function openDetail(id) {
                 btn('JSON', { icon: 'download', cls: 'sm', onclick: () => downloadBlob(new Blob([JSON.stringify(c.card, null, 2)], { type: 'application/json' }), `${d.name || 'card'}.json`) })),
             secs.length > 2 ? h('nav', { class: 'sec-nav' }, secs.map((sc) => h('button', { onclick: () => document.getElementById(anchor(sc.key))?.scrollIntoView({ behavior: 'smooth', block: 'start' }) }, sc.title))) : null,
             secs.length ? secs.map((sc) => h('section', { class: 'read-sec', id: anchor(sc.key) },
-                h('div', { class: 'read-head' }, h('h3', {}, sc.title), h('span', { class: 'fold-count' }, sc.meta)), sc.node))
+                h('div', { class: 'read-head' }, h('h3', {}, sc.title), h('span', { class: 'fold-count' }, sc.meta), sc.action ? h('span', { class: 'grow' }) : null, sc.action || null), sc.node))
                 : emptyState('fileText', '角色卡里没有文字内容', ''),
             fold('原始 JSON', () => h('pre', { class: 'code' }, JSON.stringify(c.card, null, 2)), { ic: 'braces' }));
     }
@@ -530,12 +650,62 @@ export function openDetail(id) {
             fold('原始 JSON', () => h('pre', { class: 'code' }, JSON.stringify(d, null, 2)), { ic: 'braces' }));
     }
 
-    function regexView(list) {
+    function regexView(list, { sample = '', n = { char: '角色', user: state.prefs.userName?.trim() || '你' } } = {}) {
         return h('div', { class: 'stack-s' }, list.map((r) => lazyDetails({ class: `fold entry ${r.disabled ? 'off' : ''}` },
-            h('summary', {}, icon('chevronRight', { size: 14, cls: 'fold-chev' }), h('span', { class: 'entry-dot' }), h('span', { class: 'fold-title' }, r.scriptName || '（未命名）'), r.disabled ? h('span', { class: 'chip-s' }, '禁用') : null),
+            h('summary', {}, icon('chevronRight', { size: 14, cls: 'fold-chev' }), h('span', { class: 'entry-dot' }), h('span', { class: 'fold-title' }, r.scriptName || '（未命名）'),
+                looksHtml(r.replaceString) ? h('span', { class: 'chip-s info' }, '美化') : null, r.disabled ? h('span', { class: 'chip-s' }, '禁用') : null),
             () => h('div', { class: 'fold-body' },
+                regexChips(r),
                 h('div', { class: 'sub-label' }, '查找'), h('pre', { class: 'code' }, r.findRegex || ''),
-                h('div', { class: 'sub-label' }, '替换为'), h('pre', { class: 'code' }, r.replaceString || '')))));
+                h('div', { class: 'sub-label' }, '替换为'), lazyCode(r.replaceString || ''),
+                regexPreview(r, sample, n)))));
+    }
+
+    // 很长的替换内容（美化正则常有几千字的 HTML）先只显示开头
+    function lazyCode(text) {
+        if (text.length <= 1200) return h('pre', { class: 'code' }, text);
+        const pre = h('pre', { class: 'code' }, `${text.slice(0, 1200)}…`);
+        return h('div', {}, pre, btn(`显示全部代码 · ${text.length} 字`, { cls: 'sm ghost', onclick: (e) => { pre.textContent = text; e.currentTarget.remove(); } }));
+    }
+
+    function regexChips(r) {
+        const chips = [
+            ...(r.placement || []).map((p) => PLACEMENT[p]).filter(Boolean).map((t) => `作用于${t}`),
+            r.markdownOnly ? '只改显示' : '', r.promptOnly ? '只改发给 AI 的内容' : '',
+            r.runOnEdit ? '编辑时运行' : '',
+            r.minDepth != null && r.minDepth !== '' ? `深度 ≥ ${r.minDepth}` : '', r.maxDepth != null && r.maxDepth !== '' ? `深度 ≤ ${r.maxDepth}` : '',
+        ].filter(Boolean);
+        return chips.length ? h('div', { class: 'chips-row' }, chips.map((c) => h('span', { class: 'chip-s' }, c))) : null;
+    }
+
+    /** 效果预览：用一段示例文本跑一遍这条正则，HTML 在隔离窗口里显示（脚本不会运行） */
+    function regexPreview(r, sample, n) {
+        const out = h('div', { class: 'st-wrap' });
+        const info = h('div', { class: 'muted small' });
+        const input = h('textarea', { class: 'textarea st-sample', rows: 3, placeholder: '粘贴一段 AI 回复，看这条正则会把它变成什么样', value: sample });
+        let timer = 0;
+        const draw = () => {
+            const text = input.value;
+            const res = text ? runRegex(text, r, n) : { out: '', hits: 0 };
+            if (res.error) { info.textContent = res.error; clear(out); return; }
+            let html;
+            if (res.hits) {
+                html = res.out;
+                info.textContent = `示例文本里匹配到 ${res.hits} 处，下面是酒馆里大致的显示效果`;
+            } else {
+                html = String(r.replaceString || '').replace(/\{\{match\}\}/gi, '').replace(/\$(\d{1,2}|&|<[^>]+>)/g, '');
+                info.textContent = !html.trim() ? (text ? '示例文本里没有匹配的内容' : '这条正则会删掉匹配到的内容')
+                    : text ? '示例文本里没有匹配的内容，下面先显示替换内容本身（$1 这类引用留空）' : '下面是替换内容本身（$1 这类引用留空）';
+            }
+            html = macroNames(html, n);
+            clear(out, !html.trim() ? null : looksHtml(html) ? htmlFrame(html) : richText(html, n));
+        };
+        input.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(draw, 250); });
+        draw();
+        return h('div', { class: 'st-preview' },
+            h('div', { class: 'sub-label' }, '效果预览'), info, out,
+            h('details', { class: 'st-sample-box', open: !sample }, h('summary', {}, '换一段示例文本'), input),
+            looksHtml(r.replaceString) && /<script/i.test(r.replaceString) ? h('div', { class: 'muted small' }, '这条正则带脚本，预览里脚本不会运行，动画、点击切换之类的效果看不到。') : null);
     }
 
     function qrView(d) {
@@ -610,13 +780,15 @@ export function openDetail(id) {
         const sorted = [...it.files].sort((a, b) => b.addedAt.localeCompare(a.addedAt));
         const cur = primary(it);
         // 和主文件同一类的文件算作「版本」，其余（插图等）算附件
-        const family = (f) => (/^image\/png/.test(f.mime) || /\.(json|charx)$/i.test(f.name) ? 'card' : /^image\//.test(f.mime) ? 'image' : f.mime);
+        // 带角色卡数据的 PNG（有内容指纹）才算角色卡，其它图片是插图 / 封面收藏
+        const family = (f) => ((/^image\/png/.test(f.mime) && (f.sig || f.primary)) || /\.(json|charx)$/i.test(f.name) ? 'card' : /^image\//.test(f.mime) ? 'image' : f.mime);
         const versions = sorted.filter((f) => cur && family(f) === family(cur));
         const verNo = new Map([...versions].reverse().map((f, i) => [f.id, i + 1]));
         const prevOf = (f) => versions[versions.indexOf(f) + 1];
         const label = (f) => `${verNo.has(f.id) ? `版本 ${verNo.get(f.id)}` : '附件'} · ${f.name}`;
         const compare = (a, b) => openDiff({ sha: a.sha, name: a.name, label: label(a) }, { sha: b.sha, name: b.name, label: label(b) }, { title: `对比：${it.name}` });
         return h('div', { class: 'stack' },
+            coverPanel(it),
             h('section', { class: 'panel' },
                 h('div', { class: 'panel-head' }, icon('layers', { size: 16 }), h('h3', {}, versions.length > 1 ? `文件与版本 · ${versions.length} 个版本` : '文件与版本'), h('span', { class: 'grow' }),
                     versions.length > 1 && cur ? btn('对比上一版', { icon: 'eye', cls: 'sm', onclick: () => compare(prevOf(cur) || versions[1], cur) }) : null,
@@ -631,6 +803,53 @@ export function openDetail(id) {
                     btn('', { icon: 'download', cls: 'sm ghost', href: api.fileUrl(f.sha, f.name, true), download: f.name, title: '下载' }),
                     btn('', { icon: 'more', cls: 'sm ghost', onclick: () => fileMenu(it, f, { compare, prev: prevOf(f), cur }) }))))),
             h('div', { class: 'muted small' }, '「当前」版本决定条目显示的信息，也是「导入到酒馆」时使用的文件。旧版本会一直保留，随时可以切回去。'));
+    }
+
+    /** 封面收藏：一个条目可以存多张图，选一张当封面；角色卡可以用这张图导出 PNG */
+    function coverPanel(it) {
+        const images = it.files.filter((f) => /^image\//.test(f.mime)).sort((a, b) => String(a.addedAt).localeCompare(String(b.addedAt)));
+        const isCard = it.type === 'character' && primary(it);
+        if (!images.length && !isCard) return null;
+        const input = h('input', { type: 'file', accept: 'image/*', multiple: true, hidden: true, onchange: async () => {
+            const files = [...input.files];
+            input.value = '';
+            let n = 0;
+            for (const f of files) {
+                try { await api.uploadVersion(id, f, { primary: false, label: '封面收藏' }); n++; } catch (e) { toast(`${f.name}：${e.message}`, 'err'); }
+            }
+            if (n) toast(`已添加 ${n} 张图片，点一下就能设为封面`, 'ok');
+        } });
+        const tile = (f) => {
+            const on = f.sha === it.cover;
+            return h('button', { class: `cover-tile ${on ? 'on' : ''}`, title: on ? '当前封面，点击看大图' : '设为封面',
+                onclick: async () => {
+                    if (on) { lightbox(api.fileUrl(f.sha)); return; }
+                    await api.patch(`/api/items/${id}/files/${f.id}`, { asCover: true });
+                    toast('已设为封面', 'ok');
+                } },
+            coverImg({ cover: f.sha, thumb: on ? it.thumb : Boolean(f.thumb) }),
+            on ? h('span', { class: 'cover-on' }, icon('check', { size: 12, stroke: 3 }), '封面') : null,
+            f.primary ? h('span', { class: 'cover-tag' }, '卡图') : null);
+        };
+        return h('section', { class: 'panel' },
+            h('div', { class: 'panel-head' }, icon('image', { size: 16 }), h('h3', {}, '封面'), images.length > 1 ? h('span', { class: 'fold-count' }, `${images.length} 张`) : null, h('span', { class: 'grow' }),
+                isCard && it.cover ? btn('导出 PNG', { icon: 'download', cls: 'sm', title: '用当前封面导出酒馆可以导入的角色卡 PNG', onclick: () => exportPng(it) }) : null,
+                btn('添加图片', { icon: 'plus', cls: 'sm', onclick: () => input.click() }), input),
+            images.length ? h('div', { class: 'cover-grid' }, images.map(tile)) : null,
+            h('div', { class: 'muted small' }, isCard
+                ? '点一下图片设为封面。「导出 PNG」会把角色卡数据写进当前封面，导入酒馆后用的就是这张图。'
+                : '点一下图片设为封面。'));
+    }
+
+    async function exportPng(it) {
+        if (!content) await loadContent(it);
+        if (content?.kind !== 'card' || !content.card) { toast('读取角色卡失败', 'err'); return; }
+        if (!it.cover) { toast('这个条目还没有封面', 'err'); return; }
+        try {
+            toast('正在生成 PNG…');
+            const blob = await cardPng(api.fileUrl(it.cover), content.card);
+            downloadBlob(blob, `${(content.data?.name || it.name).replace(/[\\/:*?"<>|]/g, '_')}.png`);
+        } catch (e) { toast(`导出失败：${e.message}`, 'err'); }
     }
 
     function fileMenu(it, f, { compare, prev, cur } = {}) {

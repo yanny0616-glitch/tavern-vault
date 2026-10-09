@@ -803,3 +803,6 @@ html[data-skin="neon"] .empty-ic { border-radius: 0; clip-path: polygon(25% 0, 7
 .skin-pv[data-skin="neon"] .pv-nav i { border-radius: 0; }
 .skin-pv[data-skin="neon"] .pv-nav i.on { box-shadow: 0 0 6px var(--accent); }
 html[data-skin="ink"] .clamp-btn { border-radius: 0; border-color: var(--ink); }
+
+/* 各皮肤给 .pill 改了背景，选中状态要盖过去，否则选中后文字和背景同色看不见 */
+html[data-skin] .pill.active { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }

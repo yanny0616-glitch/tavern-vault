@@ -10,8 +10,8 @@ import { Store, newId, DEFAULT_FIELDS } from './lib/store.js';
 import { detectFile, mimeOf, normalizeCard, summarizeCard, TYPES } from './lib/detect.js';
 import { extractCardFromPng, isPng, writeCardToPng } from './lib/png.js';
 import { buildZip, readZip, isJunkPath } from './lib/zip.js';
-import { fileSig, parseFile } from './lib/content.js';
-import { stripSyncEntries, DEFAULT_SYNC_EXCLUDE } from '../web/js/sig.js';
+import { fileSig, fileParts, parseFile } from './lib/content.js';
+import { stripSyncEntries, DEFAULT_SYNC_EXCLUDE, CARD_PARTS, sameParts, mergeParts } from '../web/js/sig.js';
 import { diffFiles, diffSummary } from './lib/diff.js';
 import { AiConfig, listModels, chat, AiError } from './lib/ai.js';
 import { createAiTasks } from './lib/ai-tasks.js';
@@ -106,7 +106,8 @@ const getItem = (id) => {
 /** 列表用的精简条目 */
 function slim(it) {
     const { searchText, ...rest } = it;
-    return { ...rest, searchText: searchText ? searchText.slice(0, 600) : '', thumb: !!it.cover && store.hasThumb(it.cover) };
+    const files = it.files.map((f) => (/^image\//.test(f.mime) && f.sha !== it.cover && store.hasThumb(f.sha) ? { ...f, thumb: true } : f));
+    return { ...rest, files, searchText: searchText ? searchText.slice(0, 600) : '', thumb: !!it.cover && store.hasThumb(it.cover) };
 }
 
 function safeFilename(name) {
@@ -163,8 +164,8 @@ function withCollections(opts) {
 }
 
 /** 给已有条目加一个新版本并设为当前版本 */
-function addVersion(it, { buf, filename, sha, sig, det }, opts = {}) {
-    store.addFile(it.id, { sha, name: filename, size: buf.length, mime: mimeOf(filename), label: opts.label || (det.version ? `v${det.version}` : ''), primary: true, sig });
+function addVersion(it, { buf, filename, sha, sig, parts, det }, opts = {}) {
+    store.addFile(it.id, { sha, name: filename, size: buf.length, mime: mimeOf(filename), label: opts.label || (det.version ? `v${det.version}` : ''), primary: true, sig, parts });
     applyDetection(it, det, sha);
     const cols = withCollections(opts);
     store.updateItem(it.id, {
@@ -187,7 +188,8 @@ function ingest(buf, filename, opts = {}) {
     const fname = safeFilename(filename);
     const det = detectFile(buf, fname);
     const sig = fileSig(buf, fname, det);
-    const file = { buf, filename: fname, sha, sig, det };
+    const parts = fileParts(buf, fname, det);
+    const file = { buf, filename: fname, sha, sig, parts, det };
     const base = { sha, filename: fname, size: buf.length, detected: { type: det.type, name: det.name, author: det.author || '', version: det.version || '' } };
     const target = opts.target ? store.db.items[opts.target] : null;
     if (opts.target && (!target || target.deletedAt)) throw new HttpError(404, '目标条目不存在');
@@ -200,7 +202,20 @@ function ingest(buf, filename, opts = {}) {
             hitFile = it.files.find((f) => f.sha === sha) || (sig ? it.files.find((f) => f.sig === sig) : null);
             if (hitFile) { hit = it; break; }
         }
+        // 从酒馆收录：设置里忽略的那几段（自己在酒馆里改过的）不同，也算同一个版本
+        const ignore = opts.origin === 'tavern' ? syncIgnore() : [];
+        if (!hit && ignore.length && parts) {
+            for (const it of pool) {
+                hitFile = it.files.find((f) => f.primary && sameParts(f.parts, parts, ignore)) || it.files.find((f) => sameParts(f.parts, parts, ignore));
+                if (hitFile) { hit = it; base.ignoredOnly = true; break; }
+            }
+        }
         if (hit) {
+            // 和已有条目完全相同：导入时指定了合集（例如按压缩包名建合集）的，也把它加进去
+            if (opts.collectionName || opts.collections?.length) {
+                const cols = withCollections(opts);
+                if (cols.some((c) => !hit.collections.includes(c))) store.updateItem(hit.id, { collections: [...new Set([...hit.collections, ...cols])] });
+            }
             return { ...base, status: 'duplicate', duplicate: true, exact: hitFile.sha === sha, current: Boolean(hitFile.primary), item: slim(hit) };
         }
         const candidates = target ? [target] : findSimilar(det);
@@ -240,7 +255,7 @@ function ingest(buf, filename, opts = {}) {
         cover: det.isCover ? sha : null,
         fields: { downloadedAt: new Date().toISOString().slice(0, 10) },
     });
-    store.addFile(item.id, { sha, name: fname, size: buf.length, mime: mimeOf(fname), primary: true, sig, label: opts.label || '' });
+    store.addFile(item.id, { sha, name: fname, size: buf.length, mime: mimeOf(fname), primary: true, sig, parts, label: opts.label || '' });
     return { ...base, status: 'created', duplicate: false, item: slim(store.db.items[item.id]) };
 }
 
@@ -280,7 +295,7 @@ function ingestZip(buf, archiveName, opts, depth = 0) {
         }
     }
     const col = o.collectionName ? Object.values(store.db.collections).find((c) => c.name === String(o.collectionName).trim().slice(0, 60)) : null;
-    return { batch: true, archive: archiveName, results, collection: col || null };
+    return { batch: true, archive: archiveName, results, collection: col || null, collectionName: o.collectionName || '' };
 }
 
 /** 通用入口：ZIP 自动解压（扩展包、CHARX 除外），其它直接收录 */
@@ -351,12 +366,56 @@ const route = (method, pattern, handler, { open = false } = {}) => {
 
 route('GET', '/api/health', () => ({ ok: true, app: 'tavern-vault', version: VERSION, features: ['versions', 'zip', 'restore', 'sig', 'ai'], auth: authEnabled(), title: store.db.settings.title, skin: store.db.settings.skin }), { open: true });
 
+// ---------------- 登录保护 ----------------
+// 同一来源连续输错 5 次后暂停，之后每多错一次暂停时间翻倍（最长 30 分钟）；
+// 所有来源 15 分钟内合计错 50 次时，暂停全部新登录 10 分钟（已登录的设备不受影响）。
+const LOGIN_WINDOW = 15 * 60e3;
+const loginFails = new Map();
+const loginGlobal = { fails: [], until: 0 };
+const loginLogPath = path.join(DATA_DIR, 'login-log.json');
+let loginLog = [];
+try { loginLog = JSON.parse(fs.readFileSync(loginLogPath, 'utf8')).slice(-100); } catch { /* 没有记录 */ }
+const saveLoginLog = () => { try { fs.writeFileSync(loginLogPath, JSON.stringify(loginLog.slice(-100))); } catch { /* ignore */ } };
+
+function clientIp(req) {
+    return String(req.headers['cf-connecting-ip'] || String(req.headers['x-forwarded-for'] || '').split(',')[0] || req.socket.remoteAddress || '').trim().replace(/^::ffff:/, '').slice(0, 64);
+}
+function deviceOf(ua = '') {
+    const os = /iPhone|iPad/.test(ua) ? (/iPad/.test(ua) ? 'iPad' : 'iPhone') : /Android/.test(ua) ? 'Android' : /Windows/.test(ua) ? 'Windows' : /Mac OS X|Macintosh/.test(ua) ? 'Mac' : /Linux/.test(ua) ? 'Linux' : '';
+    const app = /TauriTavern|Tauri/i.test(ua) ? 'TauriTavern' : /Edg\//.test(ua) ? 'Edge' : /CriOS|Chrome\//.test(ua) ? 'Chrome' : /FxiOS|Firefox\//.test(ua) ? 'Firefox' : /Safari\//.test(ua) ? 'Safari' : '';
+    return [os, app].filter(Boolean).join(' · ') || '未知设备';
+}
+const waitText = (ms) => (ms >= 60e3 ? `${Math.ceil(ms / 60e3)} 分钟` : `${Math.ceil(ms / 1000)} 秒`);
+
 route('POST', '/api/login', async ({ req }) => {
     const { password } = await readJson(req);
     if (!authEnabled()) return { token: '' };
-    if (!password || !verifyPassword(String(password), store.db.settings.passwordHash)) throw new HttpError(401, '密码错误');
-    return { token: makeToken() };
+    const ip = clientIp(req);
+    const now = Date.now();
+    const rec = loginFails.get(ip);
+    if (rec?.until > now) throw new HttpError(429, `尝试次数太多，请 ${waitText(rec.until - now)}后再试`);
+    if (loginGlobal.until > now) throw new HttpError(429, `登录尝试过于频繁，已暂停新登录，请 ${waitText(loginGlobal.until - now)}后再试`);
+    const ok = Boolean(password) && verifyPassword(String(password), store.db.settings.passwordHash);
+    loginLog.push({ at: new Date().toISOString(), ip, ok, device: deviceOf(req.headers['user-agent']) });
+    saveLoginLog();
+    if (ok) {
+        loginFails.delete(ip);
+        return { token: makeToken() };
+    }
+    const r = rec && now - rec.first < LOGIN_WINDOW ? rec : { count: 0, first: now, until: 0 };
+    r.count++;
+    if (r.count >= 5) r.until = now + Math.min(30 * 60e3, 60e3 * 2 ** (r.count - 5));
+    loginFails.set(ip, r);
+    loginGlobal.fails = loginGlobal.fails.filter((t) => now - t < LOGIN_WINDOW);
+    loginGlobal.fails.push(now);
+    if (loginGlobal.fails.length >= 50) { loginGlobal.until = now + 10 * 60e3; loginGlobal.fails = []; console.log('  [登录保护] 15 分钟内失败次数过多，暂停新登录 10 分钟'); }
+    console.log(`  [登录保护] 密码错误 ip=${ip} 第 ${r.count} 次${r.until > now ? `，暂停 ${waitText(r.until - now)}` : ''}`);
+    await new Promise((res) => setTimeout(res, 400));
+    throw new HttpError(r.until > now ? 429 : 401, r.until > now ? `密码错误次数太多，请 ${waitText(r.until - now)}后再试` : `密码错误${r.count >= 3 ? `，再错 ${5 - r.count} 次会暂停登录` : ''}`);
 }, { open: true });
+setInterval(() => { const now = Date.now(); for (const [k, r] of loginFails) if (now - r.first > LOGIN_WINDOW && r.until < now) loginFails.delete(k); }, 10 * 60e3).unref();
+
+route('GET', '/api/security/log', () => ({ log: loginLog.slice(-30).reverse(), locked: [...loginFails].filter(([, r]) => r.until > Date.now()).map(([ip, r]) => ({ ip, until: new Date(r.until).toISOString() })) }));
 
 route('POST', '/api/password', async ({ req }) => {
     const { password } = await readJson(req);
@@ -380,7 +439,7 @@ route('GET', '/api/state', () => {
         items: Object.values(store.db.items).map(slim),
         collections: Object.values(store.db.collections),
         fields: store.db.fields,
-        settings: { ...settings, syncExclude: syncExclude(), auth: authEnabled(), version: VERSION, ai: { ready: aiConfig.ready, ...aiTasks.summary() } },
+        settings: { ...settings, syncExclude: syncExclude(), syncIgnore: syncIgnore(), syncKeep: syncKeep(), auth: authEnabled(), version: VERSION, ai: { ready: aiConfig.ready, ...aiTasks.summary() } },
         stats: store.stats(),
     };
 });
@@ -410,14 +469,40 @@ route('POST', '/api/items', async ({ req, url }) => {
     const opts = parseOpts(url);
     let buf = await readBody(req);
     if (!buf.length) throw new HttpError(400, '空文件');
-    if (opts.origin === 'tavern') buf = await stripFromTavern(buf, opts.filename);
+    let merged = false;
+    if (opts.origin === 'tavern') {
+        buf = await stripFromTavern(buf, opts.filename);
+        if (opts.target) ({ buf, merged } = await keepVaultParts(buf, opts.filename, opts.target));
+    }
     const result = ingestAny(buf, opts.filename, opts);
+    if (merged && result.status === 'duplicate') result.ignoredOnly = true;
     const ids = changedIds(result);
     if (ids.length || result.batch) broadcast('change', { ids });
     return result;
 });
 
 const syncExclude = () => store.db.settings.syncExclude ?? DEFAULT_SYNC_EXCLUDE;
+// 从酒馆同步时忽略的角色卡分段；syncKeep：收新版本时，这几段沿用藏馆原来的内容
+const syncIgnore = () => (store.db.settings.syncIgnore || []).filter((k) => k in CARD_PARTS);
+const syncKeep = () => store.db.settings.syncKeep !== false;
+
+/** 酒馆里的卡收成新版本前：把忽略的那几段换回藏馆当前版本的内容 */
+async function keepVaultParts(buf, filename, targetId) {
+    const ignore = syncIgnore();
+    const it = store.db.items[targetId];
+    const prev = it && store.primaryFile(it);
+    if (!ignore.length || !syncKeep() || !prev || it.type !== 'character' || !store.hasBlob(prev.sha)) return { buf, merged: false };
+    try {
+        const cur = parseFile(buf, filename);
+        const old = parseFile(store.readBlob(prev.sha), prev.name).obj;
+        if (!cur?.obj || !old || (!cur.image && path.extname(filename).toLowerCase() === '.charx')) return { buf, merged: false };
+        const out = mergeParts('character', cur.obj, old, ignore);
+        if (JSON.stringify(out) === JSON.stringify(cur.obj)) return { buf, merged: false };
+        return { buf: cur.image ? await writeCardToPng(buf, out) : Buffer.from(JSON.stringify(out, null, 4)), merged: true };
+    } catch {
+        return { buf, merged: false };
+    }
+}
 
 /** 从酒馆来的角色卡 / 世界书：去掉总结脚本写进去的条目（规则见 设置 → 导入） */
 async function stripFromTavern(buf, filename) {
@@ -567,9 +652,61 @@ route('DELETE', '/api/items/:id', ({ p, url }) => {
 route('POST', '/api/items/:id/restore', ({ p }) => {
     const it = getItem(p.id);
     it.deletedAt = null;
+    delete it.mergedInto;
     store.save();
     broadcast('change', { ids: [p.id] });
     return slim(it);
+});
+
+// 合并重复条目：其它条目的文件并入目标作为旧版本，标签、合集、备注等合在一起，其它条目移到回收站
+route('POST', '/api/items/merge', async ({ req }) => {
+    const body = await readJson(req);
+    const target = getItem(String(body.target || ''));
+    if (target.deletedAt) throw new HttpError(400, '目标条目在回收站里');
+    const sources = [...new Set((Array.isArray(body.sources) ? body.sources : []).map(String))]
+        .filter((id) => id !== target.id).map((id) => store.db.items[id]).filter((it) => it && !it.deletedAt);
+    if (!sources.length) throw new HttpError(400, '没有要合并的条目');
+    if (sources.length > 20) throw new HttpError(400, '一次最多合并 20 个条目');
+    const now = new Date().toISOString();
+    const shas = new Set(target.files.map((f) => f.sha));
+    const uniq = (a) => [...new Set(a.filter(Boolean))];
+    let moved = 0;
+    for (const src of sources) {
+        for (const f of src.files) {
+            if (shas.has(f.sha)) continue;
+            shas.add(f.sha);
+            target.files.push({ ...f, id: crypto.randomBytes(6).toString('hex'), primary: false, label: f.label || `来自「${src.name}」` });
+            moved++;
+        }
+        target.tags = uniq([...target.tags, ...src.tags]);
+        target.collections = uniq([...(target.collections || []), ...(src.collections || [])]);
+        target.favorite = target.favorite || src.favorite;
+        target.rating = Math.max(target.rating || 0, src.rating || 0) || target.rating;
+        const note = String(src.notes || '').trim();
+        if (note && !String(target.notes || '').includes(note)) target.notes = target.notes ? `${target.notes}\n\n${note}` : note;
+        for (const k of ['description', 'author', 'source', 'version', 'cover']) if (!target[k] && src[k]) target[k] = src[k];
+        for (const [k, v] of Object.entries(src.fields || {})) {
+            const cur = target.fields?.[k];
+            if ((cur == null || cur === '' || (Array.isArray(cur) && !cur.length)) && v != null && v !== '') target.fields = { ...target.fields, [k]: v };
+        }
+        if (src.createdAt && (!target.createdAt || src.createdAt < target.createdAt)) target.createdAt = src.createdAt;
+        src.deletedAt = now;
+        src.mergedInto = target.id;
+    }
+    // 可选：当前版本换成最新导入的同类文件（角色卡换角色卡，不会换成插图）
+    const cur = target.files.find((f) => f.primary);
+    if (body.newest && cur) {
+        const family = (f) => ((/^image\/png/.test(f.mime) && (f.sig || f.primary)) || /\.(json|charx)$/i.test(f.name) ? 'card' : /^image\//.test(f.mime) ? 'image' : f.mime);
+        const latest = target.files.filter((f) => family(f) === family(cur)).sort((a, b) => String(b.addedAt).localeCompare(String(a.addedAt)))[0];
+        if (latest && latest !== cur) {
+            target.files.forEach((f) => { f.primary = f === latest; });
+            applyDetection(target, detectFile(store.readBlob(latest.sha), latest.name), latest.sha);
+        }
+    }
+    target.updatedAt = now;
+    store.save();
+    broadcast('change', { ids: [target.id, ...sources.map((x) => x.id)] });
+    return { item: slim(target), merged: sources.length, files: moved };
 });
 
 route('POST', '/api/items/:id/files', async ({ req, p, url }) => {
@@ -581,7 +718,7 @@ route('POST', '/api/items/:id/files', async ({ req, p, url }) => {
     const sha = store.putBlob(buf);
     const primary = sp.get('primary') === '1';
     const det = detectFile(buf, filename);
-    const file = store.addFile(it.id, { sha, name: safeFilename(filename), size: buf.length, mime: mimeOf(filename), label: sp.get('label') || '', primary, sig: fileSig(buf, filename, det) });
+    const file = store.addFile(it.id, { sha, name: safeFilename(filename), size: buf.length, mime: mimeOf(filename), label: sp.get('label') || '', primary, sig: fileSig(buf, filename, det), parts: fileParts(buf, filename, det) });
     if (file.primary) applyDetection(it, det, sha);
     broadcast('change', { ids: [it.id] });
     return slim(store.db.items[it.id]);
@@ -647,7 +784,7 @@ route('PUT', '/api/items/:id/card', async ({ req, p }) => {
     }
     const sha = store.putBlob(buf);
     const det = detectFile(buf, filename);
-    store.addFile(it.id, { sha, name: filename, size: buf.length, mime: mimeOf(filename), label: `网页编辑 ${new Date().toLocaleString('zh-CN', { hour12: false })}`, primary: true, sig: fileSig(buf, filename, det) });
+    store.addFile(it.id, { sha, name: filename, size: buf.length, mime: mimeOf(filename), label: `网页编辑 ${new Date().toLocaleString('zh-CN', { hour12: false })}`, primary: true, sig: fileSig(buf, filename, det), parts: fileParts(buf, filename, det) });
     applyDetection(it, det, sha);
     store.updateItem(it.id, { name: n.data.name });
     broadcast('change', { ids: [it.id] });
@@ -697,7 +834,8 @@ route('POST', '/api/export', async ({ req, res }) => {
     return null;
 });
 
-route('GET', '/api/backup', ({ res }) => {
+/** 完整备份 ZIP：db.json + 所有被引用的文件（不含缩略图、AI 密钥） */
+function buildBackup() {
     store.flush();
     const entries = [{ name: 'db.json', data: fs.readFileSync(store.dbPath) }];
     const seen = new Set();
@@ -708,14 +846,18 @@ route('GET', '/api/backup', ({ res }) => {
             entries.push({ name: `files/${sha.slice(0, 2)}/${sha}`, data: store.readBlob(sha) });
         }
     }
-    send(res, 200, buildZip(entries), { 'Content-Type': 'application/zip', 'Content-Disposition': contentDisposition(`TavernVault-backup-${new Date().toISOString().slice(0, 10)}.zip`, true) });
+    return buildZip(entries);
+}
+
+route('GET', '/api/backup', ({ res }) => {
+    send(res, 200, buildBackup(), { 'Content-Type': 'application/zip', 'Content-Disposition': contentDisposition(`TavernVault-backup-${new Date().toISOString().slice(0, 10)}.zip`, true) });
     return null;
 });
 
 // 从备份还原
-route('POST', '/api/restore', async ({ req, url }) => {
-    const mode = url.searchParams.get('mode') === 'replace' ? 'replace' : 'merge';
-    const buf = await readBody(req, MAX_RESTORE);
+route('POST', '/api/restore', async ({ req, url }) => restoreFrom(await readBody(req, MAX_RESTORE), url.searchParams.get('mode') === 'replace' ? 'replace' : 'merge'));
+
+async function restoreFrom(buf, mode) {
     let entries;
     try { entries = readZip(buf, { maxTotal: MAX_RESTORE * 4, maxEntries: 500000 }); } catch (e) { throw new HttpError(400, `无法读取备份：${e.message}`); }
     const dbEntry = entries.find((e) => e.name === 'db.json');
@@ -743,7 +885,68 @@ route('POST', '/api/restore', async ({ req, url }) => {
     await fillSigs();
     broadcast('change', {});
     return { ok: true, mode, ...stat, files, bad, restorePoint: safeName };
+}
+
+// ---------------- 自动备份 ----------------
+// 每天在数据目录的 backups 文件夹里存一份完整备份，保留最近几份；内容没变就不重复备份
+const BACKUP_DIR = path.join(DATA_DIR, 'backups');
+const BACKUP_NAME = /^TavernVault-(auto|manual)-\d{8}-\d{6}\.zip$/;
+const autoBackupCfg = () => ({ on: true, keep: 7, ...(store.db.settings.autoBackup || {}) });
+
+function listBackups() {
+    try {
+        return fs.readdirSync(BACKUP_DIR).filter((f) => BACKUP_NAME.test(f))
+            .map((name) => { const st = fs.statSync(path.join(BACKUP_DIR, name)); return { name, size: st.size, at: st.mtime.toISOString(), auto: name.includes('-auto-') }; })
+            .sort((a, b) => b.name.slice(-19).localeCompare(a.name.slice(-19)));
+    } catch { return []; }
+}
+function makeBackup(kind = 'manual') {
+    fs.mkdirSync(BACKUP_DIR, { recursive: true });
+    const stamp = new Date().toISOString().replace(/\D/g, '').slice(0, 14);
+    const name = `TavernVault-${kind}-${stamp.slice(0, 8)}-${stamp.slice(8)}.zip`;
+    const file = path.join(BACKUP_DIR, name);
+    fs.writeFileSync(`${file}.tmp`, buildBackup());
+    fs.renameSync(`${file}.tmp`, file);
+    fs.writeFileSync(path.join(BACKUP_DIR, '.last-db'), dbFingerprint());
+    pruneBackups();
+    console.log(`  [自动备份] 已保存 ${name}`);
+    return listBackups().find((b) => b.name === name);
+}
+function pruneBackups() {
+    const { keep } = autoBackupCfg();
+    for (const b of listBackups().filter((x) => x.auto).slice(keep)) fs.unlinkSync(path.join(BACKUP_DIR, b.name));
+}
+function dbFingerprint() {
+    store.flush();
+    return crypto.createHash('sha1').update(fs.readFileSync(store.dbPath)).digest('hex');
+}
+function autoBackupTick() {
+    try {
+        if (!autoBackupCfg().on) return;
+        const last = listBackups().find((b) => b.auto);
+        if (last && Date.now() - Date.parse(last.at) < 23 * 3600e3) return;
+        let lastDb = '';
+        try { lastDb = fs.readFileSync(path.join(BACKUP_DIR, '.last-db'), 'utf8'); } catch { /* 第一次 */ }
+        if (last && lastDb === dbFingerprint()) return;
+        makeBackup('auto');
+    } catch (e) { console.log(`  [自动备份] 失败：${e.message}`); }
+}
+setTimeout(autoBackupTick, 60e3).unref();
+setInterval(autoBackupTick, 3600e3).unref();
+
+const backupFile = (name) => {
+    if (!BACKUP_NAME.test(name || '') || !fs.existsSync(path.join(BACKUP_DIR, name))) throw new HttpError(404, '备份不存在');
+    return path.join(BACKUP_DIR, name);
+};
+route('GET', '/api/backups', () => ({ ...autoBackupCfg(), list: listBackups() }));
+route('POST', '/api/backups', () => makeBackup('manual'));
+route('GET', '/api/backups/:name', ({ res, p }) => {
+    const file = backupFile(p.name);
+    send(res, 200, fs.readFileSync(file), { 'Content-Type': 'application/zip', 'Content-Disposition': contentDisposition(p.name, true) });
+    return null;
 });
+route('DELETE', '/api/backups/:name', ({ p }) => { fs.unlinkSync(backupFile(p.name)); return { ok: true }; });
+route('POST', '/api/backups/:name/restore', async ({ p, url }) => restoreFrom(fs.readFileSync(backupFile(p.name)), url.searchParams.get('mode') === 'replace' ? 'replace' : 'merge'));
 
 // 文件下载
 route('GET', '/api/files/:sha', ({ req, res, p, url }) => {
@@ -792,7 +995,7 @@ route('GET', '/api/thumbs/:sha', ({ req, res, p }) => {
 });
 route('DELETE', '/api/thumbs', () => ({ removed: store.clearThumbs() }));
 route('PUT', '/api/thumbs/:sha', async ({ req, p }) => {
-    if (!/^[a-f0-9]{64}$/.test(p.sha) || !Object.values(store.db.items).some((it) => it.cover === p.sha)) throw new HttpError(404, '不是封面');
+    if (!/^[a-f0-9]{64}$/.test(p.sha) || !Object.values(store.db.items).some((it) => it.cover === p.sha || it.files.some((f) => f.sha === p.sha && /^image\//.test(f.mime)))) throw new HttpError(404, '不是图片');
     const buf = await readBody(req, 600 * 1024);
     if (!thumbType(buf)) throw new HttpError(400, '缩略图格式不对');
     store.writeThumb(p.sha, buf);
@@ -853,9 +1056,18 @@ route('PUT', '/api/settings', async ({ req }) => {
     for (const k of ['title', 'accent']) if (typeof body[k] === 'string') store.db.settings[k] = body[k].slice(0, 80);
     if (['atelier', 'minimal', 'tavern', 'sakura', 'ink', 'neon'].includes(body.skin)) store.db.settings.skin = body.skin;
     if ([0, 7, 14, 30, 90].includes(body.trashDays)) store.db.settings.trashDays = body.trashDays;
+    if (body.autoBackup && typeof body.autoBackup === 'object') {
+        const cur = autoBackupCfg();
+        store.db.settings.autoBackup = { on: typeof body.autoBackup.on === 'boolean' ? body.autoBackup.on : cur.on, keep: [3, 7, 14, 30].includes(body.autoBackup.keep) ? body.autoBackup.keep : cur.keep };
+    }
+    // 标记为「不是重复」的条目组（排序后的 id 用逗号连接）
+    if (Array.isArray(body.dupIgnore)) store.db.settings.dupIgnore = [...new Set(body.dupIgnore.map((x) => String(x).replace(/[^\w,-]/g, '').slice(0, 400)).filter(Boolean))].slice(-300);
+    if (Array.isArray(body.syncIgnore)) store.db.settings.syncIgnore = [...new Set(body.syncIgnore.map(String))].filter((k) => k in CARD_PARTS);
+    if (typeof body.syncKeep === 'boolean') store.db.settings.syncKeep = body.syncKeep;
     if (Array.isArray(body.syncExclude)) store.db.settings.syncExclude = [...new Set(body.syncExclude.map((x) => String(x).trim().slice(0, 60)).filter(Boolean))].slice(0, 30);
     store.save();
     if (body.trashDays) purgeTrash();
+    if (body.autoBackup) { pruneBackups(); autoBackupTick(); }
     broadcast('change', {});
     return { ok: true };
 });
@@ -958,8 +1170,13 @@ async function fillSigs() {
     let n = 0;
     for (const it of Object.values(store.db.items)) {
         for (const f of it.files) {
-            if (f.sig !== undefined) continue;
-            try { f.sig = store.hasBlob(f.sha) ? fileSig(store.readBlob(f.sha), f.name) : ''; } catch { f.sig = ''; }
+            const needParts = f.parts === undefined && it.type === 'character' && f.sig;
+            if (f.sig !== undefined && !needParts) continue;
+            try {
+                const buf = store.hasBlob(f.sha) ? store.readBlob(f.sha) : null;
+                if (f.sig === undefined) f.sig = buf ? fileSig(buf, f.name) : '';
+                if (it.type === 'character' && f.sig) f.parts = (buf && fileParts(buf, f.name)) || null;
+            } catch { if (f.sig === undefined) f.sig = ''; }
             if (++n % 25 === 0) await new Promise((r) => setImmediate(r));
         }
     }

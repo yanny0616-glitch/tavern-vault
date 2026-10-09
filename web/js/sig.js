@@ -112,3 +112,77 @@ export function sigOf(type, obj) {
     const src = sigSource(type, obj);
     return src == null ? '' : `${type}:${hash53(src)}`;
 }
+
+/**
+ * 角色卡分段指纹。从酒馆同步时，可以忽略其中几段的差异：
+ * 比如自己在酒馆里改过绑定的世界书、加过开场白，这些改动不算「酒馆有改动」，也不会存成新版本。
+ * 名字、作者、版本号（core）始终参与比对。
+ */
+export const CARD_PARTS = {
+    book: '内嵌世界书',
+    greet: '开场白',
+    setting: '角色设定',
+    notes: '标签和作者注释',
+};
+const PART_TEXT = {
+    core: ['name', 'creator', 'character_version'],
+    setting: ['description', 'personality', 'scenario', 'mes_example', 'system_prompt', 'post_history_instructions'],
+    greet: ['first_mes'],
+    notes: ['creator_notes'],
+};
+
+const cardData = (obj) => (obj.data && typeof obj.data === 'object' ? obj.data : obj);
+
+/** 返回 { core, book, greet, setting, notes } 各段的哈希；不是角色卡返回 null */
+export function cardParts(type, obj) {
+    if (type !== 'character' || !obj || typeof obj !== 'object') return null;
+    const d = cardData(obj);
+    const pick = (k) => text(d[k] ?? obj[k] ?? (k === 'creator_notes' ? obj.creatorcomment : ''));
+    const src = {
+        core: PART_TEXT.core.map(pick),
+        setting: [...PART_TEXT.setting.map(pick), text(d.extensions?.depth_prompt?.prompt)],
+        greet: [pick('first_mes'), list(d.alternate_greetings).map(text).join('\u0002')],
+        notes: [pick('creator_notes'), keys(d.tags ?? obj.tags).join('|')],
+        book: bookEntries(d.character_book),
+    };
+    return Object.fromEntries(Object.entries(src).map(([k, v]) => [k, hash53(v.join('\u0003'))]));
+}
+
+/** 忽略 ignore 里的几段后，两份分段指纹是否一致 */
+export function sameParts(a, b, ignore = []) {
+    if (!a || !b) return false;
+    const skip = new Set(ignore);
+    return Object.keys(a).every((k) => skip.has(k) || a[k] === b[k]);
+}
+
+/**
+ * 把 ignore 里的几段换成藏馆原来的内容（收新版本时不把自己在酒馆里的改动存进去）。
+ * 酒馆的 V2 卡顶层还有一份旧字段（description、first_mes、creatorcomment 等），一起改。
+ */
+export function mergeParts(type, tavern, vault, ignore = []) {
+    if (type !== 'character' || !tavern || !vault || !ignore.length) return tavern;
+    const out = structuredClone(tavern);
+    const td = cardData(out);
+    const vd = cardData(vault);
+    const set = (k, v, top = k) => {
+        if (v === undefined) delete td[k]; else td[k] = structuredClone(v);
+        if (td !== out && top in out) out[top] = v === undefined ? '' : structuredClone(v);
+    };
+    for (const part of ignore) {
+        if (part === 'book') {
+            if (vd.character_book) td.character_book = structuredClone(vd.character_book); else delete td.character_book;
+        } else if (part === 'greet') {
+            set('first_mes', vd.first_mes ?? '');
+            set('alternate_greetings', vd.alternate_greetings ?? []);
+        } else if (part === 'setting') {
+            for (const k of PART_TEXT.setting) set(k, vd[k] ?? vault[k] ?? '');
+            const dp = vd.extensions?.depth_prompt;
+            td.extensions = { ...(td.extensions || {}) };
+            if (dp) td.extensions.depth_prompt = structuredClone(dp); else delete td.extensions.depth_prompt;
+        } else if (part === 'notes') {
+            set('creator_notes', vd.creator_notes ?? vault.creatorcomment ?? '', 'creatorcomment');
+            set('tags', vd.tags ?? vault.tags ?? []);
+        }
+    }
+    return out;
+}

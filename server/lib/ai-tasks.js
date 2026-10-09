@@ -140,6 +140,28 @@ export function organizePrompt(it, text, { opts, fields, tagLib, extra = '' }) {
     return { system, user };
 }
 
+/** 合并请求：一次发多项，按编号返回 */
+export function organizeBatchPrompt(list, { opts, tagLib, extra = '' }) {
+    const one = organizePrompt(list[0].it, '', { opts, fields: [], tagLib });
+    const system = one.system
+        .replace('<item> 标签里的全部内容', '每个 <item> 标签里的全部内容')
+        .replace(/5\. 只输出一个 JSON 对象[\s\S]*?\{"tags"[^\n]*\}/, [
+            '5. 每个 <item> 单独分析，互不影响；字段只填写该 <item> 的 fields 属性里列出的。',
+            '6. 只输出一个 JSON 对象，不要任何解释，不要代码块。items 里每项对应一个 <item>，id 照抄 <item> 的 id，一个都不能少。格式：',
+            '{"items":[{"id":"1","tags":["标签"],"summary":"一句话简介","fields":{"字段id":值}}]}',
+        ].join('\n'))
+        .replace('规则 1 和 5', '规则 1 和 6');
+    const specs = new Map();
+    for (const x of list) for (const f of x.fields) specs.set(f.id, f);
+    const user = [
+        tagLib.length ? `现有标签（按使用次数排序）：${tagLib.join('、')}` : '现有标签：（暂无）',
+        specs.size ? `字段说明：\n${[...specs.values()].map(fieldSpec).join('\n')}` : '',
+        ...list.map((x, i) => `<item id="${i + 1}" type="${TYPE_LABEL[x.it.type] || x.it.type}" fields="${x.fields.map((f) => f.id).join(',')}">\n${x.text}\n</item>`),
+        extra ? `本次额外要求：${extra}` : '',
+    ].filter(Boolean).join('\n\n');
+    return { system, user };
+}
+
 /** 校验并规范化 AI 的整理结果 */
 export function normalizeOrganize(obj, { opts, fields, tagLib }) {
     if (!obj || typeof obj !== 'object' || Array.isArray(obj)) throw new AiError('AI 返回的不是对象');
@@ -253,13 +275,88 @@ export function createAiTasks({ dataDir, store, config, loadContent, broadcast }
         return { ...organizePrompt(it, text, { ...ctx, extra }), ctx, chars: text.length };
     }
 
+    /** 合并请求：一次整理多项 */
+    async function runBatch(ids) {
+        const list = [];
+        for (const id of ids) {
+            const d = db.drafts[id];
+            const it = store.db.items[id];
+            if (!d) continue;
+            if (!it) { delete db.drafts[id]; continue; }
+            list.push({ id, d, it });
+        }
+        if (!list.length) { pump(); return; }
+        const ac = new AbortController();
+        const now = new Date().toISOString();
+        for (const x of list) { running.set(x.id, { ac, batch: true }); Object.assign(x.d, { status: 'running', error: '', startedAt: now }); }
+        ping();
+        const profile = config.active;
+        const opts = config.data.organize;
+        const tagLib = tagLibrary();
+        try {
+            for (const x of list) {
+                let content = null;
+                try { content = loadContent(x.it); } catch { /* 文件缺失 */ }
+                x.text = itemText(x.it, content, opts.scope);
+                x.fields = aiFields(store.db.fields, x.it.type, opts.fields);
+            }
+            const extra = [...new Set(list.map((x) => x.d.extra).filter(Boolean))].join('；');
+            const { system, user } = organizeBatchPrompt(list, { opts, tagLib, extra });
+            const r = await chat(profile, { system, user, maxTokens: Math.max(profile.maxTokens, OUTPUT_PER_ITEM * list.length + 300), signal: ac.signal, timeout: 180000 });
+            const reply = parseJsonReply(r.text);
+            const got = new Map(arr(reply?.items).map((e) => [String(e?.id ?? ''), e]));
+            const at = new Date().toISOString();
+            list.forEach((x, i) => {
+                if (db.drafts[x.id] !== x.d) return;
+                const e = got.get(String(i + 1));
+                const base = { raw: r.text.slice(0, 8000), truncated: r.truncated, usage: r.usage, model: r.model, profile: profile.name, chars: x.text.length, at, batchSize: list.length };
+                if (!e) { Object.assign(x.d, base, { status: 'error', error: r.truncated ? '回复被截断，这一项没有结果，可以重试或调小「每次最多几项」' : '合并回复里没有这一项的结果，可以重试' }); return; }
+                try {
+                    Object.assign(x.d, base, { status: 'done', result: normalizeOrganize(e, { opts, fields: x.fields, tagLib }) });
+                } catch (err) {
+                    Object.assign(x.d, base, { status: 'error', error: err.message });
+                }
+            });
+        } catch (e) {
+            for (const x of list) {
+                if (db.drafts[x.id] !== x.d) continue;
+                if (ac.signal.aborted) { delete db.drafts[x.id]; continue; }
+                Object.assign(x.d, { status: 'error', error: e.message, raw: String(e.raw || '').slice(0, 8000), at: new Date().toISOString() });
+            }
+        } finally {
+            for (const x of list) running.delete(x.id);
+            save();
+            ping();
+            pump();
+        }
+    }
+
+    /** 按设置把队列分成一批：最多 batch 项，内容总字数不超过 batchChars（至少一项） */
+    function takeBatch() {
+        const { batch = 1, batchChars = 24000, scope } = config.data.organize;
+        const ids = [];
+        let chars = 0;
+        while (queue.length && ids.length < batch) {
+            const id = queue[0];
+            if (db.drafts[id]?.status !== 'queued') { queue.shift(); continue; }
+            const it = store.db.items[id];
+            let len = 0;
+            try { len = it ? itemText(it, loadContent(it), scope).length : 0; } catch { /* ignore */ }
+            if (ids.length && chars + len > batchChars) break;
+            queue.shift();
+            ids.push(id);
+            chars += len;
+        }
+        return ids;
+    }
+
     async function runOne(id) {
         const d = db.drafts[id];
         const it = store.db.items[id];
         if (!d) return;
         if (!it) { delete db.drafts[id]; return; }
         const ac = new AbortController();
-        running.set(id, ac);
+        running.set(id, { ac });
         Object.assign(d, { status: 'running', error: '', startedAt: new Date().toISOString() });
         ping();
         const profile = config.active;
@@ -281,11 +378,20 @@ export function createAiTasks({ dataDir, store, config, loadContent, broadcast }
         }
     }
 
+    // 正在进行的请求数（合并请求算一次）
+    const activeRequests = () => new Set([...running.values()].map((r) => r.ac)).size;
+
     function pump() {
-        const limit = config.data.organize.concurrency || 2;
-        while (running.size < limit && queue.length) {
-            const id = queue.shift();
-            if (db.drafts[id]?.status === 'queued') runOne(id);
+        const { concurrency = 2, batch = 1 } = config.data.organize;
+        while (activeRequests() < concurrency && queue.length) {
+            if (batch > 1) {
+                const ids = takeBatch();
+                if (!ids.length) break;
+                if (ids.length === 1) runOne(ids[0]); else runBatch(ids);
+            } else {
+                const id = queue.shift();
+                if (db.drafts[id]?.status === 'queued') runOne(id);
+            }
         }
     }
 
@@ -298,13 +404,23 @@ export function createAiTasks({ dataDir, store, config, loadContent, broadcast }
             let inTokens = 0;
             const empty = [];
             const items = ids.map((id) => store.db.items[id]).filter(Boolean);
+            const { batch = 1, batchChars = 24000 } = config.data.organize;
+            let requests = 0;
+            let inBatch = 0;
+            let batchLen = 0;
             for (const it of items) {
                 const b = build(it, { scope });
                 chars += b.chars;
-                inTokens += estimateTokens(b.system + b.user);
                 if (b.chars < 40 + it.name.length) empty.push(it.name);
+                // 合并请求时，规则和标签库每次请求只发一遍
+                const shared = estimateTokens(b.system + b.user.slice(0, b.user.indexOf('<item')));
+                const own = estimateTokens(b.user) - estimateTokens(b.user.slice(0, b.user.indexOf('<item')));
+                if (batch <= 1 || !inBatch || inBatch >= batch || batchLen + b.chars > batchChars) { requests++; inBatch = 0; batchLen = 0; inTokens += shared; }
+                inTokens += own;
+                inBatch++;
+                batchLen += b.chars;
             }
-            return { count: items.length, chars, inTokens, outTokens: items.length * OUTPUT_PER_ITEM, empty: empty.slice(0, 20), model: config.active?.model || '', profile: config.active?.name || '' };
+            return { count: items.length, requests, batch, chars, inTokens, outTokens: items.length * OUTPUT_PER_ITEM, empty: empty.slice(0, 20), model: config.active?.model || '', profile: config.active?.name || '' };
         },
 
         preview(id, extra = '') {
@@ -331,7 +447,8 @@ export function createAiTasks({ dataDir, store, config, loadContent, broadcast }
 
         discard(ids) {
             for (const id of ids) {
-                running.get(id)?.abort();
+                const r = running.get(id);
+                if (r && !r.batch) r.ac.abort(); // 合并请求里的其它项还在等结果，不中断整个请求
                 delete db.drafts[id];
                 const qi = queue.indexOf(id);
                 if (qi >= 0) queue.splice(qi, 1);
@@ -342,7 +459,7 @@ export function createAiTasks({ dataDir, store, config, loadContent, broadcast }
 
         cancel() {
             for (const id of queue.splice(0)) if (db.drafts[id]?.status === 'queued') delete db.drafts[id];
-            for (const ac of running.values()) ac.abort();
+            for (const r of running.values()) r.ac.abort();
             save();
             ping();
         },

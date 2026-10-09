@@ -20,6 +20,7 @@ export function renderTrash(root) {
     if (!items.length) { clear(refs.content, emptyState('trash', '回收站是空的')); return; }
     clear(refs.content, h('div', { class: 'rows' }, items.map((it) => itemRow(it, {
         right: h('div', { class: 'row-actions' },
+            it.mergedInto ? h('span', { class: 'chip-s' }, `已合并到「${state.byId.get(it.mergedInto)?.name || '其它条目'}」`) : null,
             h('span', { class: 'muted small desktop-only' }, timeAgo(it.deletedAt)),
             btn('恢复', { icon: 'restore', cls: 'sm', onclick: async (e) => { e.stopPropagation(); await api.post(`/api/items/${it.id}/restore`); toast('已恢复', 'ok'); } }),
             btn('', { icon: 'trash', cls: 'sm danger', title: '永久删除', onclick: async (e) => {

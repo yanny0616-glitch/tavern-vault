@@ -3,7 +3,7 @@ import { h, clear, toast, sheet, icon, btn, emptyState, choiceDialog } from '../
 import { api } from '../api.js';
 import { bridge } from '../bridge.js';
 import { state, findByName, typeMeta, reload } from '../state.js';
-import { sigOf, stripSyncEntries } from '../sig.js';
+import { sigOf, stripSyncEntries, cardParts, sameParts, CARD_PARTS } from '../sig.js';
 import { topbar, ensureView } from './common.js';
 import { openDetail } from './detail.js';
 import { openDiff } from './diff.js';
@@ -39,14 +39,25 @@ const sigKey = (kind, id) => `${kind}:${id}`;
  * new 未收藏 · collected 已收藏（无法比对）· synced 内容一致 · changed 酒馆里改过
  * older 酒馆里是藏馆的某个旧版本（藏馆较新）· other 酒馆里是藏馆的另一个版本，但不是当前版本
  */
+// 设置里「从酒馆同步时忽略」的角色卡分段（自己在酒馆里改过的部分）
+const ignoreFor = (kind) => (kind === 'character' ? (state.settings.syncIgnore || []).filter((k) => k in CARD_PARTS) : []);
+
+/** 酒馆里的内容（t = { sig, parts }）和藏馆的某个文件是否算同一个版本 */
+function sameAs(f, t, kind) {
+    if (!f?.sig || !t?.sig) return false;
+    if (f.sig === t.sig) return true;
+    const ign = ignoreFor(kind);
+    return ign.length > 0 && sameParts(f.parts, t.parts, ign);
+}
+
 function statusOf(kind, r) {
     const item = findByName(kind, r.name);
     if (!item) return { s: 'new' };
-    const sig = ui.sigs.get(sigKey(kind, r.id));
+    const t = ui.sigs.get(sigKey(kind, r.id));
     const cur = item.files.find((f) => f.primary) || item.files[item.files.length - 1];
-    if (!sig || !cur?.sig) return { s: 'collected', item };
-    if (cur.sig === sig) return { s: 'synced', item };
-    const same = item.files.find((f) => f.sig === sig);
+    if (!t?.sig || !cur?.sig) return { s: 'collected', item };
+    if (sameAs(cur, t, kind)) return { s: 'synced', item, ignored: cur.sig !== t.sig };
+    const same = item.files.find((f) => sameAs(f, t, kind));
     if (same) return { s: same.addedAt < cur.addedAt ? 'older' : 'other', item };
     return { s: 'changed', item };
 }
@@ -119,7 +130,8 @@ export function renderTavern(root) {
                     right = btn('收藏', { icon: 'download', cls: 'sm', onclick: stop(() => collect([r])) });
                     break;
                 case 'synced':
-                    right = h('button', { class: 'chip-s ok as-btn', title: '在仓库中查看', onclick: stop(() => openDetail(st.item.id)) }, icon('check', { size: 11, stroke: 3 }), '已同步');
+                    if (st.ignored) note = `已忽略：${ignoreFor(kind).map((k) => CARD_PARTS[k]).join('、')}`;
+                    right = h('button', { class: 'chip-s ok as-btn', title: st.ignored ? note : '在仓库中查看', onclick: stop(() => openDetail(st.item.id)) }, icon('check', { size: 11, stroke: 3 }), '已同步');
                     break;
                 case 'changed':
                     note = '酒馆里的内容和藏馆当前版本不同';
@@ -144,7 +156,8 @@ export function renderTavern(root) {
                     h('div', { class: 'row-title' }, h('span', {}, r.name)),
                     isDiff(st)
                         ? h('div', { class: 'row-sub' }, h('span', { class: `chip-s ${st.s === 'changed' ? 'warn' : 'info'}` }, { changed: '酒馆有改动', older: '藏馆较新', other: '版本不同' }[st.s]), h('span', { title: note }, note))
-                        : r.sub ? h('div', { class: 'row-sub' }, h('span', {}, r.sub)) : null),
+                        : st.ignored ? h('div', { class: 'row-sub' }, h('span', { class: 'chip-s' }, '自己改过'), h('span', { title: note }, note))
+                            : r.sub ? h('div', { class: 'row-sub' }, h('span', {}, r.sub)) : null),
                 right);
         })));
     }
@@ -189,9 +202,12 @@ async function checkSigs(kind, list, { force = false } = {}) {
         const chunk = todo.slice(i, i + 20);
         try {
             const res = await bridge.call('raw', { kind, ids: chunk.map((r) => r.id) }, [], 60000);
-            for (const { id, data } of res) ui.sigs.set(sigKey(kind, id), sigOf(kind, stripSyncEntries(kind, data, state.settings.syncExclude).obj));
+            for (const { id, data } of res) {
+                const obj = stripSyncEntries(kind, data, state.settings.syncExclude).obj;
+                ui.sigs.set(sigKey(kind, id), { sig: sigOf(kind, obj), parts: cardParts(kind, obj) });
+            }
         } catch { /* 读取失败的保持「已收藏」 */ }
-        for (const r of chunk) if (!ui.sigs.has(sigKey(kind, r.id))) ui.sigs.set(sigKey(kind, r.id), '');
+        for (const r of chunk) if (!ui.sigs.has(sigKey(kind, r.id))) ui.sigs.set(sigKey(kind, r.id), null);
         job.done += chunk.length;
         if (ui.checking === job) rerender();
     }
@@ -231,10 +247,11 @@ async function compareWithTavern(r, item) {
         const res = await api.upload(blob, { filename, target: item.id, match: 'ask', origin: 'tavern' });
         const cur = item.files.find((f) => f.primary) || item.files[item.files.length - 1];
         if (res.status === 'duplicate') {
-            toast(res.current ? '内容和藏馆当前版本相同' : '酒馆里是藏馆中的一个旧版本', 'ok');
+            toast(res.ignoredOnly ? (res.current ? '只有设置里忽略的部分不同，算作和藏馆当前版本相同' : '只有忽略的部分不同，酒馆里是藏馆中的一个旧版本')
+                : res.current ? '内容和藏馆当前版本相同' : '酒馆里是藏馆中的一个旧版本', 'ok');
             if (res.current) return;
         }
-        const tavernFile = res.status === 'duplicate' ? item.files.find((f) => f.sha === res.sha) || item.files.find((f) => f.sig && f.sig === ui.sigs.get(sigKey(kind, r.id))) : { sha: res.sha, name: res.filename };
+        const tavernFile = res.status === 'duplicate' ? item.files.find((f) => f.sha === res.sha) || item.files.find((f) => sameAs(f, ui.sigs.get(sigKey(kind, r.id)), kind)) : { sha: res.sha, name: res.filename };
         if (!tavernFile) return;
         openDiff({ sha: cur.sha, name: cur.name, label: `藏馆 · 当前版本` }, { sha: tavernFile.sha, name: tavernFile.name, label: '酒馆里的版本' }, {
             title: `对比：${item.name}`,
@@ -316,8 +333,8 @@ export async function importItemsToTavern(items, { decide } = {}) {
     const todo = [];
     for (const m of plan) {
         const cur = m.it.files.find((f) => f.primary) || m.it.files[m.it.files.length - 1];
-        const sig = m.existing ? ui.sigs.get(sigKey(m.it.type, m.existing.id)) : '';
-        if (m.existing && sig && cur?.sig === sig) same.push(m); else todo.push(m);
+        const t = m.existing ? ui.sigs.get(sigKey(m.it.type, m.existing.id)) : null;
+        if (m.existing && sameAs(cur, t, m.it.type)) same.push(m); else todo.push(m);
     }
     const clashes = todo.filter((m) => m.existing);
     let action = decide;

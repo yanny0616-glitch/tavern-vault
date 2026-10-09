@@ -44,7 +44,7 @@ export const state = {
         view: 'grid', dense: false, sort: 'updated', mode: 'auto', cols: 0,
         start: 'library', readSize: 'md', reduceMotion: false,
         showTags: true, showRating: true, showNo: true, blurNsfw: false,
-        detailTab: 'overview', userName: '',
+        detailTab: 'overview', userName: '', foldAt: 500,
         uploadConc: 3, conflict: 'ask',
     }, lsGet('tv_prefs', {})),
     // 仓库筛选（会话内）

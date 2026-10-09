@@ -1,11 +1,13 @@
 // 设置
-import { h, clear, toast, confirmDialog, choiceDialog, sheet, downloadBlob, switchEl, icon, btn, fmtBytes } from '../ui.js';
+import { h, clear, toast, confirmDialog, choiceDialog, sheet, downloadBlob, switchEl, icon, btn, fmtBytes, fmtDate } from '../ui.js';
 import { api } from '../api.js';
 import { bridge } from '../bridge.js';
 import { state, savePrefs, applyAccent, reload, TYPE_META, SKINS } from '../state.js';
+import { CARD_PARTS } from '../sig.js';
 import { SORTS } from './library.js';
 import { topbar, ensureView } from './common.js';
 import { aiSettings } from './ai.js';
+import { findDuplicates, openDuplicates } from './dupes.js';
 
 const KINDS = { text: '单行文本', textarea: '多行文本', number: '数字', url: '链接', date: '日期', select: '下拉选择', tags: '标签列表', checkbox: '开关', rating: '星级评分', color: '颜色' };
 const PLUGIN_REPO = 'https://github.com/yanny0616-glitch/tavern-vault';
@@ -18,7 +20,7 @@ const SECTIONS = [
     { key: 'fields', title: '自定义字段', icon: 'sliders', desc: () => `${state.fields.filter((f) => !f.hidden).length} 个字段在用`, render: fieldsSection },
     { key: 'ai', title: 'AI 助手', icon: 'sparkles', desc: () => (state.settings.ai?.ready ? '已配置' : '还没有配置'), render: () => panel('AI 助手', 'sparkles', null, aiSettings()) },
     { key: 'connect', title: '连接与设备', icon: 'beer', desc: () => (bridge.host ? `已连接 ${bridge.host.host}` : '酒馆插件、iPhone'), render: () => [connection(), shortcut()] },
-    { key: 'security', title: '访问密码', icon: 'lock', desc: () => (state.settings.auth ? '已启用' : '未设置'), render: security },
+    { key: 'security', title: '访问密码', icon: 'lock', desc: () => (state.settings.auth ? '已启用' : '未设置'), render: () => [security(), state.settings.auth ? loginLogPanel() : null] },
     { key: 'data', title: '数据与存储', icon: 'database', desc: () => `${state.stats?.total ?? 0} 项 · ${fmtBytes(state.stats?.bytes || 0)}`, render: data },
     { key: 'about', title: '关于', icon: 'info', desc: () => `v${state.settings.version || '1.0.0'}`, render: about },
 ];
@@ -120,8 +122,9 @@ function browse() {
     const viewVal = p.view === 'list' ? 'list' : p.dense ? 'dense' : 'grid';
     const cols = h('select', { class: 'select', onchange: () => setPref({ cols: Number(cols.value) }) },
         [0, 1, 2, 3, 4, 5, 6].map((n) => h('option', { value: n, selected: (p.cols || 0) === n }, n ? `${n} 个` : '自动')));
-    const sort = h('select', { class: 'select', onchange: () => setPref({ sort: sort.value }) },
-        Object.entries(SORTS).map(([k, [label]]) => h('option', { value: k, selected: (p.sort || 'updated') === k }, label)));
+    const sort = h('select', { class: 'select', onchange: () => setPref(sort.value === 'group' ? { groupTime: true } : { sort: sort.value, groupTime: false }) },
+        Object.entries(SORTS).map(([k, [label]]) => h('option', { value: k, selected: !p.groupTime && (p.sort || 'updated') === k }, label)),
+        h('option', { value: 'group', selected: Boolean(p.groupTime) }, '按添加时间分组'));
     const userName = h('input', { class: 'input', value: p.userName || '', placeholder: '你', maxlength: 20, onchange: () => setPref({ userName: userName.value.trim() }) });
     return [
         deviceNote(),
@@ -137,6 +140,7 @@ function browse() {
             setRow('模糊 NSFW 封面', '资料里勾了 NSFW 的条目，在列表里模糊封面；打开详情时正常显示', switchEl(!!p.blurNsfw, (v) => setPref({ blurNsfw: v })))),
         panel('详情页', 'fileText', null,
             setRow('打开时先显示', null, seg(p.detailTab === 'content' ? 'content' : 'overview', [['overview', '介绍'], ['content', '内容']], (v) => setPref({ detailTab: v }))),
+            setRow('长文折叠', '超过这个字数的简介、开场白、作者的话和角色卡段落只显示开头，点「阅读全文」在单独页面看', seg(Number.isFinite(Number(p.foldAt)) ? Number(p.foldAt) : 500, [[300, '300 字'], [500, '500 字'], [1000, '1000 字'], [0, '不折叠']], (v) => setPref({ foldAt: v }))),
             setRow('{{user}} 显示为', '角色卡里出现 {{user}} 的地方替换成这个称呼', userName)),
     ];
 }
@@ -147,11 +151,40 @@ function importPrefs() {
         panel('这台设备', 'upload', null,
             setRow('同时上传', '一次导入很多文件时同时传几个；网络不稳定可以调小', seg(Number(p.uploadConc) || 3, [1, 2, 3, 4, 5, 6].map((n) => [n, String(n)]), (v) => setPref({ uploadConc: v }))),
             setRow('同名条目', '导入的文件和已有条目同名但内容不同时怎么处理。内容完全一样的会自动跳过', seg(CONFLICTS[p.conflict] ? p.conflict : 'ask', Object.entries(CONFLICTS), (v) => setPref({ conflict: v })))),
+        syncIgnorePanel(),
         syncExcludePanel(),
     ];
 }
 
 /** 从酒馆同步时排除的世界书条目（所有设备共用） */
+/** 从酒馆同步角色卡时，忽略自己在酒馆里改过的部分 */
+function syncIgnorePanel() {
+    const box = h('div');
+    const draw = () => {
+        const ign = new Set(state.settings.syncIgnore || []);
+        const keep = state.settings.syncKeep !== false;
+        const save = async (patch) => {
+            Object.assign(state.settings, patch);
+            draw();
+            await api.put('/api/settings', patch);
+            toast('已保存', 'ok');
+        };
+        clear(box,
+            h('div', { class: 'muted small' }, '在酒馆里改过角色卡（比如编辑了绑定的世界书、自己加了开场白）以后，酒馆页会显示「酒馆有改动」，收藏时会存成新版本。'
+                + '勾选的部分，比对时不看它们的差异：只有这几部分不同，就算「已同步」，也不会存成新版本。名字、作者、版本号始终会比对。'),
+            h('div', { class: 'opts' }, Object.entries(CARD_PARTS).map(([k, label]) => h('button', { class: `opt ${ign.has(k) ? 'active' : ''}`, onclick: () => {
+                const next = ign.has(k) ? [...ign].filter((x) => x !== k) : [...ign, k];
+                save({ syncIgnore: next });
+            } }, ign.has(k) ? icon('check', { size: 13, stroke: 3 }) : null, label))),
+            h('div', { class: 'muted small' }, '角色设定 = 描述、性格、场景、对话示例、系统提示词、后置指令、深度提示词。'),
+            ign.size ? setRow('收新版本时保留藏馆原来的这几部分', '其它部分有真正的改动、存成新版本时，勾选的部分仍用藏馆当前版本的内容，不把自己在酒馆里的改动存进去。关掉则原样保存酒馆里的卡',
+                switchEl(keep, (v) => save({ syncKeep: v }))) : null,
+            ign.size ? h('div', { class: 'note' }, icon('info', { size: 15 }), h('span', {}, '「用藏馆版本覆盖酒馆」会整张替换酒馆里的卡，自己改过的这几部分也会被换掉。酒馆里单独的世界书文件不受影响。')) : null);
+    };
+    draw();
+    return panel('从酒馆同步时忽略自己的改动', 'user', null, box);
+}
+
 function syncExcludePanel() {
     const rules = [...(state.settings.syncExclude || [])];
     const save = async (next) => {
@@ -232,6 +265,22 @@ function editField(f, onSave) {
     });
 }
 
+function loginLogPanel() {
+    const box = h('div', { class: 'rows login-log' }, h('span', { class: 'muted small' }, '正在读取…'));
+    api.get('/api/security/log').then(({ log, locked }) => clear(box,
+        locked.length ? h('div', { class: 'note warn' }, icon('alert', { size: 15 }), `${locked.map((l) => l.ip).join('、')} 因多次输错密码，正在暂停登录`) : null,
+        log.length ? log.map((l, i) => h('div', { class: 'row-item login-row', hidden: i >= 8 },
+            h('div', { class: `row-thumb ${l.ok ? 'ok' : 'bad'}` }, icon(l.ok ? 'checkCircle' : 'xCircle', { size: 18 })),
+            h('div', { class: 'row-main' },
+                h('div', { class: 'row-title' }, h('span', {}, l.ok ? '登录成功' : '密码错误')),
+                h('div', { class: 'row-sub' }, h('span', {}, fmtDate(l.at, true)), h('span', {}, l.device), h('span', {}, l.ip)))))
+            : h('span', { class: 'muted small' }, '还没有登录记录'),
+        log.length > 8 ? btn(`显示全部（${log.length}）`, { cls: 'sm ghost', onclick: (e) => { box.querySelectorAll('.login-row[hidden]').forEach((r) => { r.hidden = false; }); e.currentTarget.remove(); } }) : null)).catch((e) => clear(box, h('span', { class: 'muted small' }, e.message)));
+    return panel('最近的登录', 'clock', null,
+        h('div', { class: 'muted small' }, '同一来源连续输错 5 次密码会暂停登录，之后每多错一次暂停时间翻倍（最长 30 分钟）。已经登录的设备不受影响。'),
+        box);
+}
+
 function security() {
     const pw = h('input', { class: 'input', type: 'password', placeholder: state.settings.auth ? '新密码' : '设置访问密码（至少 4 位）', autocomplete: 'new-password' });
     return panel('访问密码', 'lock', null,
@@ -301,6 +350,10 @@ function data() {
                 } }),
                 btn('从备份还原', { icon: 'restore', onclick: () => restoreInput.click() }), restoreInput),
             h('div', { class: 'muted small' }, '备份 ZIP 包含全部条目、合集、字段和所有版本的文件（不含缩略图和 AI 密钥）。还原前会自动保存一份当前数据库，放在服务端 data/restore-points 目录。')),
+        autoBackupPanel(),
+        panel('重复条目', 'merge', btn('查找重复', { cls: 'sm', onclick: () => openDuplicates() }),
+            h('div', { class: 'muted small' }, (() => { const n = findDuplicates().length; return n ? `现在有 ${n} 组可能重复的条目。` : '现在没有发现重复的条目。'; })(),
+                '同一个文件、内容相同，或者同类型同名、作者不冲突的条目会被认为可能重复。合并时文件会作为旧版本保留，不会丢。')),
         panel('回收站', 'trash', btn(`打开回收站${st.trash ? ` · ${st.trash}` : ''}`, { cls: 'sm', href: '#/trash' }),
             setRow('自动清空', '删除超过这个天数的条目会被彻底清除，文件一起删掉。对所有设备生效', seg(days, [[0, '不自动'], [7, '7 天'], [30, '30 天'], [90, '90 天']], async (v) => {
                 if (v && st.trash && !(await confirmDialog(`开启后，回收站里超过 ${v} 天的条目会立即被彻底删除，无法恢复。继续？`, { danger: true, ok: '开启' }))) return;
@@ -321,6 +374,50 @@ function data() {
     ];
 }
 
+function autoBackupPanel() {
+    const body = h('div', { class: 'stack-s' }, h('span', { class: 'muted small' }, '正在读取…'));
+    const draw = (cfg) => clear(body,
+        setRow('每天自动备份', '每天在服务器上存一份完整备份，内容没变化的日子不重复存', switchEl(cfg.on, async (v) => { await api.put('/api/settings', { autoBackup: { on: v } }); load(); })),
+        setRow('保留', '只保留最近几份自动备份，手动备份不会被自动删除', seg(cfg.keep, [[3, '3 份'], [7, '7 份'], [14, '14 份'], [30, '30 份']], async (v) => { await api.put('/api/settings', { autoBackup: { keep: v } }); load(); })),
+        h('div', { class: 'row-actions' }, btn('立即备份', { icon: 'database', cls: 'sm', onclick: async (e) => {
+            e.currentTarget.disabled = true;
+            try { await api.post('/api/backups'); toast('已备份', 'ok'); } catch (err) { toast(err.message, 'err'); }
+            load();
+        } })),
+        cfg.list.length ? h('div', { class: 'rows backup-list' }, cfg.list.map((b) => h('div', { class: 'row-item' },
+            h('div', { class: 'row-thumb' }, icon('archive', { size: 18 })),
+            h('div', { class: 'row-main' },
+                h('div', { class: 'row-title' }, h('span', {}, fmtDate(b.at, true))),
+                h('div', { class: 'row-sub' }, h('span', {}, b.auto ? '自动' : '手动'), h('span', {}, fmtBytes(b.size)))),
+            h('div', { class: 'row-actions' },
+                btn('', { icon: 'download', cls: 'sm ghost', title: '下载', href: `/api/backups/${b.name}${api.token ? `?token=${encodeURIComponent(api.token)}` : ''}`, download: b.name }),
+                btn('', { icon: 'restore', cls: 'sm ghost', title: '从这份还原', onclick: () => restoreServerBackup(b) }),
+                btn('', { icon: 'trash', cls: 'sm ghost danger', title: '删除', onclick: async () => {
+                    if (!(await confirmDialog(`删除 ${fmtDate(b.at, true)} 的备份？`, { danger: true, ok: '删除' }))) return;
+                    await api.del(`/api/backups/${b.name}`);
+                    load();
+                } })))))
+            : h('div', { class: 'muted small' }, '还没有备份，开启后一分钟内会存第一份。'),
+        h('div', { class: 'muted small' }, '备份放在服务器数据目录的 backups 文件夹里。服务器整个出问题时这些备份也会一起丢，建议偶尔用上面的「下载完整备份」存一份到自己的设备。'));
+    const load = () => api.get('/api/backups').then(draw).catch((e) => clear(body, h('span', { class: 'muted small' }, e.message)));
+    load();
+    return panel('自动备份', 'clock', null, body);
+}
+
+async function restoreServerBackup(b) {
+    const mode = await pickRestoreMode(`从 ${fmtDate(b.at, true)} 的备份还原。`);
+    if (!mode) return;
+    const s = sheet({ title: '还原中', body: h('div', { class: 'stack-s' }, h('div', { class: 'progress-label' }, '正在还原…')) });
+    try {
+        const r = await api.post(`/api/backups/${b.name}/restore?mode=${mode}`);
+        clear(s.body, h('div', { class: 'progress-label' }, restoreText(r)));
+        toast('还原完成', 'ok');
+    } catch (e) {
+        clear(s.body, h('div', { class: 'progress-label' }, `还原失败：${e.message}`));
+    }
+    s.body.append(btn('关闭', { cls: 'block', onclick: () => s.close() }));
+}
+
 function about() {
     return panel('TavernVault 酒馆藏馆', 'info', null,
         h('div', { class: 'facts' },
@@ -332,23 +429,31 @@ function about() {
 
 const restoreInput = h('input', { type: 'file', accept: '.zip,application/zip', hidden: true, onchange: () => { const f = restoreInput.files[0]; restoreInput.value = ''; if (f) restoreFrom(f); } });
 
-async function restoreFrom(file) {
+async function pickRestoreMode(intro) {
     const mode = await choiceDialog(
         h('div', { class: 'stack-s' },
-            h('div', {}, `从「${file.name}」还原。`),
+            h('div', {}, intro),
             h('div', { class: 'muted small' }, '合并：保留现有内容，加入备份里没有的条目；两边都有的保留较新的一份，并补齐历史版本。'),
             h('div', { class: 'muted small' }, '替换：用备份完全替换现有条目、合集和字段（密码和风格设置不变）。')),
         [{ key: 'replace', label: '替换', cls: 'danger' }, { key: 'merge', label: '合并', cls: 'primary' }],
         { title: '从备份还原' });
+    if (!mode) return null;
+    if (mode === 'replace' && !(await confirmDialog('替换会清空当前所有条目，改为备份里的内容。继续？', { danger: true, ok: '替换' }))) return null;
+    return mode;
+}
+
+const restoreText = (r) => `完成：新增 ${r.added} 项${r.updated ? `，更新 ${r.updated} 项` : ''}${r.kept ? `，${r.kept} 项保留本地较新版本` : ''}，文件 ${r.files} 个${r.bad ? `，${r.bad} 个文件校验失败已跳过` : ''}`;
+
+async function restoreFrom(file) {
+    const mode = await pickRestoreMode(`从「${file.name}」还原。`);
     if (!mode) return;
-    if (mode === 'replace' && !(await confirmDialog('替换会清空当前所有条目，改为备份里的内容。继续？', { danger: true, ok: '替换' }))) return;
     const bar = h('i', { style: { width: '0%' } });
     const label = h('div', { class: 'progress-label' }, '正在上传备份');
     const s = sheet({ title: '还原中', body: h('div', { class: 'stack-s' }, h('div', { class: 'progress' }, bar), label) });
     try {
         const r = await api.restore(file, mode, (p) => { bar.style.width = `${p * 100}%`; label.textContent = p < 1 ? `正在上传 ${Math.round(p * 100)}%` : '正在写入文件…'; });
         bar.style.width = '100%';
-        label.textContent = `完成：新增 ${r.added} 项${r.updated ? `，更新 ${r.updated} 项` : ''}${r.kept ? `，${r.kept} 项保留本地较新版本` : ''}，文件 ${r.files} 个${r.bad ? `，${r.bad} 个文件校验失败已跳过` : ''}`;
+        label.textContent = restoreText(r);
         toast('还原完成', 'ok');
     } catch (e) {
         label.textContent = `还原失败：${e.message}`;

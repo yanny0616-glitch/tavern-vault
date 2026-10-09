@@ -209,7 +209,7 @@ export function openImporter(initialFiles = []) {
         rows.splice(rows.indexOf(r), 1);
         let anchor = el;
         for (const x of res.results) {
-            const child = { label: x.filename || x.entry, path: x.entry, isZip: false, opts: { ...r.opts, zipCollection: false, collectionName: res.collection?.name || r.opts.collectionName } };
+            const child = { label: x.filename || x.entry, path: x.entry, isZip: false, opts: { ...r.opts, zipCollection: false, collectionName: res.collection?.name || res.collectionName || r.opts.collectionName } };
             rows.push(child);
             if (x.status === 'error') { child.state = 'done'; child.status = 'error'; child.error = x.error; } else { child.state = 'done'; child.result = x; child.status = x.status; }
             child.el = rowEl(child);

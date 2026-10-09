@@ -193,7 +193,9 @@ function rulesForm(redraw) {
             h('div', { class: 'field wide row-between' }, h('label', {}, '允许新建标签（关闭后只从已有标签里选）'), switchEl(r.allowNewTags, (v) => { r.allowNewTags = v; mark(); })),
             h('div', { class: 'field wide' }, h('label', {}, '让 AI 顺便填写的字段'), fieldOpts.length ? fieldBox : h('div', { class: 'muted small' }, '没有适合 AI 填写的字段，可以在「自定义字段」里添加。')),
             h('div', { class: 'field wide' }, h('label', {}, '你的整理习惯（可选）'), h('textarea', { class: 'textarea', value: r.extra, placeholder: '例如：标签用简体中文；NSFW 内容加「R18」标签；简介不要用感叹号', oninput: (e) => { r.extra = e.target.value; mark(); } })),
-            h('div', { class: 'field' }, h('label', {}, '同时处理几项'), h('select', { class: 'select', onchange: (e) => { r.concurrency = Number(e.target.value); mark(); } }, [1, 2, 3, 4].map((n) => h('option', { value: n, selected: r.concurrency === n }, `${n} 项`))))),
+            h('div', { class: 'field' }, h('label', {}, '同时发几个请求'), h('select', { class: 'select', onchange: (e) => { r.concurrency = Number(e.target.value); mark(); } }, [1, 2, 3, 4].map((n) => h('option', { value: n, selected: r.concurrency === n }, `${n} 个`)))),
+            h('div', { class: 'field' }, h('label', {}, '每个请求整理几项'), h('select', { class: 'select', onchange: (e) => { r.batch = Number(e.target.value); mark(); } }, [1, 3, 5, 8, 10].map((n) => h('option', { value: n, selected: (r.batch || 1) === n }, n === 1 ? '1 项（逐张请求）' : `最多 ${n} 项（合并请求）`)))),
+            h('div', { class: 'field wide muted small' }, '按次计费的接口建议合并请求：规则和标签库只发一遍，请求次数少很多。按 token 计费的接口逐张请求更稳，一项出错不影响其它项。合并时一次最多发约 2.4 万字的内容，超过会自动分到下一个请求。')),
         h('div', { class: 'row-actions' }, saveBtn)));
 }
 
@@ -212,7 +214,7 @@ export async function startOrganize(ids) {
     for (;;) {
         const choice = await choiceDialog(h('div', { class: 'stack-s' },
             h('div', {}, `用「${est.profile}」整理 ${est.count} 项`, h('span', { class: 'muted' }, ` · ${est.model}`)),
-            h('div', { class: 'muted small' }, `预计输入约 ${k(est.inTokens)} tokens，输出约 ${k(est.outTokens)} tokens。结果先存为草稿，你确认后才会写入。`),
+            h('div', { class: 'muted small' }, `${est.batch > 1 ? `合并成 ${est.requests} 次请求（每次最多 ${est.batch} 项），` : `共 ${est.requests} 次请求，`}预计输入约 ${k(est.inTokens)} tokens，输出约 ${k(est.outTokens)} tokens。结果先存为草稿，你确认后才会写入。`),
             est.empty.length ? h('div', { class: 'note warn' }, icon('alert', { size: 15 }), h('span', {}, `${est.empty.length} 项几乎没有可读的内容，只能根据名称判断：${est.empty.slice(0, 5).join('、')}${est.empty.length > 5 ? ' 等' : ''}`)) : null,
             extra),
         [{ key: 'preview', label: '看看发送内容' }, { key: 'go', label: '开始整理', cls: 'primary' }], { title: 'AI 整理' });
@@ -392,7 +394,7 @@ export function openAiReview() {
                 summary, d.result.overLength ? h('div', { class: 'muted small' }, '比设定的字数长一些，可以手动删减。') : null),
             fieldRows.length ? h('div', { class: 'ai-sec' }, h('div', { class: 'ai-sec-head' }, h('span', {}, '字段')), fieldRows) : null,
             h('div', { class: 'ai-acts' },
-                h('span', { class: 'muted small ai-model' }, [d.model, d.truncated ? '输出被截断' : ''].filter(Boolean).join(' · ')),
+                h('span', { class: 'muted small ai-model' }, [d.model, d.batchSize > 1 ? `合并请求 ${d.batchSize} 项` : '', d.truncated ? '输出被截断' : ''].filter(Boolean).join(' · ')),
                 h('span', { class: 'grow' }),
                 rawBtn,
                 btn('重写', { icon: 'refresh', cls: 'sm ghost', onclick: async () => {

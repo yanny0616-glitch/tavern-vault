@@ -241,10 +241,11 @@ export class Store {
         return it;
     }
 
-    addFile(id, { sha, name, size, mime, label = '', primary = false, sig = '' }) {
+    addFile(id, { sha, name, size, mime, label = '', primary = false, sig = '', parts = null }) {
         const it = this.db.items[id];
         if (!it) return null;
         const file = { id: newId(), sha, name, size, mime, label, primary: false, addedAt: now(), sig };
+        if (parts) file.parts = parts;
         if (primary || !it.files.length) {
             it.files.forEach((f) => { f.primary = false; });
             file.primary = true;

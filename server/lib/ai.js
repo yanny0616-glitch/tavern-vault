@@ -16,6 +16,8 @@ export const DEFAULT_ORGANIZE = {
     fields: ['nsfw', 'language'],
     extra: '',
     concurrency: 2,
+    batch: 1, // 每次请求整理几项；1 = 逐张请求，大于 1 = 合并请求（按次计费的接口更省）
+    batchChars: 24000, // 合并请求时一次最多发送多少字的内容
 };
 
 const clampNum = (v, lo, hi, d) => (Number.isFinite(Number(v)) ? Math.min(hi, Math.max(lo, Number(v))) : d);
@@ -74,6 +76,8 @@ export class AiConfig {
                 fields: Array.isArray(o.fields) ? o.fields.map(String).slice(0, 30) : [],
                 extra: String(o.extra || '').slice(0, 2000),
                 concurrency: clampNum(o.concurrency, 1, 4, 2),
+                batch: clampNum(o.batch, 1, 10, 1),
+                batchChars: clampNum(o.batchChars, 4000, 120000, 24000),
             };
         }
         this.save();
