@@ -137,7 +137,7 @@ sudo systemctl daemon-reload && sudo systemctl enable --now tavern-vault
 https://github.com/yanny0616-glitch/tavern-vault
 ```
 
-主仓库根目录的 `manifest.json` 指向 `extension/index.js`，所以可以直接安装。如果只想装插件、不下载服务端代码，也可以用只含插件的仓库 `https://github.com/yanny0616-glitch/tavern-vault-extension`，两个地址装出来是同一个插件。
+主仓库根目录的 `manifest.json` 指向 `extension/index.js`，所以可以直接安装，以后在扩展里点「更新」即可。
 
 > **iOS 注意**：公开 TestFlight 包（`ios_external_beta` 配置）默认禁用第三方扩展。自签 IPA 或 Stable/Canary 包默认允许。
 
