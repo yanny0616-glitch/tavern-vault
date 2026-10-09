@@ -42,8 +42,20 @@ export class Store {
         db.settings.secret ||= crypto.randomBytes(32).toString('hex');
         db.settings.skin ||= 'atelier';
         if (db.settings.accent === '#c084fc') db.settings.accent = ''; // 旧版默认值 → 跟随风格
-        for (const c of Object.values(db.collections)) if (!/^[a-zA-Z]+$/.test(c.icon || '')) c.icon = 'folder';
+        this.#normalize(db);
         return db;
+    }
+
+    #normalize(db) {
+        for (const c of Object.values(db.collections)) if (!/^[a-zA-Z]+$/.test(c.icon || '')) c.icon = 'folder';
+        for (const it of Object.values(db.items)) {
+            it.files ??= [];
+            it.tags ??= [];
+            it.collections ??= [];
+            it.fields ??= {};
+            it.meta ??= {};
+            if (it.files.length && !it.files.some((f) => f.primary)) it.files[it.files.length - 1].primary = true;
+        }
     }
 
     save() {
@@ -104,6 +116,63 @@ export class Store {
         return Object.values(this.db.items).filter((it) => it.files.some((f) => f.sha === sha));
     }
 
+    /** 内容指纹相同（字节可能不同）的条目 */
+    findBySig(sig) {
+        if (!sig) return [];
+        return Object.values(this.db.items).filter((it) => it.files.some((f) => f.sig === sig));
+    }
+
+    /** 找到名字或指纹对应的合集，没有就新建 */
+    ensureCollection(name) {
+        const n = String(name || '').trim().slice(0, 60);
+        if (!n) return null;
+        const found = Object.values(this.db.collections).find((c) => c.name === n);
+        if (found) return found;
+        const c = { id: newId(), name: n, icon: 'folder', color: '', description: '', createdAt: now() };
+        this.db.collections[c.id] = c;
+        this.save();
+        return c;
+    }
+
+    /**
+     * 合并备份里的数据库
+     * merge：本地没有的条目加入；两边都有时保留更新时间较新的那份，并补上对方独有的历史版本文件
+     * replace：用备份替换条目、合集、字段（保留本机的密码和风格设置）
+     */
+    restoreDb(backup, mode = 'merge') {
+        const stat = { added: 0, updated: 0, kept: 0, collections: 0 };
+        const items = backup.items || {};
+        if (mode === 'replace') {
+            this.db.items = {};
+            this.db.collections = {};
+            if (Array.isArray(backup.fields) && backup.fields.length) this.db.fields = backup.fields;
+        }
+        for (const [id, c] of Object.entries(backup.collections || {})) {
+            if (!this.db.collections[id]) { this.db.collections[id] = c; stat.collections++; }
+        }
+        for (const [id, it] of Object.entries(items)) {
+            const cur = this.db.items[id];
+            if (!cur) {
+                this.db.items[id] = it;
+                stat.added++;
+                continue;
+            }
+            const newer = String(it.updatedAt || '') > String(cur.updatedAt || '') ? it : cur;
+            const older = newer === it ? cur : it;
+            const shas = new Set(newer.files.map((f) => f.sha));
+            for (const f of older.files) if (!shas.has(f.sha)) newer.files.push({ ...f, primary: false });
+            this.db.items[id] = newer;
+            if (newer === it) stat.updated++; else stat.kept++;
+        }
+        if (mode === 'merge') {
+            const have = new Set(this.db.fields.map((f) => f.id));
+            for (const f of backup.fields || []) if (!have.has(f.id)) this.db.fields.push(f);
+        }
+        this.#normalize(this.db);
+        this.flush();
+        return stat;
+    }
+
     // ---------- 条目 ----------
     createItem(data) {
         const id = newId();
@@ -139,7 +208,7 @@ export class Store {
     updateItem(id, patch) {
         const it = this.db.items[id];
         if (!it) return null;
-        const allowed = ['type', 'subtype', 'name', 'description', 'tags', 'collections', 'favorite', 'rating', 'source', 'author', 'version', 'notes', 'fields', 'cover', 'meta', 'searchText'];
+        const allowed = ['type', 'subtype', 'name', 'description', 'tags', 'collections', 'favorite', 'rating', 'source', 'author', 'version', 'notes', 'fields', 'cover', 'meta', 'searchText', 'ai'];
         for (const k of allowed) {
             if (k in patch) it[k] = patch[k];
         }
@@ -149,10 +218,10 @@ export class Store {
         return it;
     }
 
-    addFile(id, { sha, name, size, mime, label = '', primary = false }) {
+    addFile(id, { sha, name, size, mime, label = '', primary = false, sig = '' }) {
         const it = this.db.items[id];
         if (!it) return null;
-        const file = { id: newId(), sha, name, size, mime, label, primary: false, addedAt: now() };
+        const file = { id: newId(), sha, name, size, mime, label, primary: false, addedAt: now(), sig };
         if (primary || !it.files.length) {
             it.files.forEach((f) => { f.primary = false; });
             file.primary = true;

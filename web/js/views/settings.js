@@ -1,9 +1,10 @@
 // 设置
-import { h, clear, toast, confirmDialog, sheet, downloadBlob, switchEl, icon, btn } from '../ui.js';
+import { h, clear, toast, confirmDialog, choiceDialog, sheet, downloadBlob, switchEl, icon, btn } from '../ui.js';
 import { api } from '../api.js';
 import { bridge } from '../bridge.js';
 import { state, savePrefs, applyAccent, TYPE_META, SKINS } from '../state.js';
 import { topbar, ensureView } from './common.js';
+import { aiSettings } from './ai.js';
 
 const KINDS = { text: '单行文本', textarea: '多行文本', number: '数字', url: '链接', date: '日期', select: '下拉选择', tags: '标签列表', checkbox: '开关', rating: '星级评分', color: '颜色' };
 const ACCENTS = ['', '#8b4a2b', '#007aff', '#d4a24c', '#e0607e', '#c23a2b', '#22d3ee', '#2f8f6f', '#8a5cb8'];
@@ -15,7 +16,7 @@ export function renderSettings(root) {
         return { content };
     });
     if (refs.content.contains(document.activeElement) && /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName)) return;
-    clear(refs.content, appearance(), fieldsSection(), security(), connection(), shortcut(), data(),
+    clear(refs.content, appearance(), fieldsSection(), panel('AI 助手', 'sparkles', null, aiSettings()), security(), connection(), shortcut(), data(),
         h('div', { class: 'footnote' }, `TavernVault v${state.settings.version || '1.0.0'} · ${bridge.host ? `已连接 ${bridge.host.host}` : '独立网页模式'}`));
 }
 
@@ -171,7 +172,35 @@ function data() {
                 try { downloadBlob(await api.req('GET', '/api/backup', undefined, { blob: true }), `TavernVault-backup-${new Date().toISOString().slice(0, 10)}.zip`); } catch (err) { toast(err.message, 'err'); }
                 b.disabled = false;
             } }),
+            btn('从备份还原', { icon: 'restore', onclick: () => restoreInput.click() }),
             btn('清理无用文件', { icon: 'eraser', onclick: async () => { const r = await api.post('/api/maintenance/gc'); toast(`已清理 ${r.removed} 个文件`, 'ok'); } }),
-            btn('回收站', { icon: 'trash', href: '#/trash' })),
-        h('div', { class: 'muted small' }, '备份 ZIP 包含 db.json 和 files 目录，解压到服务端的 data 目录即可恢复。'));
+            btn('回收站', { icon: 'trash', href: '#/trash' }), restoreInput),
+        h('div', { class: 'muted small' }, '备份 ZIP 包含全部条目、合集、字段和所有版本的文件。还原前会自动保存一份当前数据库，放在服务端 data/restore-points 目录。'));
+}
+
+const restoreInput = h('input', { type: 'file', accept: '.zip,application/zip', hidden: true, onchange: () => { const f = restoreInput.files[0]; restoreInput.value = ''; if (f) restoreFrom(f); } });
+
+async function restoreFrom(file) {
+    const mode = await choiceDialog(
+        h('div', { class: 'stack-s' },
+            h('div', {}, `从「${file.name}」还原。`),
+            h('div', { class: 'muted small' }, '合并：保留现有内容，加入备份里没有的条目；两边都有的保留较新的一份，并补齐历史版本。'),
+            h('div', { class: 'muted small' }, '替换：用备份完全替换现有条目、合集和字段（密码和风格设置不变）。')),
+        [{ key: 'replace', label: '替换', cls: 'danger' }, { key: 'merge', label: '合并', cls: 'primary' }],
+        { title: '从备份还原' });
+    if (!mode) return;
+    if (mode === 'replace' && !(await confirmDialog('替换会清空当前所有条目，改为备份里的内容。继续？', { danger: true, ok: '替换' }))) return;
+    const bar = h('i', { style: { width: '0%' } });
+    const label = h('div', { class: 'progress-label' }, '正在上传备份');
+    const s = sheet({ title: '还原中', body: h('div', { class: 'stack-s' }, h('div', { class: 'progress' }, bar), label) });
+    try {
+        const r = await api.restore(file, mode, (p) => { bar.style.width = `${p * 100}%`; label.textContent = p < 1 ? `正在上传 ${Math.round(p * 100)}%` : '正在写入文件…'; });
+        bar.style.width = '100%';
+        label.textContent = `完成：新增 ${r.added} 项${r.updated ? `，更新 ${r.updated} 项` : ''}${r.kept ? `，${r.kept} 项保留本地较新版本` : ''}，文件 ${r.files} 个${r.bad ? `，${r.bad} 个文件校验失败已跳过` : ''}`;
+        toast('还原完成', 'ok');
+    } catch (e) {
+        label.textContent = `还原失败：${e.message}`;
+        toast(e.message, 'err');
+    }
+    s.body.append(btn('关闭', { cls: 'block', onclick: () => s.close() }));
 }

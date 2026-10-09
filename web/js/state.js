@@ -21,7 +21,7 @@ export const SKINS = {
     minimal: { name: '极简', en: 'Minimal', desc: 'iOS 原生风：大标题、毛玻璃、悬浮胶囊导航' },
     tavern: { name: '暗夜酒馆', en: 'Tavern', desc: '深木与琥珀：金色画框、装饰线、烛光氛围' },
     sakura: { name: '樱色图鉴', en: 'Sakura', desc: '手游图鉴：大圆角、彩色描边、评分角标' },
-    ink: { name: '墨白', en: 'Ink', desc: '杂志排版：直角细线、大号编号、黑白影像' },
+    ink: { name: '墨白', en: 'Ink', desc: '杂志排版：直角细线、大号编号、红黑点缀' },
     neon: { name: '霓虹', en: 'Neon', desc: '终端 HUD：等宽字体、切角发光、方括号标签' },
 };
 
@@ -40,9 +40,9 @@ export const state = {
     online: false,
     loaded: false,
     // 视图偏好（存本地）
-    prefs: Object.assign({ view: 'grid', dense: false, sort: 'updated', mode: 'auto' }, lsGet('tv_prefs', {})),
+    prefs: Object.assign({ view: 'grid', dense: false, sort: 'updated', mode: 'auto', cols: 0 }, lsGet('tv_prefs', {})),
     // 仓库筛选（会话内）
-    filter: { q: '', type: 'all', tag: '', collection: '', fav: false },
+    filter: { q: '', type: 'all', tag: '', collection: '', fav: false, ai: '' },
     selection: new Set(),
     selecting: false,
 };

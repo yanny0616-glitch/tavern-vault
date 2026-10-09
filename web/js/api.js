@@ -38,13 +38,49 @@ export const api = {
     patch: (p, b) => api.req('PATCH', p, b),
     del: (p) => api.req('DELETE', p),
 
-    /** 上传文件（原始 body） */
+    /** 带上传进度的请求（大文件、压缩包、备份用） */
+    send(method, path, body, { onProgress } = {}) {
+        return new Promise((resolve, reject) => {
+            const xhr = new XMLHttpRequest();
+            xhr.open(method, path);
+            if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`);
+            xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+            if (onProgress) xhr.upload.onprogress = (e) => { if (e.lengthComputable) onProgress(e.loaded / e.total); };
+            xhr.onload = () => {
+                let data = null;
+                try { data = JSON.parse(xhr.responseText); } catch { /* ignore */ }
+                if (xhr.status === 401) window.dispatchEvent(new CustomEvent('tv:unauthorized'));
+                if (xhr.status >= 200 && xhr.status < 300) resolve(data);
+                else reject(Object.assign(new Error(data?.error || `HTTP ${xhr.status}`), { status: xhr.status }));
+            };
+            xhr.onerror = () => reject(new Error('网络错误，上传中断'));
+            xhr.send(body);
+        });
+    },
+
+    /**
+     * 上传文件（原始 body）
+     * opts.match: 遇到同名条目 ask | version | new | skip；opts.target: 作为某条目的新版本
+     * opts.zipCollection: 压缩包按包名建合集；opts.collectionName: 加入（或新建）该名字的合集
+     */
     upload(file, opts = {}) {
         const q = new URLSearchParams({ filename: opts.filename || file.name || 'upload.bin' });
-        for (const k of ['type', 'name', 'mode', 'source', 'origin']) if (opts[k]) q.set(k, opts[k]);
+        for (const k of ['type', 'name', 'mode', 'source', 'origin', 'match', 'target', 'collectionName', 'label']) if (opts[k]) q.set(k, opts[k]);
+        if (opts.zipCollection) q.set('zipCollection', '1');
+        if (opts.unzip === false) q.set('unzip', '0');
         if (opts.tags?.length) q.set('tags', opts.tags.join(','));
         if (opts.collections?.length) q.set('collections', opts.collections.join(','));
-        return api.req('POST', `/api/items?${q}`, file, { raw: true, headers: { 'Content-Type': 'application/octet-stream' } });
+        return api.send('POST', `/api/items?${q}`, file, { onProgress: opts.onProgress });
+    },
+    /** 处理导入冲突 */
+    resolve(pending, action, opts = {}) {
+        return api.post('/api/ingest/resolve', { sha: pending.sha, filename: pending.filename, action, target: opts.target || pending.candidates?.[0]?.id, ...opts });
+    },
+    diff(a, b) {
+        return api.post('/api/diff', { a, b });
+    },
+    restore(file, mode, onProgress) {
+        return api.send('POST', `/api/restore?mode=${mode}`, file, { onProgress });
     },
     uploadVersion(id, file, { filename, primary = true, label = '' } = {}) {
         const q = new URLSearchParams({ filename: filename || file.name || 'file.bin', primary: primary ? '1' : '0', label });
@@ -70,6 +106,7 @@ export const api = {
             es.addEventListener('hello', () => { retry = 1000; onStatus?.(true); });
             es.addEventListener('change', (e) => onEvent('change', JSON.parse(e.data || '{}')));
             es.addEventListener('auth', () => onEvent('auth', {}));
+            es.addEventListener('ai', (e) => onEvent('ai', JSON.parse(e.data || '{}')));
             es.onerror = () => {
                 onStatus?.(false);
                 es.close();

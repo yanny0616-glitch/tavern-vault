@@ -10,7 +10,9 @@ import { renderStats } from './views/stats.js';
 import { renderSettings } from './views/settings.js';
 import { renderTrash } from './views/trash.js';
 import { openImporter } from './views/importer.js';
+import { filesFromDrop } from './files.js';
 import { openDetail } from './views/detail.js';
+import { handleAiEvent, renderChip } from './views/ai.js';
 
 const app = document.getElementById('app');
 if (bridge.embedded) document.documentElement.classList.add('embed');
@@ -135,24 +137,28 @@ async function start() {
         started = true;
         window.addEventListener('hashchange', render);
         subscribe(render);
+        subscribe(renderChip);
         let timer;
-        api.events((ev) => {
+        api.events((ev, data) => {
             if (ev === 'auth') { location.reload(); return; }
+            if (ev === 'ai') { handleAiEvent(data); return; }
             clearTimeout(timer);
             timer = setTimeout(() => reload().catch(() => {}), 150);
         }, setStatus);
         window.addEventListener('tv:unauthorized', () => showLogin(health.title));
         document.addEventListener('visibilitychange', () => { if (!document.hidden) reload().catch(() => {}); });
         document.addEventListener('dragover', (e) => { if (e.dataTransfer?.types?.includes('Files')) e.preventDefault(); });
-        document.addEventListener('drop', (e) => {
-            if (!e.dataTransfer?.files?.length || e.target.closest?.('.drop')) return;
+        document.addEventListener('drop', async (e) => {
+            if (!e.dataTransfer?.types?.includes('Files') || e.target.closest?.('.drop')) return;
             e.preventDefault();
-            openImporter([...e.dataTransfer.files]);
+            const files = await filesFromDrop(e.dataTransfer);
+            if (files.length) openImporter(files);
         });
         const m = location.hash.match(/[?&]item=([a-f0-9]+)/);
         if (m && state.byId.has(m[1])) setTimeout(() => openDetail(m[1]), 100);
     }
     render();
+    renderChip();
     if (!health.auth && !bridge.embedded) {
         setTimeout(() => toast('尚未设置访问密码，公网部署请到「设置」中设置', 'err'), 600);
     }

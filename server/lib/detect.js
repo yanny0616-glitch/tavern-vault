@@ -1,6 +1,7 @@
 // 资源类型识别与元数据解析
 import path from 'node:path';
 import { isPng, readPngInfo, extractCardFromPng } from './png.js';
+import { readZip } from './zip.js';
 
 export const TYPES = {
     character: '角色卡',
@@ -182,7 +183,17 @@ export function detectFile(buf, filename) {
         return { type: 'background', name: base, meta: { image: { width, height } }, isCover: true };
     }
     if (IMAGE_EXT.has(ext)) return { type: 'background', name: base, meta: {}, isCover: true };
-    if (ext === '.zip' || ext === '.charx') return { type: ext === '.charx' ? 'character' : 'extension', subtype: ext.slice(1), name: base, meta: {} };
+    if (ext === '.charx') {
+        try {
+            const entry = readZip(buf).find((e) => e.name.toLowerCase() === 'card.json');
+            if (entry) {
+                const det = detectJson(JSON.parse(entry.read().toString('utf8')), `${base}.json`);
+                if (det.type === 'character') return { ...det, subtype: 'charx' };
+            }
+        } catch { /* 当作普通附件 */ }
+        return { type: 'character', subtype: 'charx', name: base, meta: {} };
+    }
+    if (ext === '.zip') return { type: 'extension', subtype: 'zip', name: base, meta: {} };
     if (ext === '.js' || ext === '.mjs' || ext === '.ts') return { type: 'script', subtype: 'js', name: base, meta: { lines: buf.toString('utf8').split('\n').length }, searchText: buf.toString('utf8').slice(0, 2000) };
     if (ext === '.css') return { type: 'theme', subtype: 'css', name: base, meta: {} };
     if (ext === '.jsonl') {

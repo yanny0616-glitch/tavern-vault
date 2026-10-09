@@ -9,17 +9,23 @@ import { fileURLToPath } from 'node:url';
 import { Store, newId, DEFAULT_FIELDS } from './lib/store.js';
 import { detectFile, mimeOf, normalizeCard, summarizeCard, TYPES } from './lib/detect.js';
 import { extractCardFromPng, isPng, writeCardToPng } from './lib/png.js';
-import { buildZip } from './lib/zip.js';
+import { buildZip, readZip, isJunkPath } from './lib/zip.js';
+import { fileSig } from './lib/content.js';
+import { diffFiles, diffSummary } from './lib/diff.js';
+import { AiConfig, listModels, chat, AiError } from './lib/ai.js';
+import { createAiTasks } from './lib/ai-tasks.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const VERSION = '1.0.0';
+const VERSION = '1.2.0';
 const PORT = Number(process.env.TV_PORT || process.env.PORT || 5180);
 const HOST = process.env.TV_HOST || '0.0.0.0';
 const DATA_DIR = path.resolve(process.env.TV_DATA || path.join(__dirname, 'data'));
 const WEB_DIR = path.resolve(process.env.TV_WEB || path.join(__dirname, '..', 'web'));
 const MAX_UPLOAD = Number(process.env.TV_MAX_UPLOAD_MB || 200) * 1024 * 1024;
+const MAX_RESTORE = Number(process.env.TV_MAX_RESTORE_MB || 2048) * 1024 * 1024;
 
 const store = new Store(DATA_DIR);
+const aiConfig = new AiConfig(DATA_DIR);
 
 // ---------------- 认证 ----------------
 function hashPassword(pw) {
@@ -123,14 +129,100 @@ function applyDetection(it, det, sha, { keepUserFields = true } = {}) {
     store.updateItem(it.id, patch);
 }
 
+/** 用于判断「是不是同一个东西」的名字：去掉扩展名、版本号、副本标记 */
+function normName(s) {
+    return String(s || '').toLowerCase()
+        .replace(/\.(png|json|charx|jsonl|txt|md|js|css|webp|jpe?g|gif|zip|ya?ml)$/i, '')
+        .replace(/[\s_\-]*[(（[【]\s*(?:v(?:er(?:sion)?)?\.?\s*\d+(?:\.\d+)*[a-z]?|\d+|副本|copy)\s*[)）\]】]\s*$/i, '')
+        .replace(/[\s_\-]+v(?:er(?:sion)?)?\.?\s*\d+(?:\.\d+)*[a-z]?$/i, '')
+        .replace(/[\s_\-]*(?:副本|copy)$/i, '')
+        .replace(/[\s_\-·・]+/g, ' ')
+        .trim();
+}
+
+/** 同类型、同名（作者不冲突）的已有条目，最近更新的在前 */
+function findSimilar(det) {
+    const name = normName(det.name);
+    if (!name) return [];
+    const author = normName(det.author);
+    return Object.values(store.db.items)
+        .filter((it) => !it.deletedAt && it.type === det.type && it.files.length && normName(it.name) === name)
+        .filter((it) => det.type !== 'preset' || !det.meta?.apiId || !it.meta?.apiId || det.meta.apiId === it.meta.apiId)
+        .filter((it) => !author || !it.author || normName(it.author) === author)
+        .sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
+}
+
+function withCollections(opts) {
+    const cols = [...(opts.collections || [])];
+    if (opts.collectionName) {
+        const c = store.ensureCollection(opts.collectionName);
+        if (c && !cols.includes(c.id)) cols.push(c.id);
+    }
+    return cols.filter((id) => store.db.collections[id]);
+}
+
+/** 给已有条目加一个新版本并设为当前版本 */
+function addVersion(it, { buf, filename, sha, sig, det }, opts = {}) {
+    store.addFile(it.id, { sha, name: filename, size: buf.length, mime: mimeOf(filename), label: opts.label || (det.version ? `v${det.version}` : ''), primary: true, sig });
+    applyDetection(it, det, sha);
+    const cols = withCollections(opts);
+    store.updateItem(it.id, {
+        tags: [...new Set([...it.tags, ...(opts.tags || [])])],
+        collections: [...new Set([...it.collections, ...cols])],
+        ...(opts.source && !it.source ? { source: opts.source } : {}),
+    });
+    return store.db.items[it.id];
+}
+
+/**
+ * 收录一个文件
+ * opts.mode: 'auto'（默认）| 'new'（无论如何都新建）
+ * opts.match: 遇到同名条目时 'ask'（返回冲突，等用户决定）| 'version'（存为新版本）| 'new'（另存）| 'skip'
+ * opts.target: 指定要挂到哪个条目下作为新版本
+ * 返回 status: created | version | duplicate | conflict | skipped
+ */
 function ingest(buf, filename, opts = {}) {
     const sha = store.putBlob(buf);
-    const det = detectFile(buf, filename);
-    const dupes = store.findBySha(sha).filter((i) => !i.deletedAt);
-    if (dupes.length && opts.mode !== 'new') {
-        return { duplicate: true, item: slim(dupes[0]) };
+    const fname = safeFilename(filename);
+    const det = detectFile(buf, fname);
+    const sig = fileSig(buf, fname, det);
+    const file = { buf, filename: fname, sha, sig, det };
+    const base = { sha, filename: fname, size: buf.length, detected: { type: det.type, name: det.name, author: det.author || '', version: det.version || '' } };
+    const target = opts.target ? store.db.items[opts.target] : null;
+    if (opts.target && (!target || target.deletedAt)) throw new HttpError(404, '目标条目不存在');
+
+    if (opts.mode !== 'new') {
+        const pool = target ? [target] : Object.values(store.db.items).filter((i) => !i.deletedAt);
+        let hit = null;
+        let hitFile = null;
+        for (const it of pool) {
+            hitFile = it.files.find((f) => f.sha === sha) || (sig ? it.files.find((f) => f.sig === sig) : null);
+            if (hitFile) { hit = it; break; }
+        }
+        if (hit) {
+            return { ...base, status: 'duplicate', duplicate: true, exact: hitFile.sha === sha, current: Boolean(hitFile.primary), item: slim(hit) };
+        }
+        const candidates = target ? [target] : findSimilar(det);
+        if (candidates.length) {
+            // 指定了目标：默认直接存为新版本；match=ask 时只返回对比结果（酒馆页「对比」用）
+            const action = target ? (opts.match === 'ask' ? 'ask' : opts.match === 'skip' ? 'skip' : 'version') : opts.match || 'ask';
+            const cand = candidates[0];
+            if (action === 'version') return { ...base, status: 'version', duplicate: false, item: slim(addVersion(cand, file, opts)) };
+            if (action === 'skip') return { ...base, status: 'skipped', duplicate: false, item: slim(cand) };
+            if (action === 'ask') {
+                const prev = store.primaryFile(cand);
+                let summary = '';
+                let changes = 0;
+                try {
+                    const d = diffFiles({ buf: store.readBlob(prev.sha), name: prev.name }, { buf, name: fname });
+                    summary = diffSummary(d);
+                    changes = d.changes;
+                } catch { /* 对比失败不影响导入 */ }
+                return { ...base, status: 'conflict', conflict: true, duplicate: false, summary, changes, candidates: candidates.slice(0, 5).map(slim) };
+            }
+        }
     }
-    const tags = [...(det.tags || []), ...(opts.tags || [])];
+
     const item = store.createItem({
         type: opts.type && TYPES[opts.type] ? opts.type : det.type,
         subtype: det.subtype,
@@ -138,8 +230,8 @@ function ingest(buf, filename, opts = {}) {
         description: det.description,
         author: det.author,
         version: det.version,
-        tags,
-        collections: opts.collections || [],
+        tags: [...(det.tags || []), ...(opts.tags || [])],
+        collections: withCollections(opts),
         meta: det.meta,
         searchText: det.searchText,
         source: opts.source || '',
@@ -147,8 +239,63 @@ function ingest(buf, filename, opts = {}) {
         cover: det.isCover ? sha : null,
         fields: { downloadedAt: new Date().toISOString().slice(0, 10) },
     });
-    store.addFile(item.id, { sha, name: safeFilename(filename), size: buf.length, mime: mimeOf(filename), primary: true });
-    return { duplicate: false, item: slim(store.db.items[item.id]) };
+    store.addFile(item.id, { sha, name: fname, size: buf.length, mime: mimeOf(fname), primary: true, sig, label: opts.label || '' });
+    return { ...base, status: 'created', duplicate: false, item: slim(store.db.items[item.id]) };
+}
+
+/** 压缩包是不是一个酒馆扩展（根目录或唯一子目录里有 manifest.json） */
+function isExtensionZip(entries) {
+    const m = entries.find((e) => /^([^/]+\/)?manifest\.json$/i.test(e.name));
+    if (!m || m.size > 100000) return false;
+    try {
+        const j = JSON.parse(m.read().toString('utf8'));
+        return Boolean(j.display_name && (j.js || j.loading_order !== undefined));
+    } catch { return false; }
+}
+const isBackupZip = (entries) => entries.some((e) => e.name === 'db.json') && entries.some((e) => e.name.startsWith('files/'));
+
+/** 解压并逐个收录，返回每个文件的结果 */
+function ingestZip(buf, archiveName, opts, depth = 0) {
+    const entries = readZip(buf, { maxTotal: MAX_UPLOAD * 10 });
+    if (isBackupZip(entries)) throw new HttpError(400, '这是藏馆的完整备份，请到「设置 → 数据」里用「从备份还原」导入');
+    const base = path.basename(archiveName, path.extname(archiveName));
+    const o = { ...opts, collectionName: opts.zipCollection ? base : opts.collectionName };
+    const results = [];
+    for (const e of entries) {
+        if (isJunkPath(e.name) || !e.size) continue;
+        const entryName = path.posix.basename(e.name);
+        try {
+            const data = e.read();
+            if (/\.zip$/i.test(entryName) && depth < 1) {
+                const inner = readZip(data);
+                if (!isExtensionZip(inner) && !isBackupZip(inner)) {
+                    for (const r of ingestZip(data, entryName, { ...o, zipCollection: false }, depth + 1).results) results.push({ ...r, entry: `${e.name}/${r.entry}` });
+                    continue;
+                }
+            }
+            results.push({ entry: e.name, ...ingest(data, entryName, { ...o, origin: o.origin || 'zip' }) });
+        } catch (err) {
+            results.push({ entry: e.name, filename: entryName, status: 'error', error: err.message });
+        }
+    }
+    const col = o.collectionName ? Object.values(store.db.collections).find((c) => c.name === String(o.collectionName).trim().slice(0, 60)) : null;
+    return { batch: true, archive: archiveName, results, collection: col || null };
+}
+
+/** 通用入口：ZIP 自动解压（扩展包、CHARX 除外），其它直接收录 */
+function ingestAny(buf, filename, opts) {
+    if (/\.zip$/i.test(filename) && opts.unzip !== false) {
+        let entries;
+        try { entries = readZip(buf); } catch { entries = null; }
+        if (entries && isBackupZip(entries)) throw new HttpError(400, '这是藏馆的完整备份，请到「设置 → 数据」里用「从备份还原」导入');
+        if (entries && !isExtensionZip(entries)) return ingestZip(buf, filename, opts);
+    }
+    return ingest(buf, filename, opts);
+}
+
+function changedIds(result) {
+    const list = result.batch ? result.results : [result];
+    return list.filter((r) => r.status === 'created' || r.status === 'version').map((r) => r.item.id);
 }
 
 function parseOpts(url) {
@@ -161,6 +308,12 @@ function parseOpts(url) {
         tags: list('tags'),
         collections: list('collections'),
         mode: sp.get('mode') || 'auto',
+        match: ['ask', 'version', 'new', 'skip'].includes(sp.get('match')) ? sp.get('match') : '',
+        target: sp.get('target') || '',
+        collectionName: sp.get('collectionName') || '',
+        zipCollection: sp.get('zipCollection') === '1',
+        unzip: sp.get('unzip') !== '0',
+        label: sp.get('label') || '',
         source: sp.get('source') || '',
         origin: sp.get('origin') || '',
     };
@@ -195,7 +348,7 @@ const route = (method, pattern, handler, { open = false } = {}) => {
     routes.push({ method, re, keys, handler, open });
 };
 
-route('GET', '/api/health', () => ({ ok: true, app: 'tavern-vault', version: VERSION, auth: authEnabled(), title: store.db.settings.title, skin: store.db.settings.skin }), { open: true });
+route('GET', '/api/health', () => ({ ok: true, app: 'tavern-vault', version: VERSION, features: ['versions', 'zip', 'restore', 'sig', 'ai'], auth: authEnabled(), title: store.db.settings.title, skin: store.db.settings.skin }), { open: true });
 
 route('POST', '/api/login', async ({ req }) => {
     const { password } = await readJson(req);
@@ -226,7 +379,7 @@ route('GET', '/api/state', () => {
         items: Object.values(store.db.items).map(slim),
         collections: Object.values(store.db.collections),
         fields: store.db.fields,
-        settings: { ...settings, auth: authEnabled(), version: VERSION },
+        settings: { ...settings, auth: authEnabled(), version: VERSION, ai: { ready: aiConfig.ready, ...aiTasks.summary() } },
         stats: store.stats(),
     };
 });
@@ -256,9 +409,87 @@ route('POST', '/api/items', async ({ req, url }) => {
     const opts = parseOpts(url);
     const buf = await readBody(req);
     if (!buf.length) throw new HttpError(400, '空文件');
-    const result = ingest(buf, opts.filename, opts);
-    if (!result.duplicate) broadcast('change', { ids: [result.item.id] });
+    const result = ingestAny(buf, opts.filename, opts);
+    const ids = changedIds(result);
+    if (ids.length || result.batch) broadcast('change', { ids });
     return result;
+});
+
+// 处理导入冲突：用户选择「存为新版本 / 另存为新条目 / 跳过」
+route('POST', '/api/ingest/resolve', async ({ req }) => {
+    const { sha, filename, action, target, ...opts } = await readJson(req);
+    if (action === 'skip') return { status: 'skipped' };
+    if (!/^[a-f0-9]{64}$/.test(sha || '') || !store.hasBlob(sha)) throw new HttpError(410, '临时文件已失效，请重新上传');
+    const buf = store.readBlob(sha);
+    let result;
+    if (action === 'new') result = ingest(buf, filename, { ...opts, mode: 'new' });
+    else if (action === 'version') result = ingest(buf, filename, { ...opts, target, match: 'version' });
+    else throw new HttpError(400, '未知操作');
+    broadcast('change', { ids: changedIds(result) });
+    return result;
+});
+
+// 对比两个文件（两个版本）
+route('POST', '/api/diff', async ({ req }) => {
+    const { a, b } = await readJson(req);
+    for (const x of [a, b]) if (!x || !/^[a-f0-9]{64}$/.test(x.sha || '') || !store.hasBlob(x.sha)) throw new HttpError(404, '文件不存在');
+    return diffFiles({ buf: store.readBlob(a.sha), name: a.name || 'a' }, { buf: store.readBlob(b.sha), name: b.name || 'b' });
+});
+
+// ---------------- AI ----------------
+const aiTasks = createAiTasks({ dataDir: DATA_DIR, store, config: aiConfig, loadContent, broadcast });
+const aiFail = (e) => { throw new HttpError(e instanceof AiError ? 400 : 500, e.message); };
+const idList = (v) => (Array.isArray(v) ? v.map(String).filter((id) => store.db.items[id]).slice(0, 2000) : []);
+
+route('GET', '/api/ai/config', () => aiConfig.public());
+route('PUT', '/api/ai/config', async ({ req }) => {
+    aiConfig.update(await readJson(req));
+    broadcast('change', {});
+    return aiConfig.public();
+});
+route('POST', '/api/ai/test', async ({ req }) => {
+    const { profile } = await readJson(req);
+    const p = aiConfig.resolve(profile);
+    const t0 = Date.now();
+    try {
+        const r = await chat(p, { system: '你是连接测试。', user: '只回复两个字：成功', maxTokens: 300, timeout: 45000 });
+        return { ok: true, ms: Date.now() - t0, model: r.model, text: r.text.slice(0, 200), truncated: r.truncated };
+    } catch (e) { return aiFail(e); }
+});
+route('POST', '/api/ai/models', async ({ req }) => {
+    const { profile } = await readJson(req);
+    try { return { models: await listModels(aiConfig.resolve(profile)) }; } catch (e) { return aiFail(e); }
+});
+route('POST', '/api/ai/organize/estimate', async ({ req }) => {
+    const { ids, scope } = await readJson(req);
+    return aiTasks.estimate(idList(ids), scope);
+});
+route('POST', '/api/ai/organize/preview', async ({ req }) => {
+    const { id, extra } = await readJson(req);
+    try { return aiTasks.preview(String(id), extra); } catch (e) { return aiFail(e); }
+});
+route('POST', '/api/ai/organize', async ({ req }) => {
+    const { ids, extra } = await readJson(req);
+    try { return { queued: aiTasks.enqueue(idList(ids), { extra }), ...aiTasks.summary() }; } catch (e) { return aiFail(e); }
+});
+route('GET', '/api/ai/drafts', () => ({ drafts: Object.values(aiTasks.drafts), summary: aiTasks.summary() }));
+route('POST', '/api/ai/drafts/apply', async ({ req }) => {
+    const { items } = await readJson(req);
+    const ids = aiTasks.apply(items);
+    broadcast('change', { ids });
+    return { ok: true, applied: ids.length };
+});
+route('POST', '/api/ai/drafts/discard', async ({ req }) => {
+    const { ids } = await readJson(req);
+    aiTasks.discard(Array.isArray(ids) ? ids.map(String) : []);
+    return { ok: true };
+});
+route('POST', '/api/ai/cancel', () => { aiTasks.cancel(); return { ok: true }; });
+route('POST', '/api/ai/explain', async ({ req }) => {
+    const { a, b, aLabel, bLabel, force } = await readJson(req);
+    for (const x of [a, b]) if (!x || !/^[a-f0-9]{64}$/.test(x.sha || '') || !store.hasBlob(x.sha)) throw new HttpError(404, '文件不存在');
+    const d = diffFiles({ buf: store.readBlob(a.sha), name: a.name || 'a' }, { buf: store.readBlob(b.sha), name: b.name || 'b' });
+    try { return await aiTasks.explain(d, { aLabel: String(aLabel || 'A').slice(0, 80), bLabel: String(bLabel || 'B').slice(0, 80), key: `${a.sha}:${b.sha}`, force: Boolean(force) }); } catch (e) { return aiFail(e); }
 });
 
 route('POST', '/api/items/manual', async ({ req }) => {
@@ -287,8 +518,8 @@ route('POST', '/api/import-url', async ({ req }) => {
         const ct = r.headers.get('content-type') || '';
         filename += ct.includes('png') ? '.png' : ct.includes('json') ? '.json' : ct.includes('jpeg') ? '.jpg' : '';
     }
-    const result = ingest(buf, filename, { ...rest, source: rest.source || target, origin: 'url' });
-    if (!result.duplicate) broadcast('change', { ids: [result.item.id] });
+    const result = ingestAny(buf, filename, { ...rest, source: rest.source || target, origin: 'url' });
+    broadcast('change', { ids: changedIds(result) });
     return result;
 });
 
@@ -330,8 +561,9 @@ route('POST', '/api/items/:id/files', async ({ req, p, url }) => {
     if (!buf.length) throw new HttpError(400, '空文件');
     const sha = store.putBlob(buf);
     const primary = sp.get('primary') === '1';
-    const file = store.addFile(it.id, { sha, name: safeFilename(filename), size: buf.length, mime: mimeOf(filename), label: sp.get('label') || '', primary });
-    if (file.primary) applyDetection(it, detectFile(buf, filename), sha);
+    const det = detectFile(buf, filename);
+    const file = store.addFile(it.id, { sha, name: safeFilename(filename), size: buf.length, mime: mimeOf(filename), label: sp.get('label') || '', primary, sig: fileSig(buf, filename, det) });
+    if (file.primary) applyDetection(it, det, sha);
     broadcast('change', { ids: [it.id] });
     return slim(store.db.items[it.id]);
 });
@@ -395,8 +627,9 @@ route('PUT', '/api/items/:id/card', async ({ req, p }) => {
         filename = `${safeFilename(n.data.name)}.json`;
     }
     const sha = store.putBlob(buf);
-    store.addFile(it.id, { sha, name: filename, size: buf.length, mime: mimeOf(filename), label: `编辑于 ${new Date().toLocaleString('zh-CN')}`, primary: true });
-    applyDetection(it, detectFile(buf, filename), sha);
+    const det = detectFile(buf, filename);
+    store.addFile(it.id, { sha, name: filename, size: buf.length, mime: mimeOf(filename), label: `网页编辑 ${new Date().toLocaleString('zh-CN', { hour12: false })}`, primary: true, sig: fileSig(buf, filename, det) });
+    applyDetection(it, det, sha);
     store.updateItem(it.id, { name: n.data.name });
     broadcast('change', { ids: [it.id] });
     return slim(store.db.items[it.id]);
@@ -458,6 +691,39 @@ route('GET', '/api/backup', ({ res }) => {
     }
     send(res, 200, buildZip(entries), { 'Content-Type': 'application/zip', 'Content-Disposition': contentDisposition(`TavernVault-backup-${new Date().toISOString().slice(0, 10)}.zip`, true) });
     return null;
+});
+
+// 从备份还原
+route('POST', '/api/restore', async ({ req, url }) => {
+    const mode = url.searchParams.get('mode') === 'replace' ? 'replace' : 'merge';
+    const buf = await readBody(req, MAX_RESTORE);
+    let entries;
+    try { entries = readZip(buf, { maxTotal: MAX_RESTORE * 4, maxEntries: 500000 }); } catch (e) { throw new HttpError(400, `无法读取备份：${e.message}`); }
+    const dbEntry = entries.find((e) => e.name === 'db.json');
+    if (!dbEntry) throw new HttpError(400, '这不是藏馆备份（缺少 db.json）');
+    let backup;
+    try { backup = JSON.parse(dbEntry.read().toString('utf8')); } catch { throw new HttpError(400, '备份里的 db.json 已损坏'); }
+    if (!backup || typeof backup.items !== 'object') throw new HttpError(400, '备份格式不正确');
+    // 还原前先留一份当前数据库
+    store.flush();
+    const safeDir = path.join(DATA_DIR, 'restore-points');
+    fs.mkdirSync(safeDir, { recursive: true });
+    const safeName = `db-before-restore-${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
+    fs.copyFileSync(store.dbPath, path.join(safeDir, safeName));
+    for (const old of fs.readdirSync(safeDir).filter((f) => f.startsWith('db-before-restore-')).sort().slice(0, -10)) fs.unlinkSync(path.join(safeDir, old));
+    let files = 0;
+    let bad = 0;
+    for (const e of entries) {
+        const m = e.name.match(/^files\/[a-f0-9]{2}\/([a-f0-9]{64})$/);
+        if (!m) continue;
+        if (store.hasBlob(m[1])) { files++; continue; }
+        const sha = store.putBlob(e.read());
+        if (sha === m[1]) files++; else bad++;
+    }
+    const stat = store.restoreDb(backup, mode);
+    await fillSigs();
+    broadcast('change', {});
+    return { ok: true, mode, ...stat, files, bad, restorePoint: safeName };
 });
 
 // 文件下载
@@ -589,6 +855,21 @@ const server = http.createServer(async (req, res) => {
         else res.end();
     }
 });
+
+/** 给旧数据补算内容指纹（后台分批进行，不阻塞启动） */
+async function fillSigs() {
+    let n = 0;
+    for (const it of Object.values(store.db.items)) {
+        for (const f of it.files) {
+            if (f.sig !== undefined) continue;
+            try { f.sig = store.hasBlob(f.sha) ? fileSig(store.readBlob(f.sha), f.name) : ''; } catch { f.sig = ''; }
+            if (++n % 25 === 0) await new Promise((r) => setImmediate(r));
+        }
+    }
+    if (n) store.save();
+    return n;
+}
+fillSigs().then((n) => { if (n) console.log(`  已为 ${n} 个旧文件补算内容指纹`); });
 
 server.requestTimeout = 0;
 server.listen(PORT, HOST, () => {

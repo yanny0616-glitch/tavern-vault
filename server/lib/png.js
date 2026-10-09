@@ -1,5 +1,6 @@
 // 读取 PNG 中的文本块（tEXt / zTXt / iTXt），用于解析角色卡 chara / ccv3
 import zlib from 'node:zlib';
+import crypto from 'node:crypto';
 
 const PNG_SIG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 
@@ -108,4 +109,19 @@ export async function writeCardToPng(buf, card) {
     const b64 = (o) => Buffer.from(JSON.stringify(o), 'utf8').toString('base64');
     const iend = Buffer.from([0, 0, 0, 0, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82]);
     return Buffer.concat([buf.subarray(0, 8), ...chunks, makeText('chara', b64(v2)), makeText('ccv3', b64(v3)), iend]);
+}
+
+/** 只对图像数据（IHDR + IDAT）求哈希，忽略文本块，用来判断立绘是否换过 */
+export function pngImageHash(buf) {
+    if (!isPng(buf)) return '';
+    const h = crypto.createHash('sha1');
+    let pos = 8;
+    while (pos + 8 <= buf.length) {
+        const len = buf.readUInt32BE(pos);
+        const type = buf.toString('latin1', pos + 4, pos + 8);
+        if (type === 'IHDR' || type === 'IDAT' || type === 'PLTE') h.update(buf.subarray(pos + 8, pos + 8 + len));
+        if (type === 'IEND') break;
+        pos += 12 + len;
+    }
+    return h.digest('hex');
 }

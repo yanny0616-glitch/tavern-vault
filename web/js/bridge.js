@@ -38,6 +38,8 @@ function call(method, params = {}, transfer = [], timeout = 120000) {
 export const bridge = {
     embedded,
     get host() { return hostInfo; },
+    /** 插件是否支持某功能（旧版插件没有 features 字段） */
+    has(feature) { return Boolean(hostInfo?.features?.includes(feature)); },
     async connect() {
         if (!embedded) return null;
         try {

@@ -25,12 +25,16 @@
 | 自动识别 | 角色卡 PNG（V2/V3，`chara`/`ccv3`）/ JSON / CHARX、世界书、对话补全预设、指令/上下文/系统提示词模板、文本补全预设、正则（单条或合集）、快速回复、主题、酒馆助手脚本、JS/CSS、聊天记录 JSONL、图片、ZIP |
 | 角色卡信息 | 封面、作者、版本、标签、开场白数量、内嵌世界书条目、内嵌正则/脚本、深度提示词、估算 Token、卡片规范、图片尺寸；描述、性格、场景、全部开场白、对话示例、系统提示词、作者注释都能逐项查看 |
 | 编辑角色卡 | 在网页里直接改卡。保存后生成新版本，PNG 卡保留原图并重新写入 `chara` 和 `ccv3` |
-| 版本与附件 | 每个条目可以有多个文件，能切换主版本、加备注、设封面，也能附加插图、聊天记录等 |
+| 版本管理 | 同一张卡的新版本会挂到原条目下，旧版本全部保留，随时切回。任意两个版本可以对比：版本号、开场白数、世界书条目、Token 等数值，描述/开场白等长文本逐行差异，世界书条目、预设提示词、正则的增删改 |
+| 附件 | 每个条目还可以附加插图、聊天记录等文件，加备注、设封面 |
 | 自定义字段 | 自己决定要记录的信息，比如来源、推荐模型、搭配预设、NSFW、使用状态。支持 10 种字段类型，可以只对某些类型显示 |
 | 整理 | 标签、合集、收藏、5 星评分、笔记、全文搜索（`#标签` 语法）、按类型/标签/合集筛选、5 种排序、网格/列表/紧凑视图 |
 | 批量 | 多选后批量打标签、加合集、收藏、导出 ZIP、导入酒馆、删除 |
-| 导入方式 | 选文件、拖拽、链接导入（服务器下载直链）、手动记录（只存链接或想法）、iOS 快捷指令分享上传 |
-| 去重 | 按文件 SHA-256 检测重复，文件只存一份 |
+| 批量导入 | 多选文件、选择文件夹（电脑）、拖入文件或文件夹、ZIP 自动解压（含嵌套 ZIP，跳过 `__MACOSX` 等垃圾文件，兼容 Windows 中文文件名），3 个并发上传、总进度、失败重试。可按压缩包名 / 文件夹名自动建合集 |
+| 导入方式 | 另有链接导入（服务器下载直链，ZIP 同样解压）、手动记录（只存链接或想法）、iOS 快捷指令分享上传 |
+| AI 整理 | 选中条目让 AI 生成标签、一句话简介，并顺便填写自定义字段（NSFW、语言等）。优先复用已有标签；结果先存为草稿，逐条审核（标签可勾选、追加或替换，简介可修改），确认后才写入。任务在服务器后台运行，关掉页面也会继续 |
+| AI 解读版本 | 在任意版本对比页点「AI 解读这次改动」，用几句话说清改了什么、对使用有什么影响、需要注意什么 |
+| 去重与同名识别 | 文件完全相同、或内容相同但字节不同（比如被酒馆重新导出过）都会识别为「已存在」。同类型、同名（自动忽略 `v1.2`、`(2)`、`副本` 等后缀，作者不同则不算）的视为可能的新版本，按设置「每次询问 / 自动存为新版本 / 另存 / 跳过」处理，批量导入时可以一键全部处理 |
 | 其他 | 回收站、统计页（类型分布、标签云、空间占用）、完整备份 ZIP、访问密码、PWA |
 | 界面风格 | 6 套完整风格，切换后排版、字体、卡片造型、导航、标签页、详情布局都会变化，每套都有浅色和深色版本，见下方「界面风格」 |
 
@@ -44,7 +48,7 @@
 | 极简 Minimal | iOS 原生风格。超大粗标题，分段控件，方形封面，分组圆角列表，悬浮胶囊导航，详情页封面居中 |
 | 暗夜酒馆 Tavern | 深木与琥珀。金色双线画框，名字压在立绘上，标题居中带装饰线，面板四角包边，菱形添加按钮 |
 | 樱色图鉴 Sakura | 手游图鉴。大圆角白描边卡片，渐变标题，评分角标，彩色标签，详情封面倾斜，浮动气泡导航 |
-| 墨白 Ink | 杂志排版。直角、黑色细线、大号衬线编号，图片默认黑白（悬停恢复彩色），收藏为红色印章，列表像表格 |
+| 墨白 Ink | 杂志排版。直角、黑色细线、大号衬线编号，收藏为红色印章，列表像表格 |
 | 霓虹 Neon | 终端 HUD。等宽字体，切角卡片，发光描边，`[ 方括号 ]` 标签，网格背景，深色下有扫描线 |
 
 样式文件：`web/css/base.css` 负责结构和组件，`web/css/skins.css` 是六套风格的变量和结构改写。
@@ -77,6 +81,7 @@ TV_HOST=127.0.0.1 TV_PORT=5180 TV_PASSWORD='设置一个强密码' node server.j
 | `TV_DATA` | `server/data` | 数据目录 |
 | `TV_PASSWORD` | 无 | 首次启动时设置的访问密码，之后可在网页「设置」里修改 |
 | `TV_MAX_UPLOAD_MB` | `200` | 单个文件上传上限 |
+| `TV_MAX_RESTORE_MB` | `2048` | 从备份还原时备份文件的大小上限 |
 
 开机自启：
 
@@ -112,22 +117,19 @@ sudo systemctl daemon-reload && sudo systemctl enable --now tavern-vault
 
 ### TauriTavern（iOS / Android / 桌面）
 
-TauriTavern 只能**通过 Git 地址**安装第三方扩展，而且要求 `manifest.json` 在仓库根目录。所以需要把 `extension/` 单独推送成一个仓库：
+在 TauriTavern 中：扩展 → 安装扩展 → 填入
 
-```bash
-cd tavern-vault/extension
-git init && git add . && git commit -m "TavernVault extension"
-git remote add origin https://github.com/<你>/tavern-vault-extension.git
-git push -u origin main
+```
+https://github.com/yanny0616-glitch/tavern-vault-extension
 ```
 
-然后在 TauriTavern 中：扩展 → 安装扩展 → 填入 `https://github.com/<你>/tavern-vault-extension`（仓库需要公开）。
+（TauriTavern 要求 `manifest.json` 在仓库根目录，所以插件单独放在这个仓库里。自己部署时，把 `extension/` 目录推送成一个公开仓库即可。）
 
 > **iOS 注意**：公开 TestFlight 包（`ios_external_beta` 配置）默认禁用第三方扩展。自签 IPA 或 Stable/Canary 包默认允许。
 
 ### SillyTavern
 
-可以用同样的 Git 地址安装；也可以在藏馆「设置」页下载插件压缩包，解压到 `SillyTavern/data/default-user/extensions/tavern-vault/`。
+扩展 → 安装扩展，填同一个地址；也可以在藏馆「设置」页下载插件压缩包，解压到 `SillyTavern/data/default-user/extensions/tavern-vault/`。
 
 ### 配置
 
@@ -137,8 +139,14 @@ git push -u origin main
 
 在酒馆里打开时，底部会多出「酒馆」页：
 
-- **酒馆 → 仓库**：浏览酒馆里的角色卡、世界书、预设、正则、快速回复、主题、背景，会标出哪些已经收藏。可以单个或批量收藏进仓库，角色卡导出为完整 PNG。
-- **仓库 → 酒馆**：在任意条目详情里点「导入到酒馆」，或多选后批量导入。角色卡和世界书会立即刷新；预设、正则、主题、快速回复需要刷新酒馆页面后才能在列表里看到。
+- **酒馆 → 仓库**：浏览酒馆里的角色卡、世界书、预设、正则、快速回复、主题、背景，可以单个或批量收藏进仓库，角色卡导出为完整 PNG。已收藏的条目会自动比对内容，标出：
+  - **已同步**：两边内容一致
+  - **酒馆有改动**：在酒馆里改过，可以「对比」或「存为新版本」
+  - **藏馆较新**：酒馆里还是旧版本，可以「更新到酒馆」（原地覆盖）
+  - **版本不同**：酒馆里是藏馆的另一个历史版本
+- **仓库 → 酒馆**：在任意条目详情里点「导入到酒馆」，或多选后批量导入。酒馆里已有同名时会询问「覆盖 / 另存一份 / 跳过」；内容完全一致的自动跳过。覆盖角色卡会保留它在酒馆里的聊天记录。角色卡和世界书会立即刷新；预设、正则、主题、快速回复需要刷新酒馆页面后才能在列表里看到。
+
+比对和覆盖需要插件 1.1.0 及以上。已经装过旧版的，在酒馆的扩展管理里点更新即可；旧版插件仍能用，但页面上会提示更新。
 
 ## 三、iOS 快捷指令：分享即上传
 
@@ -149,10 +157,23 @@ git push -u origin main
 3. 如果设置了密码，在头部添加 `Authorization`，值为 `Bearer <令牌>`
 4. 之后在 Safari、Discord、「文件」等 App 里分享角色卡，选这个快捷指令即可
 
-## 四、数据与备份
+## 四、AI 功能
+
+在「设置 → AI 助手」添加服务：
+
+- 支持 **OpenAI 兼容接口**（各类中转、DeepSeek、本地模型等）和 **Claude 官方接口**，可以存多个，随时切换
+- 密钥保存在服务器的 `data/ai.json`（权限 600），网页和酒馆插件都拿不到，也不会进备份；请求由服务器发出，手机上不会遇到跨域问题
+- 「整理规则」里可以设置读取范围（精简 / 标准 / 完整）、标签数量、简介字数、是否允许新建标签、让 AI 填写哪些字段，以及你自己的整理习惯
+- 开始前会显示预计 token 用量，也可以先看完整的发送内容
+- 卡片内容会作为数据交给 AI，并明确要求忽略其中的任何指令；AI 的返回会校验格式，字段只接受允许的值
+
+使用：在仓库里多选条目点「AI 整理」，或在条目详情里点「AI 整理」。右下角会显示进度和待审核数量。筛选里可以只看「未整理」的条目。
+
+## 五、数据与备份
 
 - 数据都在 `server/data/`：`db.json` 是索引，`files/` 存按 SHA-256 命名的原始文件
-- 「设置 → 下载完整备份」得到的 ZIP 解压回 data 目录即可恢复
+- 「设置 → 下载完整备份」得到包含所有版本文件的 ZIP；在「设置 → 从备份还原」上传即可恢复，可以选「合并」（保留现有内容）或「替换」。也可以直接把 ZIP 解压回 data 目录
+- 每次还原前会把当前数据库存一份到 `data/restore-points/`（保留最近 10 份）
 - 删除的内容先进回收站，永久删除后会自动清理没有被引用的文件
 
 ## API 一览
@@ -163,7 +184,9 @@ git push -u origin main
 |---|---|---|
 | GET | `/api/state` | 全部条目、合集、字段、设置、统计 |
 | GET | `/api/events` | SSE 实时事件 |
-| POST | `/api/items?filename=&type=&tags=&collections=&mode=` | 上传文件（原始 body），自动识别 |
+| POST | `/api/items?filename=&type=&tags=&collections=&match=&target=&zipCollection=&collectionName=` | 上传文件（原始 body），自动识别；ZIP 自动解压。返回 `status`：`created` / `version` / `duplicate` / `conflict` / `skipped` |
+| POST | `/api/ingest/resolve` | 处理同名冲突：`{sha, filename, action: version\|new\|skip, target}` |
+| POST | `/api/diff` | 对比两个文件：`{a: {sha, name}, b: {sha, name}}` |
 | POST | `/api/import-url` | `{url}` 由服务器下载 |
 | POST | `/api/items/manual` | 新建无文件条目 |
 | GET/PATCH/DELETE | `/api/items/:id` | 读取 / 修改 / 删除（`?hard=1` 永久删除） |
@@ -173,4 +196,10 @@ git push -u origin main
 | POST | `/api/batch` | 批量操作 |
 | POST | `/api/export` | `{ids}` 导出 ZIP |
 | GET | `/api/backup` | 完整备份 |
+| GET/PUT | `/api/ai/config` | AI 服务与整理规则（密钥只写不读） |
+| POST | `/api/ai/test`、`/api/ai/models` | 测试连接、拉取模型列表 |
+| POST | `/api/ai/organize`（及 `/estimate`、`/preview`） | 加入整理队列 / 估算用量 / 预览发送内容 |
+| GET / POST | `/api/ai/drafts`、`/api/ai/drafts/apply`、`/api/ai/drafts/discard`、`/api/ai/cancel` | 审核草稿 |
+| POST | `/api/ai/explain` | AI 解读两个版本的差异：`{a, b, aLabel, bLabel}` |
+| POST | `/api/restore?mode=merge\|replace` | 从备份 ZIP 还原（还原前自动保存当前数据库到 `data/restore-points`） |
 | GET | `/api/files/:sha` | 下载文件 |

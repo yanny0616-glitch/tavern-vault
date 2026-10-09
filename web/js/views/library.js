@@ -7,6 +7,7 @@ import { topbar, ensureView, itemCard, itemRow, collectionName } from './common.
 import { openDetail } from './detail.js';
 import { openImporter } from './importer.js';
 import { importItemsToTavern } from './tavern.js';
+import { startOrganize, aiReady } from './ai.js';
 
 const SORTS = {
     updated: ['最近更新', (a, b) => b.updatedAt.localeCompare(a.updatedAt)],
@@ -24,6 +25,7 @@ export function filtered() {
         if (f.fav && !it.favorite) return false;
         if (f.tag && !it.tags.includes(f.tag)) return false;
         if (f.collection && !it.collections.includes(f.collection)) return false;
+        if (f.ai && (f.ai === 'no') === Boolean(it.ai?.at)) return false;
         if (terms.length) {
             const hay = `${it.name}\n${it.description}\n${it.author}\n${it.tags.join(' ')}\n${it.notes}\n${it.searchText}\n${Object.values(it.fields || {}).join(' ')}`.toLowerCase();
             return terms.every((t) => (t.startsWith('#') ? it.tags.some((x) => x.toLowerCase() === t.slice(1)) : hay.includes(t)));
@@ -32,7 +34,7 @@ export function filtered() {
     }).sort((SORTS[state.prefs.sort] || SORTS.updated)[1]);
 }
 
-const activeFilterCount = () => [state.filter.tag, state.filter.collection, state.filter.fav].filter(Boolean).length;
+const activeFilterCount = () => [state.filter.tag, state.filter.collection, state.filter.fav, state.filter.ai].filter(Boolean).length;
 
 export function renderLibrary(root) {
     const refs = ensureView(root, 'library', () => {
@@ -79,6 +81,7 @@ export function renderLibrary(root) {
     const pills = [];
     if (state.filter.fav) pills.push(['收藏', () => setFilter(root, { fav: false })]);
     if (state.filter.tag) pills.push([`标签：${state.filter.tag}`, () => setFilter(root, { tag: '' })]);
+    if (state.filter.ai) pills.push([state.filter.ai === 'no' ? 'AI 未整理' : 'AI 已整理', () => setFilter(root, { ai: '' })]);
     if (state.filter.collection) pills.push([`合集：${collectionName(state.filter.collection)}`, () => setFilter(root, { collection: '' })]);
     clear(refs.activeRow, pills.map(([label, off]) => h('button', { class: 'pill', onclick: off }, h('span', {}, label), icon('x', { size: 12 }))));
     refs.activeRow.hidden = !pills.length;
@@ -86,7 +89,7 @@ export function renderLibrary(root) {
     if (!items.length) {
         clear(refs.content, emptyState('archive', '仓库还是空的', '上传角色卡、世界书、预设、正则、脚本、主题等文件，类型会自动识别。', btn('添加第一件藏品', { icon: 'plus', cls: 'primary', onclick: () => openImporter() })));
     } else if (!list.length) {
-        clear(refs.content, emptyState('search', '没有符合条件的内容', '换个关键词，或清除筛选条件', btn('清除筛选', { icon: 'x', onclick: () => { refs.search.value = ''; setFilter(root, { q: '', type: 'all', tag: '', collection: '', fav: false }); } })));
+        clear(refs.content, emptyState('search', '没有符合条件的内容', '换个关键词，或清除筛选条件', btn('清除筛选', { icon: 'x', onclick: () => { refs.search.value = ''; setFilter(root, { q: '', type: 'all', tag: '', collection: '', fav: false, ai: '' }); } })));
     } else {
         const click = (it) => () => {
             if (state.selecting) {
@@ -97,7 +100,7 @@ export function renderLibrary(root) {
         const LIMIT = 300;
         const shown = list.slice(0, refs.limit || LIMIT);
         const container = state.prefs.view === 'grid'
-            ? h('div', { class: `grid ${state.prefs.dense ? 'dense' : ''}` }, shown.map((it, i) => itemCard(it, { onClick: click(it), selected: state.selection.has(it.id), selecting: state.selecting, index: i })))
+            ? h('div', { class: `grid ${state.prefs.dense ? 'dense' : ''} ${state.prefs.cols ? `fixed-cols c${state.prefs.cols}` : ''}`, style: { '--cols': state.prefs.cols || null } }, shown.map((it, i) => itemCard(it, { onClick: click(it), selected: state.selection.has(it.id), selecting: state.selecting, index: i })))
             : h('div', { class: 'rows' }, shown.map((it, i) => itemRow(it, { onClick: click(it), selected: state.selection.has(it.id), index: i,
                 right: state.selecting ? h('span', { class: `row-check ${state.selection.has(it.id) ? 'on' : ''}` }, icon('check', { size: 13, stroke: 3 })) : null })));
         clear(refs.content, container,
@@ -125,6 +128,11 @@ function openFilters(root) {
                     opt(state.prefs.view === 'grid' && !state.prefs.dense, '卡片', () => { state.prefs.view = 'grid'; state.prefs.dense = false; savePrefs(); }, 'grid'),
                     opt(state.prefs.view === 'grid' && state.prefs.dense, '紧凑', () => { state.prefs.view = 'grid'; state.prefs.dense = true; savePrefs(); }, 'grid3'),
                     opt(state.prefs.view === 'list', '列表', () => { state.prefs.view = 'list'; savePrefs(); }, 'list'))),
+            state.prefs.view === 'grid' ? h('div', { class: 'form-group' }, h('div', { class: 'form-label' }, '每行显示'),
+                h('div', { class: 'opts' }, [0, 1, 2, 3, 4, 5, 6].map((n) => opt((state.prefs.cols || 0) === n, n ? `${n} 个` : '自动', () => { state.prefs.cols = n; savePrefs(); }))),
+                h('div', { class: 'muted small' }, '只对这台设备生效。手机和电脑可以分别设置。')) : null,
+            aiReady() || live().some((i) => i.ai?.at) ? h('div', { class: 'form-group' }, h('div', { class: 'form-label' }, 'AI 整理'),
+                h('div', { class: 'opts' }, [['', '全部'], ['no', '未整理'], ['yes', '已整理']].map(([v, l]) => opt((state.filter.ai || '') === v, l, () => { state.filter.ai = v; })))) : null,
             h('div', { class: 'form-group row-between' }, h('div', { class: 'form-label' }, '只看收藏'), switchEl(state.filter.fav, (v) => { state.filter.fav = v; renderLibrary(root); })),
             state.collections.length ? h('div', { class: 'form-group' }, h('div', { class: 'form-label' }, '合集'),
                 h('div', { class: 'opts' }, opt(!state.filter.collection, '全部', () => { state.filter.collection = ''; }),
@@ -135,7 +143,7 @@ function openFilters(root) {
     };
     draw();
     s.foot = h('div', { class: 'sheet-foot' },
-        btn('重置', { onclick: () => { Object.assign(state.filter, { tag: '', collection: '', fav: false }); state.prefs.sort = 'updated'; savePrefs(); draw(); renderLibrary(root); } }),
+        btn('重置', { onclick: () => { Object.assign(state.filter, { tag: '', collection: '', fav: false, ai: '' }); state.prefs.sort = 'updated'; savePrefs(); draw(); renderLibrary(root); } }),
         btn('完成', { cls: 'primary', onclick: () => s.close() }));
     s.el.append(s.foot);
 }
@@ -162,6 +170,7 @@ function renderSelbar(bar, list, root) {
             }),
             act('layers', '合集', () => pickCollection(async (cid) => run('addCollection', cid, '已加入合集'))),
             act('star', '收藏', () => run('favorite', true, '已收藏')),
+            aiReady() ? act('sparkles', 'AI 整理', () => startOrganize(ids)) : null,
             act('download', '导出', async () => downloadBlob(await api.req('POST', '/api/export', { ids }, { blob: true }), `TavernVault-${n}项.zip`)),
             bridge.host ? act('beer', '入酒馆', () => importItemsToTavern(ids.map((id) => state.byId.get(id)))) : null,
             act('trash', '删除', async () => {

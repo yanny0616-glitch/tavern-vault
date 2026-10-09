@@ -48,7 +48,7 @@ export function sheet({ title, body, foot, full = false, onClose, headExtra } = 
         document.removeEventListener('keydown', onKey);
         onClose?.();
     };
-    const onKey = (e) => { if (e.key === 'Escape') close(); };
+    const onKey = (e) => { if (e.key === 'Escape' && [...document.querySelectorAll('.overlay')].pop() === overlay) { e.stopImmediatePropagation(); close(); } };
     const bodyEl = h('div', { class: 'sheet-body' }, body);
     const footEl = foot ? h('div', { class: 'sheet-foot' }, foot) : null;
     const titleEl = h('h2', {}, title);
@@ -76,6 +76,22 @@ export function confirmDialog(message, { ok = '确定', danger = false, title = 
             onClose: () => finish(false),
         });
         s.el.classList.add('dialog');
+        s.el.parentElement.classList.add('center');
+    });
+}
+
+/** 多选一对话框：options = [{key, label, cls}]，取消返回 null */
+export function choiceDialog(message, options, { title = '请选择' } = {}) {
+    return new Promise((resolve) => {
+        let done = false;
+        const finish = (v) => { if (done) return; done = true; s.close(); resolve(v); };
+        const s = sheet({
+            title,
+            body: h('div', { class: 'choice-body' }, message),
+            foot: [h('button', { class: 'btn ghost', onclick: () => finish(null) }, '取消'), ...options.map((o) => h('button', { class: `btn ${o.cls || ''}`, onclick: () => finish(o.key) }, o.label))],
+            onClose: () => finish(null),
+        });
+        s.el.classList.add('dialog', 'choice');
         s.el.parentElement.classList.add('center');
     });
 }
