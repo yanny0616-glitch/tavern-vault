@@ -61,7 +61,7 @@ export function applyScripts(text, list, names) {
     return { out, hits };
 }
 
-export const looksHtml = (s) => /<(div|span|p|table|details|style|img|br|font|b|i|center|section|ul|ol|li|h\d)\b[^>]*>/i.test(String(s || ''));
+export const looksHtml = (s) => /<(div|span|p|table|details|style|img|br|font|b|i|center|section|ul|ol|li|h\d|html|body|svg|button|label)\b[^>]*>/i.test(String(s || ''));
 
 const esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
@@ -76,35 +76,75 @@ function mdLite(s) {
     }).join('');
 }
 
-// 脚本本来就不会运行（沙盒 + CSP），这里再去掉一遍，省得浏览器控制台一直报「已拦截」
+// 不运行脚本时，先去掉 <script> 和 onclick 这类事件属性（沙盒和 CSP 本来也会拦，省得控制台一直报错）
 const stripScripts = (s) => String(s)
     .replace(/<script\b[\s\S]*?(<\/script>|$)/gi, '')
     .replace(/<[a-z][^>]*>/gi, (tag) => tag.replace(/\s+on[a-z]+\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, ''));
 
-/** 隔离的 HTML 预览窗口，高度跟着内容走 */
-export function htmlFrame(html, { markdown = true, maxHeight = 0 } = {}) {
+export const hasScript = (s) => /<script\b|\son[a-z]+\s*=/i.test(String(s || ''));
+
+// 运行脚本时的高度上报：iframe 是匿名源，外面读不到里面的高度，由里面用 postMessage 告诉外面
+let frameSeq = 0;
+const frames = new Map();
+window.addEventListener('message', (e) => {
+    const d = e.data;
+    if (!d || typeof d !== 'object' || typeof d.tvFrame !== 'number') return;
+    const f = frames.get(d.tvFrame);
+    if (!f || e.source !== f.contentWindow) return;
+    if (!f.isConnected) { frames.delete(d.tvFrame); return; }
+    f.style.height = `${Math.min(Math.max(Number(d.h) || 0, 40), f.tvMax)}px`;
+});
+// 匿名源里不能用 localStorage，很多美化脚本一读就报错中断；给一个只存在内存里的替身
+const storageShim = "(function(){function mk(){var m={};return{getItem:function(k){return Object.prototype.hasOwnProperty.call(m,k)?m[k]:null},setItem:function(k,v){m[k]=String(v)},removeItem:function(k){delete m[k]},clear:function(){m={}},key:function(i){return Object.keys(m)[i]||null},get length(){return Object.keys(m).length}}}['localStorage','sessionStorage'].forEach(function(n){try{window[n].length}catch(e){try{Object.defineProperty(window,n,{value:mk(),configurable:true})}catch(_){}}})})();";
+const reporter = (id) => `<script>${storageShim}(function(){var last=0;function s(){var b=document.body,h=Math.ceil(Math.max(document.documentElement.scrollHeight,b?b.scrollHeight:0));if(Math.abs(h-last)>1){last=h;parent.postMessage({tvFrame:${id},h:h},'*')}}addEventListener('load',s);try{new ResizeObserver(s).observe(document.documentElement)}catch(e){}setInterval(s,800);s()})()</` + 'script>';
+
+const cspOf = (scripts) => (scripts
+    // 运行脚本：允许内联脚本和 https 上的库（很多美化会从 CDN 加载字体、jQuery 等）
+    ? "default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval' https:; style-src 'unsafe-inline' https:; img-src * data: blob:; media-src * data: blob:; font-src * data:; connect-src https:"
+    : "default-src 'none'; script-src 'none'; img-src * data: blob:; media-src * data: blob:; style-src 'unsafe-inline' *; font-src * data:");
+
+/**
+ * 隔离的 HTML 预览窗口，高度跟着内容走。
+ * scripts=false：sandbox 只给 allow-same-origin（外面要量高度），脚本全部不运行。
+ * scripts=true：sandbox 只给 allow-scripts，不给同源——脚本在匿名源里运行，读不到藏馆的登录信息和数据，也不能跳转页面、弹窗。
+ * full：内容本身是一整个网页（<html>…</html>），按原样显示，只在开头加上安全设置。
+ */
+export function htmlFrame(html, { markdown = true, maxHeight = 2400, scripts = false, full = false } = {}) {
     const cs = getComputedStyle(document.documentElement);
     const v = (k, d) => cs.getPropertyValue(k).trim() || d;
-    const doc = `<!doctype html><html><head><meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'none'; img-src * data: blob:; media-src * data: blob:; style-src 'unsafe-inline' *; font-src * data:">
-<meta name="viewport" content="width=device-width,initial-scale=1">
+    const id = ++frameSeq;
+    const body = scripts ? String(html) : stripScripts(html);
+    const head = `<meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${cspOf(scripts)}"><meta name="viewport" content="width=device-width,initial-scale=1">`;
+    const base = `<style>html,body{margin:0;background:transparent}body{color:${v('--text', '#2b2420')};font:15px/1.75 ${v('--font-body', 'system-ui, sans-serif')};word-break:break-word;overflow-wrap:anywhere}img,video{max-width:100%}</style>`;
+    let doc;
+    if (full) {
+        const add = head + base + (scripts ? reporter(id) : '');
+        const src = body.replace(/^\s*<!doctype[^>]*>/i, '');
+        // 注意别把 <header> 当成 <head>
+        doc = /<head(\s[^>]*)?>/i.test(src) ? `<!doctype html>${src.replace(/<head(\s[^>]*)?>/i, (m) => m + add)}`
+            : /<html(\s[^>]*)?>/i.test(src) ? `<!doctype html>${src.replace(/<html(\s[^>]*)?>/i, (m) => `${m}<head>${add}</head>`)}`
+            : `<!doctype html><html><head>${add}</head><body>${src}</body></html>`;
+    } else {
+        doc = `<!doctype html><html><head>${head}${base}
 <style>
-html,body{margin:0;padding:0;background:transparent}
-body{padding:12px 14px;color:${v('--text', '#2b2420')};font:15px/1.75 ${v('--font-body', 'system-ui, sans-serif')};word-break:break-word;overflow-wrap:anywhere}
-img,video{max-width:100%;height:auto}
+body{padding:12px 14px}
 em{color:${v('--text-2', '#6b5f57')}}
 q,blockquote{color:${v('--accent', '#9a4a2c')}}
 pre{white-space:pre-wrap}
 table{border-collapse:collapse;max-width:100%}
-</style></head><body>${markdown ? mdLite(stripScripts(html)) : stripScripts(html)}</body></html>`;
-    const f = h('iframe', { class: 'st-frame', sandbox: 'allow-same-origin', referrerpolicy: 'no-referrer', loading: 'lazy', title: '效果预览' });
+</style>${scripts ? reporter(id) : ''}</head><body>${markdown ? mdLite(body) : body}</body></html>`;
+    }
+    const f = h('iframe', { class: 'st-frame', sandbox: scripts ? 'allow-scripts' : 'allow-same-origin', referrerpolicy: 'no-referrer', title: '效果预览' });
+    f.tvMax = maxHeight;
     f.srcdoc = doc;
+    if (scripts) { frames.set(id, f); return f; }
+    let n = 0;
     const fit = () => {
         try {
             const d = f.contentDocument;
-            if (!d?.body) return;
-            const hgt = Math.ceil(d.body.getBoundingClientRect().height);
-            f.style.height = `${maxHeight ? Math.min(hgt, maxHeight) : hgt}px`;
+            if (!d?.body || ++n > 60) return; // 内容用 100vh 之类撑高时，避免一直变高
+            const hgt = Math.ceil(Math.max(d.body.getBoundingClientRect().height, full ? d.documentElement.scrollHeight : 0));
+            f.style.height = `${Math.min(Math.max(hgt, 40), maxHeight)}px`;
         } catch { /* 读不到就保持默认高度 */ }
     };
     f.addEventListener('load', () => {
@@ -115,6 +155,34 @@ table{border-collapse:collapse;max-width:100%}
         } catch { /* ignore */ }
     });
     return f;
+}
+
+// ```html … ``` 代码块：酒馆（酒馆助手的前端渲染）会把它当成网页显示
+const FENCE = /```[ \t]*([\w-]*)[ \t]*\r?\n([\s\S]*?)\r?\n?[ \t]*```/g;
+const htmlish = (lang, body) => lang === 'html' || (!lang && /^\s*<(!doctype|html|head|body|style|div|section|table)\b/i.test(body));
+export const hasHtmlFence = (s) => [...String(s || '').matchAll(FENCE)].some((m) => htmlish(m[1].toLowerCase(), m[2]));
+
+/**
+ * 按酒馆的样子显示一段消息：普通文字和行内 HTML 放在一个窗口里，
+ * 每个 ```html 代码块单独一个窗口、按完整网页显示，其它代码块显示成代码。
+ */
+export function stView(text, { scripts = false } = {}) {
+    const src = String(text ?? '');
+    const parts = [];
+    let last = 0;
+    for (const m of src.matchAll(FENCE)) {
+        const lang = m[1].toLowerCase();
+        if (m.index > last) parts.push({ t: 'md', v: src.slice(last, m.index) });
+        parts.push(htmlish(lang, m[2]) ? { t: 'html', v: m[2] } : { t: 'code', v: m[2] });
+        last = m.index + m[0].length;
+    }
+    if (last < src.length) parts.push({ t: 'md', v: src.slice(last) });
+    if (!parts.some((p) => p.t !== 'md')) return htmlFrame(src, { scripts });
+    return h('div', { class: 'st-multi' }, parts.map((p) => {
+        if (p.t === 'html') return htmlFrame(p.v, { scripts, full: true });
+        if (p.t === 'code') return h('pre', { class: 'code' }, p.v);
+        return p.v.trim() ? htmlFrame(p.v.trim(), { scripts }) : null;
+    }));
 }
 
 export const escapeHtml = esc;

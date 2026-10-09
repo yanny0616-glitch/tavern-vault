@@ -2,6 +2,7 @@
 import path from 'node:path';
 import { isPng, readPngInfo, extractCardFromPng } from './png.js';
 import { readZip } from './zip.js';
+import { entriesOf, entryKeys, effectivePrompts, presetRegex } from '../../web/js/cardfmt.js';
 
 export const TYPES = {
     character: '角色卡',
@@ -70,7 +71,7 @@ export function summarizeCard(card) {
         hasSystemPrompt: Boolean(str(d.system_prompt).trim()),
         hasDepthPrompt: Boolean(str(ext.depth_prompt?.prompt).trim()),
         bookName: book ? str(book.name) : '',
-        bookEntries: book ? arr(book.entries).length : 0,
+        bookEntries: entriesOf(book).length,
         world: str(ext.world),
         regexCount: regex.length,
         scriptCount: helperScripts.length,
@@ -108,10 +109,10 @@ function detectJson(obj, filename) {
     }
     // 世界书
     if (obj.entries && typeof obj.entries === 'object') {
-        const entries = Array.isArray(obj.entries) ? obj.entries : Object.values(obj.entries);
+        const entries = entriesOf(obj);
         const keys = [];
         for (const e of entries.slice(0, 300)) {
-            const name = str(e.comment || e.name || arr(e.key || e.keys)[0]);
+            const name = str(e.comment || e.name || entryKeys(e)[0]);
             if (name) keys.push(name);
         }
         return {
@@ -142,9 +143,10 @@ function detectJson(obj, filename) {
     // 预设
     if (Array.isArray(obj.prompts) || Array.isArray(obj.prompt_order) || 'chat_completion_source' in obj || ('temperature' in obj && 'openai_max_context' in obj)) {
         const prompts = arr(obj.prompts);
+        const eff = effectivePrompts(obj);
         return {
             type: 'preset', subtype: 'openai', name: str(obj.name) || base,
-            meta: { apiId: 'openai', prompts: prompts.length, enabledPrompts: prompts.filter((p) => p.enabled !== false).length, temperature: obj.temperature, maxContext: obj.openai_max_context, maxTokens: obj.openai_max_tokens, promptNames: prompts.map((p) => str(p.name)).filter(Boolean).slice(0, 80) },
+            meta: { apiId: 'openai', prompts: prompts.length, enabledPrompts: eff.filter((x) => x.enabled).length, regexCount: presetRegex(obj).length, temperature: obj.temperature, maxContext: obj.openai_max_context, maxTokens: obj.openai_max_tokens, promptNames: eff.map((x) => str(x.p.name)).filter(Boolean).slice(0, 80) },
             searchText: prompts.map((p) => `${str(p.name)} ${str(p.content).slice(0, 200)}`).join('\n').slice(0, 4000),
         };
     }

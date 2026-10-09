@@ -1,6 +1,7 @@
 // 两个文件版本的差异：数值/字段对比、长文本、条目增删改
 import { parseFile, fileSig, readPngInfo, pngImageHash } from './content.js';
 import { detectFile, summarizeCard, normalizeCard } from './detect.js';
+import { entriesOf, entryKeys, effectivePrompts, presetRegex } from '../../web/js/cardfmt.js';
 
 const MAX_TEXT = 60000;
 const str = (v) => (v == null ? '' : typeof v === 'string' ? v : JSON.stringify(v, null, 2)).replace(/\r\n?/g, '\n');
@@ -40,10 +41,8 @@ function listDiff(label, aItems, bItems) {
 }
 
 function bookItems(book) {
-    if (!book || typeof book !== 'object') return [];
-    const entries = Array.isArray(book.entries) ? book.entries : Object.values(book.entries || {});
-    return entries.map((e) => {
-        const ks = arr(e.key ?? e.keys).join(', ');
+    return entriesOf(book).map((e) => {
+        const ks = entryKeys(e).join(', ');
         return { title: str(e.comment || e.name).trim() || ks || '(无标题)', body: `关键词：${ks}\n${e.constant ? '[常驻] ' : ''}${e.disable || e.enabled === false ? '[禁用] ' : ''}\n${str(e.content).trim()}` };
     });
 }
@@ -81,15 +80,32 @@ function presetDiff(a, b, out) {
         ['frequency_penalty', '频率惩罚'], ['presence_penalty', '存在惩罚'], ['temp', '温度'], ['rep_pen', '重复惩罚']]) {
         if (k in a || k in b) out.facts.push(fact(l, a[k], b[k]));
     }
-    const prompts = (o) => arr(o.prompts).map((p) => ({ title: str(p.name || p.identifier) || '(未命名)', body: `${p.enabled === false ? '[关闭] ' : ''}${p.role ? `[${p.role}] ` : ''}\n${str(p.content).trim()}` }));
+    // 启用状态和顺序以 prompt_order 为准（酒馆里开关、拖动提示词改的是它）
+    const ea = effectivePrompts(a);
+    const eb = effectivePrompts(b);
+    const pname = (p) => str(p.name || p.identifier) || '(未命名)';
+    const prompts = (list) => list.map(({ p, enabled, used }) => ({ title: pname(p), body: `${!used ? '[未加入] ' : !enabled ? '[关闭] ' : ''}${p.role ? `[${p.role}] ` : ''}\n${str(p.content).trim()}` }));
     if (a.prompts || b.prompts) {
         out.facts.push(fact('提示词条目', arr(a.prompts).length, arr(b.prompts).length));
-        out.lists.push(listDiff('提示词', prompts(a), prompts(b)));
+        out.facts.push(fact('启用的提示词', ea.filter((x) => x.enabled).length, eb.filter((x) => x.enabled).length));
+        out.lists.push(listDiff('提示词', prompts(ea), prompts(eb)));
+        const order = (list) => list.filter((x) => x.used).map((x) => `${x.enabled ? '开' : '关'}  ${pname(x.p)}`).join('\n');
+        out.texts.push(textField('prompt_order', '提示词顺序和开关', order(ea), order(eb)));
+    }
+    const ra = presetRegex(a);
+    const rb = presetRegex(b);
+    if (ra.length || rb.length) {
+        const rx = (list) => list.map((r) => ({ title: str(r.scriptName) || '(未命名)', body: `${r.disabled ? '[禁用] ' : ''}${str(r.findRegex)}\n→ ${str(r.replaceString)}` }));
+        out.lists.push(listDiff('附带正则', rx(ra), rx(rb)));
     }
     for (const k of ['input_sequence', 'output_sequence', 'system_sequence', 'story_string', 'content']) {
         if (k in a || k in b) out.texts.push(textField(k, k, a[k], b[k]));
     }
-    const rest = (o) => Object.fromEntries(Object.entries(o).filter(([k]) => !['prompts', 'prompt_order', 'name'].includes(k)));
+    const rest = (o) => {
+        const r = Object.fromEntries(Object.entries(o).filter(([k]) => !['prompts', 'prompt_order', 'name'].includes(k)));
+        if (r.extensions?.regex_scripts) { r.extensions = { ...r.extensions }; delete r.extensions.regex_scripts; }
+        return r;
+    };
     out.texts.push(textField('other', '其它设置（JSON）', JSON.stringify(rest(a), null, 2), JSON.stringify(rest(b), null, 2)));
 }
 

@@ -3,7 +3,7 @@ import { h, clear, toast, confirmDialog, promptDialog, debounce, downloadBlob, s
 import { api } from '../api.js';
 import { bridge } from '../bridge.js';
 import { state, live, allTags, savePrefs, TYPE_META, reload } from '../state.js';
-import { topbar, ensureView, itemCard, itemRow, collectionName } from './common.js';
+import { topbar, ensureView, itemCard, itemRow, collectionName, applyHit } from './common.js';
 import { openDetail } from './detail.js';
 import { openImporter } from './importer.js';
 import { importItemsToTavern } from './tavern.js';
@@ -18,20 +18,41 @@ export const SORTS = {
     type: ['类型', (a, b) => a.type.localeCompare(b.type) || a.name.localeCompare(b.name, 'zh')],
 };
 
+/** 搜索词：空格分隔都要满足；#标签、-#标签（不要这个标签）、-词（不能出现） */
+export function parseQuery(q) {
+    const words = String(q || '').trim().toLowerCase().split(/\s+/).filter(Boolean);
+    const out = { tags: [], notTags: [], pos: [], neg: [], text: '' };
+    for (const w of words) {
+        if (w.startsWith('-#') && w.length > 2) out.notTags.push(w.slice(2));
+        else if (w.startsWith('#') && w.length > 1) out.tags.push(w.slice(1));
+        else if (w.startsWith('-') && w.length > 1) out.neg.push(w.slice(1));
+        else if (w !== '-') out.pos.push(w);
+    }
+    out.text = [...out.pos, ...out.neg.map((w) => `-${w}`)].join(' ');
+    return out;
+}
+
+// 全文搜索的结果（服务端按文件内容搜）；列表变了或搜索词变了就作废
+export const deep = { text: '', items: null, hits: null, pending: '' };
+const deepReady = (text) => deep.hits && deep.text === text && deep.items === state.items;
+
 export function filtered() {
     const f = state.filter;
-    const terms = f.q.trim().toLowerCase().split(/\s+/).filter(Boolean);
+    const pq = parseQuery(f.q);
+    const useDeep = pq.text && deepReady(pq.text);
     return live().filter((it) => {
         if (f.type !== 'all' && it.type !== f.type) return false;
         if (f.fav && !it.favorite) return false;
         if (f.tag && !it.tags.includes(f.tag)) return false;
         if (f.collection && !it.collections.includes(f.collection)) return false;
         if (f.ai && (f.ai === 'no') === Boolean(it.ai?.at)) return false;
-        if (terms.length) {
-            const hay = `${it.name}\n${it.description}\n${it.author}\n${it.tags.join(' ')}\n${it.notes}\n${it.searchText}\n${Object.values(it.fields || {}).join(' ')}`.toLowerCase();
-            return terms.every((t) => (t.startsWith('#') ? it.tags.some((x) => x.toLowerCase() === t.slice(1)) : hay.includes(t)));
-        }
-        return true;
+        const tags = it.tags.map((x) => x.toLowerCase());
+        if (!pq.tags.every((t) => tags.includes(t)) || pq.notTags.some((t) => tags.includes(t))) return false;
+        if (!pq.text) return true;
+        if (useDeep) return Boolean(deep.hits[it.id]);
+        // 全文结果回来之前先按列表里已有的资料搜
+        const hay = `${it.name}\n${it.description}\n${it.author}\n${it.tags.join(' ')}\n${it.notes}\n${it.searchText}\n${Object.values(it.fields || {}).join(' ')}`.toLowerCase();
+        return pq.pos.every((t) => hay.includes(t)) && !pq.neg.some((t) => hay.includes(t));
     }).sort((state.prefs.groupTime ? SORTS.created : SORTS[state.prefs.sort] || SORTS.updated)[1]);
 }
 
@@ -67,7 +88,7 @@ const activeFilterCount = () => [state.filter.tag, state.filter.collection, stat
 export function renderLibrary(root) {
     const refs = ensureView(root, 'library', () => {
         const search = h('input', {
-            class: 'input search-input', type: 'search', placeholder: '搜索名称、标签、作者、内容', value: state.filter.q,
+            class: 'input search-input', type: 'search', placeholder: '搜索名称、开场白、世界书等全部内容', value: state.filter.q,
             oninput: debounce(() => { state.filter.q = search.value; renderLibrary(root); }, 160),
         });
         const actions = h('div', { class: 'tb-actions-inner' });
@@ -80,12 +101,25 @@ export function renderLibrary(root) {
         head.append(searchWrap, seg, activeRow);
         const content = h('div', { class: 'lib-content' });
         const notice = h('div', { class: 'lib-notice', hidden: true });
+        const health = h('div', { class: 'lib-notice warn', hidden: true });
         const selbar = h('div', { class: 'selbar', hidden: true });
-        root.append(head, h('div', { class: 'page' }, notice, content), selbar);
-        return { seg, content, selbar, search, actions, sub, activeRow, notice };
+        root.append(head, h('div', { class: 'page' }, health, notice, content), selbar);
+        return { seg, content, selbar, search, actions, sub, activeRow, notice, health };
     });
 
     const items = live();
+    const pq = parseQuery(state.filter.q);
+    if (pq.text && !deepReady(pq.text) && deep.pending !== `${pq.text}|${state.items.length}`) {
+        const key = `${pq.text}|${state.items.length}`;
+        const items0 = state.items;
+        deep.pending = key;
+        api.get(`/api/search?q=${encodeURIComponent(pq.text)}`).then((r) => {
+            if (deep.pending !== key) return;
+            Object.assign(deep, { text: pq.text, items: items0, hits: r.hits || {}, pending: '' });
+            if (parseQuery(state.filter.q).text === pq.text && state.items === items0) renderLibrary(root);
+        }).catch(() => { if (deep.pending === key) deep.pending = ''; });
+    }
+    const hitOf = (it) => (pq.pos.length ? { terms: pq.pos, ...(deepReady(pq.text) ? deep.hits[it.id] : null) } : null);
     const counts = {};
     for (const it of items) counts[it.type] = (counts[it.type] || 0) + 1;
     const list = filtered();
@@ -115,6 +149,7 @@ export function renderLibrary(root) {
     clear(refs.activeRow, pills.map(([label, off]) => h('button', { class: 'pill', onclick: off }, h('span', {}, label), icon('x', { size: 12 }))));
     refs.activeRow.hidden = !pills.length;
 
+    renderHealth(refs.health);
     renderDupNotice(refs.notice, fc || state.filter.q || state.filter.type !== 'all' || state.selecting);
 
     if (!items.length) {
@@ -137,9 +172,9 @@ export function renderLibrary(root) {
         const LIMIT = 300;
         const shown = list.slice(0, refs.limit || LIMIT);
         const container = state.prefs.view === 'grid'
-            ? h('div', { class: `grid ${state.prefs.dense ? 'dense' : ''} ${state.prefs.cols ? `fixed-cols c${state.prefs.cols}` : ''}`, style: { '--cols': state.prefs.cols || null } }, withTimeGroups(shown, (it, i) => itemCard(it, { onClick: click(it), selected: state.selection.has(it.id), selecting: state.selecting, index: i }), 'in-grid'))
-            : h('div', { class: 'rows' }, withTimeGroups(shown, (it, i) => itemRow(it, { cache: true, onClick: click(it), selected: state.selection.has(it.id), index: i,
-                right: state.selecting ? h('span', { class: `row-check ${state.selection.has(it.id) ? 'on' : ''}` }, icon('check', { size: 13, stroke: 3 })) : null }), 'in-rows'));
+            ? h('div', { class: `grid ${state.prefs.dense ? 'dense' : ''} ${state.prefs.cols ? `fixed-cols c${state.prefs.cols}` : ''}`, style: { '--cols': state.prefs.cols || null } }, withTimeGroups(shown, (it, i) => applyHit(itemCard(it, { onClick: click(it), selected: state.selection.has(it.id), selecting: state.selecting, index: i }), it, hitOf(it)), 'in-grid'))
+            : h('div', { class: 'rows' }, withTimeGroups(shown, (it, i) => applyHit(itemRow(it, { cache: true, onClick: click(it), selected: state.selection.has(it.id), index: i,
+                right: state.selecting ? h('span', { class: `row-check ${state.selection.has(it.id) ? 'on' : ''}` }, icon('check', { size: 13, stroke: 3 })) : null }), it, hitOf(it)), 'in-rows'));
         clear(refs.content, container,
             list.length > shown.length ? h('div', { class: 'more' }, btn(`显示更多（剩余 ${list.length - shown.length}）`, { onclick: () => { refs.limit = (refs.limit || LIMIT) + LIMIT; renderLibrary(root); } })) : null);
     }
@@ -148,6 +183,30 @@ export function renderLibrary(root) {
 
 // 有可能重复的条目时，在列表上方提示一次；关掉后，直到出现新的重复组才再提示
 let dupMemo = { items: null, ignore: '', groups: [] };
+// 数据安全提醒：数据库损坏后自动恢复过、或条目数突然少了一大半（自动备份已暂停）
+export function renderHealth(el) {
+    const { guard, recovered } = state.health || {};
+    el.hidden = !guard && !recovered;
+    if (el.hidden) return;
+    const toBackups = btn('去备份页', { cls: 'sm', onclick: () => { location.hash = '#/settings/data'; } });
+    if (guard) {
+        clear(el, icon('alert', { size: 15 }),
+            h('span', { class: 'grow' }, `现在连回收站一共只有 ${guard.items} 个条目，最近一份备份里有 ${guard.ref} 个。为了不让好的备份被挤掉，自动备份已暂停。如果不是你自己删的，到备份页还原。`),
+            h('div', { class: 'lib-notice-acts' }, toBackups,
+                btn('是我删的，继续备份', { cls: 'sm ghost', onclick: async () => {
+                    if (!(await confirmDialog(`确认条目是你自己删掉的？会按现在的 ${guard.items} 个条目存一份新备份，之后照常每天备份。旧的备份不会马上删，超出保留份数后才会轮换掉。`, { ok: '继续备份' }))) return;
+                    try { await api.post('/api/backups/ack'); toast('已备份，自动备份恢复', 'ok'); await reload(); } catch (e) { toast(e.message, 'err'); }
+                } })));
+        return;
+    }
+    clear(el, icon('alert', { size: 15 }),
+        h('span', { class: 'grow' }, recovered.missing
+            ? `数据库文件不见了，已自动从${recovered.from}恢复。请检查条目是否齐全，缺的话可以到备份页还原。`
+            : `数据库文件损坏，已自动从${recovered.from}恢复（损坏的文件另存为 ${recovered.bad}）。请检查条目是否齐全，缺的话可以到备份页还原。`),
+        h('div', { class: 'lib-notice-acts' }, toBackups,
+            btn('知道了', { cls: 'sm ghost', onclick: async () => { try { await api.post('/api/health/ack'); await reload(); } catch (e) { toast(e.message, 'err'); } } })));
+}
+
 function renderDupNotice(el, busy) {
     const ignore = (state.settings.dupIgnore || []).join('|');
     if (dupMemo.items !== state.items || dupMemo.ignore !== ignore) dupMemo = { items: state.items, ignore, groups: findDuplicates() };
@@ -192,7 +251,8 @@ function openFilters(root) {
                     state.collections.map((c) => opt(state.filter.collection === c.id, c.name, () => { state.filter.collection = c.id; }, c.icon)))) : null,
             tags.length ? h('div', { class: 'form-group' }, h('div', { class: 'form-label' }, '标签'),
                 h('div', { class: 'opts' }, opt(!state.filter.tag, '全部', () => { state.filter.tag = ''; }),
-                    tags.slice(0, 80).map(([t, n]) => opt(state.filter.tag === t, `${t}  ${n}`, () => { state.filter.tag = t; })))) : null);
+                    tags.slice(0, 80).map(([t, n]) => opt(state.filter.tag === t, `${t}  ${n}`, () => { state.filter.tag = t; })))) : null,
+            h('div', { class: 'muted small' }, '搜索会查到开场白、对话示例、世界书条目、预设提示词等全部文字。多个词用空格分开表示都要包含；「-词」表示不能出现；「#标签」只看带这个标签的，「-#标签」排除这个标签。'));
     };
     draw();
     s.foot = h('div', { class: 'sheet-foot' },

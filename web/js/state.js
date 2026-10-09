@@ -72,6 +72,7 @@ export async function reload() {
     state.fields = s.fields;
     state.settings = s.settings;
     state.stats = s.stats;
+    state.health = s.health || {};
     state.loaded = true;
     for (const id of [...state.selection]) if (!state.byId.has(id)) state.selection.delete(id);
     applyAccent();

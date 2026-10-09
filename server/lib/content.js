@@ -3,7 +3,7 @@ import path from 'node:path';
 import { isPng, extractCardFromPng, readPngInfo, pngImageHash } from './png.js';
 import { readZip } from './zip.js';
 import { detectFile } from './detect.js';
-import { sigOf, cardParts } from '../../web/js/sig.js';
+import { sigOf, syncParts } from '../../web/js/sig.js';
 
 /** 把文件解析成对象：PNG 角色卡、JSON、CHARX；文本返回 text；其它返回 null */
 export function parseFile(buf, filename = '') {
@@ -34,12 +34,12 @@ export function fileSig(buf, filename, det = null) {
     }
 }
 
-/** 角色卡的分段指纹（见 web/js/sig.js cardParts）；不是角色卡返回 null */
+/** 角色卡、世界书的分段指纹（见 web/js/sig.js syncParts）；其它类型返回 null */
 export function fileParts(buf, filename, det = null) {
     try {
         const { obj } = parseFile(buf, filename);
         if (!obj) return null;
-        return cardParts((det || detectFile(buf, filename)).type, obj);
+        return syncParts((det || detectFile(buf, filename)).type, obj);
     } catch {
         return null;
     }

@@ -120,6 +120,41 @@ function buildCard(it, { selected, selecting, index }) {
             it.rating ? h('div', { class: 'card-stars' }, starsEl(it.rating, null, { size: 11 })) : null));
 }
 
+const escHtml = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+/** 把 text 里出现的搜索词包上 <mark>，返回安全的 HTML */
+export function markTerms(text, terms) {
+    const src = String(text ?? '');
+    const ts = [...new Set((terms || []).filter(Boolean))].sort((a, b) => b.length - a.length);
+    if (!ts.length) return escHtml(src);
+    const re = new RegExp(ts.map((t) => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|'), 'gi');
+    let out = '';
+    let last = 0;
+    for (const m of src.matchAll(re)) {
+        out += `${escHtml(src.slice(last, m.index))}<mark>${escHtml(m[0])}</mark>`;
+        last = m.index + m[0].length;
+    }
+    return out + escHtml(src.slice(last));
+}
+
+/**
+ * 搜索时：名称里的搜索词高亮；命中在正文里的，在名称下面显示「开场白：…片段…」。
+ * hit = { terms, where?, snip? }；hit 为 null 时还原成普通样子（卡片元素是缓存复用的）
+ */
+export function applyHit(el, it, hit) {
+    const titles = el.querySelectorAll('.card-title, .row-title > span:last-child');
+    const sig = hit ? `${hit.terms.join(' ')}|${hit.where || ''}|${hit.snip || ''}` : '';
+    if ((el.tvHit || '') === sig) return el;
+    el.tvHit = sig;
+    for (const t of titles) { if (hit?.terms.length) t.innerHTML = markTerms(it.name, hit.terms); else t.textContent = it.name; }
+    el.querySelector('.search-hit')?.remove();
+    if (hit?.snip) {
+        const box = h('div', { class: 'search-hit' }, h('span', { class: 'search-hit-where' }, hit.where));
+        box.insertAdjacentHTML('beforeend', markTerms(hit.snip, hit.terms));
+        (el.querySelector('.card-body') || el.querySelector('.row-main'))?.append(box);
+    }
+    return el;
+}
+
 // 仓库列表视图的行同样复用；其他地方（right 是按钮等）每次新建
 const rowCache = new Map();
 

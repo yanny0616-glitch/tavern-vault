@@ -11,10 +11,12 @@ import { detectFile, mimeOf, normalizeCard, summarizeCard, TYPES } from './lib/d
 import { extractCardFromPng, isPng, writeCardToPng } from './lib/png.js';
 import { buildZip, readZip, isJunkPath } from './lib/zip.js';
 import { fileSig, fileParts, parseFile } from './lib/content.js';
-import { stripSyncEntries, DEFAULT_SYNC_EXCLUDE, CARD_PARTS, sameParts, mergeParts } from '../web/js/sig.js';
+import { entriesOf, entryKeys, effectivePrompts } from '../web/js/cardfmt.js';
+import { stripSyncEntries, DEFAULT_SYNC_EXCLUDE, SYNC_OPTIONS, PARTS_VERSION, sameParts, mergeParts } from '../web/js/sig.js';
 import { diffFiles, diffSummary } from './lib/diff.js';
 import { AiConfig, listModels, chat, AiError } from './lib/ai.js';
 import { createAiTasks } from './lib/ai-tasks.js';
+const str = (v) => (v == null ? '' : typeof v === 'string' ? v : String(v));
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const VERSION = '1.2.0';
@@ -25,7 +27,22 @@ const WEB_DIR = path.resolve(process.env.TV_WEB || path.join(__dirname, '..', 'w
 const MAX_UPLOAD = Number(process.env.TV_MAX_UPLOAD_MB || 200) * 1024 * 1024;
 const MAX_RESTORE = Number(process.env.TV_MAX_RESTORE_MB || 2048) * 1024 * 1024;
 
-const store = new Store(DATA_DIR);
+// db.json 损坏或丢失时，从最近一份备份（自动或手动）里取回索引
+const store = new Store(DATA_DIR, {
+    recover() {
+        const dir = path.join(DATA_DIR, 'backups');
+        let names = [];
+        try { names = fs.readdirSync(dir).filter((f) => /^TavernVault-(auto|manual)-\d{8}-\d{6}\.zip$/.test(f)).sort((a, b) => b.slice(-19).localeCompare(a.slice(-19))); } catch { return null; }
+        for (const name of names) {
+            try {
+                const e = readZip(fs.readFileSync(path.join(dir, name)), { maxTotal: 4 * 1024 ** 3, maxEntries: 500000 }).find((x) => x.name === 'db.json');
+                const db = e && JSON.parse(e.read().toString('utf8'));
+                if (db?.items && typeof db.items === 'object') return { db, from: `备份 ${name}` };
+            } catch { /* 这份也坏了，试下一份 */ }
+        }
+        return null;
+    },
+});
 const aiConfig = new AiConfig(DATA_DIR);
 
 // ---------------- 认证 ----------------
@@ -163,10 +180,36 @@ function withCollections(opts) {
     return cols.filter((id) => store.db.collections[id]);
 }
 
-/** 给已有条目加一个新版本并设为当前版本 */
+// ---- 版本号：卡里的 character_version，没有就看文件名里的 v1.2 / ver2 ----
+const fileVer = (name) => (String(name || '').replace(/\.[a-z0-9]{2,5}$/i, '').match(/(?:^|[\s_\-(（[【])v(?:er(?:sion)?)?\.?\s*(\d+(?:\.\d+)*)/i) || [])[1] || '';
+const versionOf = (det, filename) => String(det?.version || '').trim() || fileVer(filename);
+const verKey = (v) => { const m = String(v || '').match(/\d+(?:\.\d+)*/); return m ? m[0].split('.').map(Number) : null; };
+function cmpVer(a, b) {
+    for (let i = 0; i < Math.max(a.length, b.length); i++) if ((a[i] || 0) !== (b[i] || 0)) return (a[i] || 0) - (b[i] || 0);
+    return 0;
+}
+/** 当前版本文件的版本号（旧文件没记过就现读一次） */
+function fileVersion(f) {
+    if (typeof f.ver === 'string') return f.ver;
+    try { f.ver = versionOf(detectFile(store.readBlob(f.sha), f.name), f.name); } catch { f.ver = ''; }
+    return f.ver;
+}
+/** 新文件的版本号比当前版本低（比如后导入了旧版）：返回当前版本号，否则返回空 */
+function olderThanCurrent(it, det, filename) {
+    const nv = verKey(versionOf(det, filename));
+    const cur = store.primaryFile(it);
+    if (!nv || !cur) return '';
+    const cv = fileVersion(cur);
+    const ck = verKey(cv);
+    return ck && cmpVer(nv, ck) < 0 ? cv : '';
+}
+
+/** 给已有条目加一个新版本；默认设为当前版本，opts.primary === false 时只存为历史版本 */
 function addVersion(it, { buf, filename, sha, sig, parts, det }, opts = {}) {
-    store.addFile(it.id, { sha, name: filename, size: buf.length, mime: mimeOf(filename), label: opts.label || (det.version ? `v${det.version}` : ''), primary: true, sig, parts });
-    applyDetection(it, det, sha);
+    const ver = versionOf(det, filename);
+    const primary = opts.primary !== false;
+    store.addFile(it.id, { sha, name: filename, size: buf.length, mime: mimeOf(filename), label: opts.label || (ver ? `v${ver.replace(/^v/i, '')}` : ''), primary, sig, parts, ver });
+    if (primary) applyDetection(it, det, sha);
     const cols = withCollections(opts);
     store.updateItem(it.id, {
         tags: [...new Set([...it.tags, ...(opts.tags || [])])],
@@ -223,7 +266,12 @@ function ingest(buf, filename, opts = {}) {
             // 指定了目标：默认直接存为新版本；match=ask 时只返回对比结果（酒馆页「对比」用）
             const action = target ? (opts.match === 'ask' ? 'ask' : opts.match === 'skip' ? 'skip' : 'version') : opts.match || 'ask';
             const cand = candidates[0];
-            if (action === 'version') return { ...base, status: 'version', duplicate: false, item: slim(addVersion(cand, file, opts)) };
+            if (action === 'version') {
+                // 版本号比当前低：存为历史版本，不顶替当前版本（从酒馆收录、手动指定的除外）
+                const curVer = opts.origin === 'tavern' || opts.primary === true ? '' : olderThanCurrent(cand, det, fname);
+                const item = addVersion(cand, file, { ...opts, primary: !curVer });
+                return { ...base, status: 'version', duplicate: false, older: Boolean(curVer), currentVersion: curVer, newVersion: versionOf(det, fname), item: slim(item) };
+            }
             if (action === 'skip') return { ...base, status: 'skipped', duplicate: false, item: slim(cand) };
             if (action === 'ask') {
                 const prev = store.primaryFile(cand);
@@ -255,7 +303,7 @@ function ingest(buf, filename, opts = {}) {
         cover: det.isCover ? sha : null,
         fields: { downloadedAt: new Date().toISOString().slice(0, 10) },
     });
-    store.addFile(item.id, { sha, name: fname, size: buf.length, mime: mimeOf(fname), primary: true, sig, parts, label: opts.label || '' });
+    store.addFile(item.id, { sha, name: fname, size: buf.length, mime: mimeOf(fname), primary: true, sig, parts, label: opts.label || '', ver: versionOf(det, fname) });
     return { ...base, status: 'created', duplicate: false, item: slim(store.db.items[item.id]) };
 }
 
@@ -439,6 +487,7 @@ route('GET', '/api/state', () => {
         items: Object.values(store.db.items).map(slim),
         collections: Object.values(store.db.collections),
         fields: store.db.fields,
+        health: { guard: backupGuard(), recovered: settings.recoveredNote || null },
         settings: { ...settings, syncExclude: syncExclude(), syncIgnore: syncIgnore(), syncKeep: syncKeep(), auth: authEnabled(), version: VERSION, ai: { ready: aiConfig.ready, ...aiTasks.summary() } },
         stats: store.stats(),
     };
@@ -483,7 +532,7 @@ route('POST', '/api/items', async ({ req, url }) => {
 
 const syncExclude = () => store.db.settings.syncExclude ?? DEFAULT_SYNC_EXCLUDE;
 // 从酒馆同步时忽略的角色卡分段；syncKeep：收新版本时，这几段沿用藏馆原来的内容
-const syncIgnore = () => (store.db.settings.syncIgnore || []).filter((k) => k in CARD_PARTS);
+const syncIgnore = () => (store.db.settings.syncIgnore || []).filter((k) => k in SYNC_OPTIONS);
 const syncKeep = () => store.db.settings.syncKeep !== false;
 
 /** 酒馆里的卡收成新版本前：把忽略的那几段换回藏馆当前版本的内容 */
@@ -491,12 +540,12 @@ async function keepVaultParts(buf, filename, targetId) {
     const ignore = syncIgnore();
     const it = store.db.items[targetId];
     const prev = it && store.primaryFile(it);
-    if (!ignore.length || !syncKeep() || !prev || it.type !== 'character' || !store.hasBlob(prev.sha)) return { buf, merged: false };
+    if (!ignore.length || !syncKeep() || !prev || !['character', 'worldbook'].includes(it.type) || !store.hasBlob(prev.sha)) return { buf, merged: false };
     try {
         const cur = parseFile(buf, filename);
         const old = parseFile(store.readBlob(prev.sha), prev.name).obj;
         if (!cur?.obj || !old || (!cur.image && path.extname(filename).toLowerCase() === '.charx')) return { buf, merged: false };
-        const out = mergeParts('character', cur.obj, old, ignore);
+        const out = mergeParts(it.type, cur.obj, old, ignore);
         if (JSON.stringify(out) === JSON.stringify(cur.obj)) return { buf, merged: false };
         return { buf: cur.image ? await writeCardToPng(buf, out) : Buffer.from(JSON.stringify(out, null, 4)), merged: true };
     } catch {
@@ -900,6 +949,38 @@ function listBackups() {
             .sort((a, b) => b.name.slice(-19).localeCompare(a.name.slice(-19)));
     } catch { return []; }
 }
+// 每份备份里有多少条目（含回收站），用来发现「库突然变空 / 少了一大半」
+const COUNTS_FILE = () => path.join(BACKUP_DIR, '.counts.json');
+const itemCount = () => Object.keys(store.db.items).length;
+function backupCounts() {
+    let c = {};
+    try { c = JSON.parse(fs.readFileSync(COUNTS_FILE(), 'utf8')) || {}; } catch { /* 第一次 */ }
+    let changed = false;
+    const list = listBackups();
+    for (const b of list) {
+        if (typeof c[b.name] === 'number') continue;
+        // 旧备份没记过数量，读一次它的 db.json
+        try {
+            const e = readZip(fs.readFileSync(path.join(BACKUP_DIR, b.name)), { maxTotal: 4 * 1024 ** 3, maxEntries: 500000 }).find((x) => x.name === 'db.json');
+            c[b.name] = Object.keys(JSON.parse(e.read().toString('utf8')).items || {}).length;
+        } catch { c[b.name] = -1; }
+        changed = true;
+    }
+    for (const k of Object.keys(c)) if (!list.some((b) => b.name === k)) { delete c[k]; changed = true; }
+    if (changed) try { fs.writeFileSync(COUNTS_FILE(), JSON.stringify(c)); } catch { /* ignore */ }
+    return c;
+}
+/** 条目数比最近一份备份少了一半以上（或变成 0）时返回提示信息，这时自动备份暂停，免得把好的备份挤掉 */
+function backupGuard() {
+    const last = listBackups()[0];
+    if (!last) return null;
+    const ref = backupCounts()[last.name];
+    const now = itemCount();
+    if (!(ref > 0)) return null;
+    if (now === 0 || (now < ref / 2 && ref - now >= 5)) return { items: now, ref, refName: last.name };
+    return null;
+}
+
 function makeBackup(kind = 'manual') {
     fs.mkdirSync(BACKUP_DIR, { recursive: true });
     const stamp = new Date().toISOString().replace(/\D/g, '').slice(0, 14);
@@ -908,6 +989,7 @@ function makeBackup(kind = 'manual') {
     fs.writeFileSync(`${file}.tmp`, buildBackup());
     fs.renameSync(`${file}.tmp`, file);
     fs.writeFileSync(path.join(BACKUP_DIR, '.last-db'), dbFingerprint());
+    try { fs.writeFileSync(COUNTS_FILE(), JSON.stringify({ ...backupCounts(), [name]: itemCount() })); } catch { /* ignore */ }
     pruneBackups();
     console.log(`  [自动备份] 已保存 ${name}`);
     return listBackups().find((b) => b.name === name);
@@ -928,6 +1010,8 @@ function autoBackupTick() {
         let lastDb = '';
         try { lastDb = fs.readFileSync(path.join(BACKUP_DIR, '.last-db'), 'utf8'); } catch { /* 第一次 */ }
         if (last && lastDb === dbFingerprint()) return;
+        const g = backupGuard();
+        if (g) { console.log(`  [自动备份] 暂停：现在 ${g.items} 个条目，最近一份备份里有 ${g.ref} 个`); return; }
         makeBackup('auto');
     } catch (e) { console.log(`  [自动备份] 失败：${e.message}`); }
 }
@@ -938,7 +1022,10 @@ const backupFile = (name) => {
     if (!BACKUP_NAME.test(name || '') || !fs.existsSync(path.join(BACKUP_DIR, name))) throw new HttpError(404, '备份不存在');
     return path.join(BACKUP_DIR, name);
 };
-route('GET', '/api/backups', () => ({ ...autoBackupCfg(), list: listBackups() }));
+route('GET', '/api/backups', () => ({ ...autoBackupCfg(), list: listBackups(), counts: backupCounts(), guard: backupGuard() }));
+// 「条目确实是我自己删的」：立刻按现在的数据存一份自动备份，之后照常
+route('POST', '/api/backups/ack', () => { const b = makeBackup('auto'); broadcast('change', {}); return b; });
+route('POST', '/api/health/ack', () => { delete store.db.settings.recoveredNote; store.save(); broadcast('change', {}); return { ok: true }; });
 route('POST', '/api/backups', () => makeBackup('manual'));
 route('GET', '/api/backups/:name', ({ res, p }) => {
     const file = backupFile(p.name);
@@ -1062,7 +1149,7 @@ route('PUT', '/api/settings', async ({ req }) => {
     }
     // 标记为「不是重复」的条目组（排序后的 id 用逗号连接）
     if (Array.isArray(body.dupIgnore)) store.db.settings.dupIgnore = [...new Set(body.dupIgnore.map((x) => String(x).replace(/[^\w,-]/g, '').slice(0, 400)).filter(Boolean))].slice(-300);
-    if (Array.isArray(body.syncIgnore)) store.db.settings.syncIgnore = [...new Set(body.syncIgnore.map(String))].filter((k) => k in CARD_PARTS);
+    if (Array.isArray(body.syncIgnore)) store.db.settings.syncIgnore = [...new Set(body.syncIgnore.map(String))].filter((k) => k in SYNC_OPTIONS);
     if (typeof body.syncKeep === 'boolean') store.db.settings.syncKeep = body.syncKeep;
     if (Array.isArray(body.syncExclude)) store.db.settings.syncExclude = [...new Set(body.syncExclude.map((x) => String(x).trim().slice(0, 60)).filter(Boolean))].slice(0, 30);
     store.save();
@@ -1166,16 +1253,115 @@ const server = http.createServer(async (req, res) => {
 });
 
 /** 给旧数据补算内容指纹（后台分批进行，不阻塞启动） */
+// ---------------- 全文搜索 ----------------
+// 列表里只带了一小段 searchText；这里按文件内容搜：开场白、对话示例、世界书条目、预设提示词……
+const searchCache = new Map();
+const SEG_MAX = 2 * 1024 * 1024;
+function contentSegs(type, parsed) {
+    const out = [];
+    const add = (label, v) => { const s = str(v).trim(); if (s) out.push([label, s.slice(0, SEG_MAX)]); };
+    const bookText = (book) => entriesOf(book).map((e) => `${str(e.comment || e.name)} ${entryKeys(e).join(' ')}\n${str(e.content)}`).join('\n\n');
+    const obj = parsed.obj;
+    if (type === 'character' && obj) {
+        const d = normalizeCard(obj)?.data || {};
+        add('描述', d.description); add('性格', d.personality); add('场景', d.scenario);
+        add('开场白', [d.first_mes, ...(Array.isArray(d.alternate_greetings) ? d.alternate_greetings : []), ...(Array.isArray(d.group_only_greetings) ? d.group_only_greetings : [])].map(str).join('\n\n'));
+        add('对话示例', d.mes_example); add('系统提示词', d.system_prompt); add('后置指令', d.post_history_instructions);
+        add('作者注释', d.creator_notes); add('深度提示词', d.extensions?.depth_prompt?.prompt);
+        add('内嵌世界书', bookText(d.character_book));
+        add('内嵌正则', (Array.isArray(d.extensions?.regex_scripts) ? d.extensions.regex_scripts : []).map((r) => str(r?.scriptName)).join('\n'));
+    } else if (type === 'worldbook' && obj) {
+        add('世界书', bookText(obj));
+    } else if (type === 'preset' && obj) {
+        add('提示词', effectivePrompts(obj).map(({ p }) => `${str(p.name)}\n${str(p.content)}`).join('\n\n'));
+    } else if (type === 'regex' && obj) {
+        add('正则', (Array.isArray(obj) ? obj : [obj]).map((r) => `${str(r?.scriptName)}\n${str(r?.findRegex)}`).join('\n'));
+    } else if (parsed.text) {
+        add('内容', parsed.text);
+    } else if (obj && type !== 'character') {
+        add('内容', JSON.stringify(obj));
+    }
+    return out;
+}
+function searchSegs(it) {
+    const f = store.primaryFile(it);
+    const key = `${f?.sha || ''}|${it.updatedAt}`;
+    const c = searchCache.get(it.id);
+    if (c && c.key === key) return c.segs;
+    const segs = [['名称', it.name], ['作者', it.author], ['标签', it.tags.join(' ')], ['简介', it.description], ['笔记', it.notes], ['资料', Object.values(it.fields || {}).join(' ')]]
+        .map(([l, v]) => [l, str(v)]).filter(([, v]) => v);
+    if (f && f.size < 64 * 1024 * 1024 && store.hasBlob(f.sha)) {
+        try { segs.push(...contentSegs(it.type, parseFile(store.readBlob(f.sha), f.name))); } catch { /* 读不了就只搜资料 */ }
+    }
+    const out = segs.map(([l, v]) => [l, v, v.toLowerCase()]);
+    searchCache.set(it.id, { key, segs: out });
+    return out;
+}
+function snippet(text, lower, term) {
+    const i = lower.indexOf(term);
+    if (i < 0) return '';
+    // 命中的词放在片段靠前的位置，卡片只显示两行也能看到
+    const a = Math.max(0, i - 8);
+    const b = Math.min(text.length, i + term.length + 60);
+    return `${a > 0 ? '…' : ''}${text.slice(a, b).replace(/\s+/g, ' ').trim()}${b < text.length ? '…' : ''}`;
+}
+/** 空格分隔的词都要出现，-词 表示不能出现；#标签 / -#标签 由网页自己按标签筛 */
+route('GET', '/api/search', ({ url }) => {
+    const raw = String(url.searchParams.get('q') || '').slice(0, 500);
+    const words = raw.toLowerCase().split(/\s+/).filter(Boolean).filter((w) => !/^-?#/.test(w));
+    const pos = words.filter((w) => !w.startsWith('-'));
+    const neg = words.filter((w) => w.startsWith('-') && w.length > 1).map((w) => w.slice(1));
+    const hits = {};
+    if (!pos.length && !neg.length) return { q: raw, hits };
+    for (const it of Object.values(store.db.items)) {
+        if (it.deletedAt) continue;
+        const segs = searchSegs(it);
+        if (neg.some((t) => segs.some((s) => s[2].includes(t)))) continue;
+        let first = null;
+        let ok = true;
+        for (const t of pos) {
+            const s = segs.find((x) => x[2].includes(t));
+            if (!s) { ok = false; break; }
+            first ||= [s, t];
+        }
+        if (!ok) continue;
+        // 名称、标签里就有的不用显示片段
+        const [s, t] = first || [];
+        hits[it.id] = s && !['名称', '标签'].includes(s[0]) ? { where: s[0], snip: snippet(s[1], s[2], t) } : {};
+    }
+    return { q: raw, hits };
+});
+
+// 识别规则更新过（比如预设的启用数、对象形式的世界书条目）：启动时按文件重新算一遍统计信息
+const DETECT_VERSION = 2;
+async function redetect() {
+    if ((store.db.detectVersion || 1) >= DETECT_VERSION) return 0;
+    let n = 0;
+    for (const it of Object.values(store.db.items)) {
+        const f = store.primaryFile(it);
+        if (!f || !store.hasBlob(f.sha)) continue;
+        try {
+            const det = detectFile(store.readBlob(f.sha), f.name);
+            if (det.type === it.type) { it.meta = det.meta || {}; it.searchText = det.searchText || ''; n++; }
+        } catch { /* 跳过 */ }
+        if (n % 25 === 0) await new Promise((r) => setImmediate(r));
+    }
+    store.db.detectVersion = DETECT_VERSION;
+    store.save();
+    return n;
+}
+
 async function fillSigs() {
     let n = 0;
     for (const it of Object.values(store.db.items)) {
         for (const f of it.files) {
-            const needParts = f.parts === undefined && it.type === 'character' && f.sig;
+            const partsType = it.type === 'character' || it.type === 'worldbook';
+            const needParts = partsType && f.sig && f.parts?.v !== PARTS_VERSION;
             if (f.sig !== undefined && !needParts) continue;
             try {
                 const buf = store.hasBlob(f.sha) ? store.readBlob(f.sha) : null;
                 if (f.sig === undefined) f.sig = buf ? fileSig(buf, f.name) : '';
-                if (it.type === 'character' && f.sig) f.parts = (buf && fileParts(buf, f.name)) || null;
+                if (partsType && f.sig) f.parts = (buf && fileParts(buf, f.name)) || null;
             } catch { if (f.sig === undefined) f.sig = ''; }
             if (++n % 25 === 0) await new Promise((r) => setImmediate(r));
         }
@@ -1183,7 +1369,8 @@ async function fillSigs() {
     if (n) store.save();
     return n;
 }
-fillSigs().then((n) => { if (n) console.log(`  已为 ${n} 个旧文件补算内容指纹`); });
+fillSigs().then((n) => { if (n) console.log(`  已为 ${n} 个旧文件补算内容指纹`); })
+    .then(redetect).then((n) => { if (n) { console.log(`  已按新规则重新识别 ${n} 个条目`); broadcast('change', {}); } });
 
 server.requestTimeout = 0;
 server.listen(PORT, HOST, () => {

@@ -3,7 +3,7 @@ import { h, clear, toast, sheet, icon, btn, emptyState, choiceDialog } from '../
 import { api } from '../api.js';
 import { bridge } from '../bridge.js';
 import { state, findByName, typeMeta, reload } from '../state.js';
-import { sigOf, stripSyncEntries, cardParts, sameParts, CARD_PARTS } from '../sig.js';
+import { sigOf, stripSyncEntries, syncParts, sameParts, CARD_PARTS, ENTRY_FLAGS, SYNC_OPTIONS } from '../sig.js';
 import { topbar, ensureView } from './common.js';
 import { openDetail } from './detail.js';
 import { openDiff } from './diff.js';
@@ -39,8 +39,13 @@ const sigKey = (kind, id) => `${kind}:${id}`;
  * new 未收藏 · collected 已收藏（无法比对）· synced 内容一致 · changed 酒馆里改过
  * older 酒馆里是藏馆的某个旧版本（藏馆较新）· other 酒馆里是藏馆的另一个版本，但不是当前版本
  */
-// 设置里「从酒馆同步时忽略」的角色卡分段（自己在酒馆里改过的部分）
-const ignoreFor = (kind) => (kind === 'character' ? (state.settings.syncIgnore || []).filter((k) => k in CARD_PARTS) : []);
+// 设置里「从酒馆同步时不算差异」的部分：角色卡分段、世界书条目的状态
+const ignoreFor = (kind) => {
+    const all = (state.settings.syncIgnore || []).filter((k) => k in SYNC_OPTIONS);
+    if (kind === 'character') return all;
+    if (kind === 'worldbook') return all.filter((k) => k in ENTRY_FLAGS);
+    return [];
+};
 
 /** 酒馆里的内容（t = { sig, parts }）和藏馆的某个文件是否算同一个版本 */
 function sameAs(f, t, kind) {
@@ -130,7 +135,7 @@ export function renderTavern(root) {
                     right = btn('收藏', { icon: 'download', cls: 'sm', onclick: stop(() => collect([r])) });
                     break;
                 case 'synced':
-                    if (st.ignored) note = `已忽略：${ignoreFor(kind).map((k) => CARD_PARTS[k]).join('、')}`;
+                    if (st.ignored) note = `不算差异：${ignoreFor(kind).filter((k) => !(k === 'book' && kind !== 'character')).map((k) => SYNC_OPTIONS[k]).join('、')}`;
                     right = h('button', { class: 'chip-s ok as-btn', title: st.ignored ? note : '在仓库中查看', onclick: stop(() => openDetail(st.item.id)) }, icon('check', { size: 11, stroke: 3 }), '已同步');
                     break;
                 case 'changed':
@@ -204,7 +209,7 @@ async function checkSigs(kind, list, { force = false } = {}) {
             const res = await bridge.call('raw', { kind, ids: chunk.map((r) => r.id) }, [], 60000);
             for (const { id, data } of res) {
                 const obj = stripSyncEntries(kind, data, state.settings.syncExclude).obj;
-                ui.sigs.set(sigKey(kind, id), { sig: sigOf(kind, obj), parts: cardParts(kind, obj) });
+                ui.sigs.set(sigKey(kind, id), { sig: sigOf(kind, obj), parts: syncParts(kind, obj) });
             }
         } catch { /* 读取失败的保持「已收藏」 */ }
         for (const r of chunk) if (!ui.sigs.has(sigKey(kind, r.id))) ui.sigs.set(sigKey(kind, r.id), null);

@@ -122,7 +122,7 @@ export function openImporter(initialFiles = []) {
         else if (r.status === 'error') sub = r.error;
         else if (r.status === 'conflict') sub = r.result.summary || '与已有条目同名';
         else if (r.status === 'duplicate') sub = r.result.current === false ? '和某个旧版本相同' : r.result.exact ? '完全相同的文件' : '内容相同（文件字节不同）';
-        else if (r.status === 'version') sub = `已作为「${it.name}」的新版本`;
+        else if (r.status === 'version') sub = r.older ? `「${it.name}」的旧版本（v${String(r.newVersion).replace(/^v/i, '')}，当前是 v${String(r.currentVersion).replace(/^v/i, '')}），已存进历史版本，当前版本不变` : `已作为「${it.name}」的新版本`;
         else if (it) sub = `识别为 ${tm.label}${it.author ? ` · ${it.author}` : ''}`;
 
         let right;

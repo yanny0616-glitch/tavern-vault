@@ -41,25 +41,37 @@ export function toast(msg, kind = '') {
     setTimeout(() => t.remove(), kind === 'err' ? 4600 : 2800);
 }
 
-/** 打开底部弹层 */
-export function sheet({ title, body, foot, full = false, onClose, headExtra } = {}) {
+/**
+ * 打开底部弹层。
+ * beforeClose：点 X、点遮罩、按 Esc 时先调用，返回 false（或 Promise<false>）就不关；代码里调用 close() 不经过它
+ */
+export function sheet({ title, body, foot, full = false, onClose, headExtra, beforeClose } = {}) {
     const close = () => {
         overlay.remove();
         document.removeEventListener('keydown', onKey);
         onClose?.();
     };
-    const onKey = (e) => { if (e.key === 'Escape' && [...document.querySelectorAll('.overlay')].pop() === overlay) { e.stopImmediatePropagation(); close(); } };
+    let asking = false;
+    const tryClose = async () => {
+        if (asking || !overlay.isConnected) return;
+        if (beforeClose) {
+            asking = true;
+            try { if (!(await beforeClose())) return; } finally { asking = false; }
+        }
+        close();
+    };
+    const onKey = (e) => { if (e.key === 'Escape' && [...document.querySelectorAll('.overlay')].pop() === overlay) { e.stopImmediatePropagation(); tryClose(); } };
     const bodyEl = h('div', { class: 'sheet-body' }, body);
     const footEl = foot ? h('div', { class: 'sheet-foot' }, foot) : null;
     const titleEl = h('h2', {}, title);
     const box = h('div', { class: `sheet ${full ? 'full' : ''}` },
         h('div', { class: 'sheet-grip' }),
-        h('div', { class: 'sheet-head' }, titleEl, headExtra, h('button', { class: 'btn icon ghost sheet-x', onclick: close, 'aria-label': '关闭' }, icon('x', { size: 20 }))),
+        h('div', { class: 'sheet-head' }, titleEl, headExtra, h('button', { class: 'btn icon ghost sheet-x', onclick: tryClose, 'aria-label': '关闭' }, icon('x', { size: 20 }))),
         bodyEl, footEl);
-    const overlay = h('div', { class: 'overlay', onclick: (e) => { if (e.target === overlay) close(); } }, box);
+    const overlay = h('div', { class: 'overlay', onclick: (e) => { if (e.target === overlay) tryClose(); } }, box);
     document.body.append(overlay);
     document.addEventListener('keydown', onKey);
-    return { close, body: bodyEl, foot: footEl, title: titleEl, el: box };
+    return { close, tryClose, body: bodyEl, foot: footEl, title: titleEl, el: box };
 }
 
 export function confirmDialog(message, { ok = '确定', danger = false, title = '确认' } = {}) {

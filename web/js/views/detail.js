@@ -1,5 +1,5 @@
 // 条目详情：介绍（预览）/ 内容（阅读排版）/ 文件；资料在单独的编辑面板里修改
-import { h, clear, sheet, toast, confirmDialog, promptDialog, lightbox, fmtBytes, fmtDate, timeAgo, downloadBlob, switchEl, icon, btn, starsEl, emptyState } from '../ui.js';
+import { h, clear, sheet, toast, debounce, confirmDialog, promptDialog, lightbox, fmtBytes, fmtDate, timeAgo, downloadBlob, switchEl, icon, btn, starsEl, emptyState } from '../ui.js';
 import { api } from '../api.js';
 import { bridge } from '../bridge.js';
 import { state, typeMeta, TYPE_META, fieldsFor, subscribe, allTags, notify, savePrefs, applyAccent } from '../state.js';
@@ -10,8 +10,9 @@ import { openDiff } from './diff.js';
 import { startOrganize, aiReady, aiStamp } from './ai.js';
 import { richText, dialogView } from '../richtext.js';
 import { coverImg, coverSrc } from '../thumbs.js';
-import { runRegex, applyScripts, displayScripts, looksHtml, htmlFrame, PLACEMENT } from '../stview.js';
+import { runRegex, applyScripts, displayScripts, looksHtml, stView, hasHtmlFence, hasScript, PLACEMENT } from '../stview.js';
 import { cardPng } from '../pngcard.js';
+import { entriesOf, entryKeys, entryKeys2, effectivePrompts, presetRegex } from '../cardfmt.js';
 
 const TOP_LEVEL_FIELDS = new Set(['source', 'author', 'version', 'rating']);
 const SHOWN_IN_HERO = new Set(['author', 'version', 'rating']);
@@ -72,9 +73,12 @@ function readFull(title, node, len, { pager = null } = {}) {
     const prev = btn('上一条', { icon: 'chevronLeft', onclick: () => show(i - 1) });
     const next = btn('下一条', { icon: 'chevronRight', onclick: () => show(i + 1) });
     const count = h('span', { class: 'read-count' });
-    const styleBtn = pager?.canStyle ? h('div', { class: 'seg read-mode' },
-        h('button', { class: 'seg-item', onclick: () => { styled = false; show(i); } }, '文字'),
-        h('button', { class: 'seg-item', onclick: () => { styled = true; show(i); } }, '酒馆效果')) : null;
+    const styleBtn = pager?.canStyle ? h('div', { class: 'read-mode-wrap' },
+        h('label', { class: 'check-line read-script', title: '运行卡里美化的脚本（翻页、点击切换等）。脚本在隔离环境里运行，读不到藏馆的数据' },
+            h('input', { type: 'checkbox', checked: Boolean(state.prefs.stScripts), onchange: (e) => { state.prefs.stScripts = e.target.checked; savePrefs(); show(i); } }), h('span', {}, '运行脚本')),
+        h('div', { class: 'seg read-mode' },
+            h('button', { class: 'seg-item', onclick: () => { styled = false; show(i); } }, '文字'),
+            h('button', { class: 'seg-item', onclick: () => { styled = true; show(i); } }, '酒馆效果'))) : null;
     const onKey = (e) => {
         if (!pager || /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName)) return;
         if ([...document.querySelectorAll('.overlay')].pop() !== s.el.parentElement) return;
@@ -91,6 +95,7 @@ function readFull(title, node, len, { pager = null } = {}) {
         const jump = segmentJump(n, s.body);
         if (jump) meta.insertBefore(jump, styleBtn || null);
         styleBtn?.querySelectorAll('.seg-item').forEach((b, k) => b.classList.toggle('active', (k === 1) === styled));
+        styleBtn?.querySelector('.read-script')?.toggleAttribute('hidden', !styled);
     };
     function show(k) {
         i = Math.max(0, Math.min(pager.count - 1, k));
@@ -173,7 +178,7 @@ export function openDetail(id) {
         const n = names(it);
         const scripts = displayScripts(content?.data?.extensions?.regex_scripts);
         const styledOf = (t) => applyScripts(t, scripts, n);
-        const canStyle = list.some((g) => looksHtml(g) || (scripts.length && styledOf(String(g)).hits));
+        const canStyle = list.some((g) => looksHtml(g) || hasHtmlFence(g) || (scripts.length && styledOf(String(g)).hits));
         const label = (k) => (k === 0 ? '开场白' : `备选开场白 ${k}`);
         readFull(label(start), null, 0, { pager: {
             count: list.length,
@@ -185,7 +190,9 @@ export function openDetail(id) {
                 if (styled) {
                     state.prefs.greetStyled = true;
                     savePrefs();
-                    return { title: label(k), node: h('div', { class: 'st-wrap' }, htmlFrame(macroNames(styledOf(g).out, n))), len: g.length };
+                    const out = macroNames(styledOf(g).out, n);
+                    return { title: label(k), node: h('div', { class: 'st-wrap' }, stView(out, { scripts: Boolean(state.prefs.stScripts) }),
+                        !state.prefs.stScripts && hasScript(out) ? h('div', { class: 'muted small st-tip' }, '这段美化带脚本，翻页、点击切换之类的效果要打开右上方的「运行脚本」才看得到。') : null), len: g.length };
                 }
                 if (canStyle) { state.prefs.greetStyled = false; savePrefs(); }
                 return { title: label(k), node: richText(g, n), len: g.length };
@@ -527,9 +534,10 @@ export function openDetail(id) {
                 h('div', { class: 'field' }, h('label', {}, '笔记'), notes),
                 it.type === 'character' && it.files.length ? h('div', { class: 'note' }, icon('info', { size: 15 }), h('span', {}, '这里改的是藏馆里的资料。要改角色卡本身（描述、开场白等），用右上角菜单里的「编辑角色卡内容」，会保存为新版本。')) : null),
             foot: [
-                btn('取消', { onclick: async () => { if (!dirty || await confirmDialog('放弃未保存的修改？', { ok: '放弃' })) es.close(); } }),
+                btn('取消', { onclick: () => es.tryClose() }),
                 btn('保存', { icon: 'check', cls: 'primary', onclick: (e) => doSave(e.currentTarget) }),
             ],
+            beforeClose: async () => !dirty || confirmDialog('放弃未保存的修改？', { ok: '放弃' }),
         });
         es.el.classList.add('edit-sheet');
         const target = { description: desc, notes, tags: tagInput }[focus];
@@ -546,7 +554,7 @@ export function openDetail(id) {
         if (content.kind === 'json') {
             const d = content.data;
             if (it.type === 'worldbook') return worldbookView(d, names(it));
-            if (it.type === 'preset' && Array.isArray(d.prompts)) return presetView(d);
+            if (it.type === 'preset' && Array.isArray(d.prompts)) return presetView(d, it);
             if (it.type === 'regex') return regexView(Array.isArray(d) ? d : [d], { n: names(it) });
             if (it.type === 'quickreply' && Array.isArray(d.qrList)) return qrView(d);
             if (it.type === 'theme') return themeView(d);
@@ -593,7 +601,8 @@ export function openDetail(id) {
         txt('post', '后置指令', d.post_history_instructions);
         txt('depth', '深度提示词', ext.depth_prompt?.prompt);
         txt('notes', '作者注释', d.creator_notes);
-        if (book?.entries?.length) secs.push({ key: 'book', title: '内嵌世界书', meta: `${book.entries.length} 条`, node: worldbookView(book, n) });
+        const bookN = entriesOf(book).length;
+        if (bookN) secs.push({ key: 'book', title: '内嵌世界书', meta: `${bookN} 条`, node: worldbookView(book, n) });
         if (regex.length) secs.push({ key: 'regex', title: '内嵌正则', meta: `${regex.length} 条`, node: regexView(regex, { sample: String(greetings[0] || ''), n }) });
         const anchor = (k) => `sec-${id}-${k}`;
         return h('div', { class: 'reader' },
@@ -611,14 +620,14 @@ export function openDetail(id) {
     }
 
     function worldbookView(d, n) {
-        const entries = Array.isArray(d.entries) ? d.entries : Object.values(d.entries || {});
+        const entries = entriesOf(d);
         let q = '';
         const list = h('div', { class: 'stack-s' });
         const draw = () => {
             const f = entries.filter((e) => !q || JSON.stringify([e.comment, e.key, e.keys, e.content]).toLowerCase().includes(q));
             clear(list, f.slice(0, 300).map((e) => {
-                const keys = [].concat(e.key || e.keys || []);
-                const keys2 = [].concat(e.keysecondary || e.secondary_keys || []);
+                const keys = entryKeys(e);
+                const keys2 = entryKeys2(e);
                 const off = e.disable || e.enabled === false;
                 return lazyDetails({ class: `fold entry ${off ? 'off' : ''}` },
                     h('summary', {}, icon('chevronRight', { size: 14, cls: 'fold-chev' }), h('span', { class: `entry-dot ${e.constant ? 'const' : ''}` }),
@@ -638,22 +647,25 @@ export function openDetail(id) {
             list);
     }
 
-    function presetView(d) {
-        const order = d.prompt_order?.find((o) => o.character_id === 100001)?.order || d.prompt_order?.[0]?.order || [];
-        const enabled = new Map(order.map((o) => [o.identifier, o.enabled]));
+    function presetView(d, it) {
+        const list = effectivePrompts(d);
+        const rx = presetRegex(d);
         const params = ['temperature', 'top_p', 'top_k', 'frequency_penalty', 'presence_penalty', 'repetition_penalty', 'openai_max_context', 'openai_max_tokens'].filter((k) => d[k] !== undefined);
         return h('div', { class: 'stack' },
             params.length ? h('section', { class: 'panel facts-panel' }, h('div', { class: 'facts' }, params.map((k) => h('div', { class: 'fact' }, h('b', {}, String(d[k])), h('span', {}, k))))) : null,
-            h('div', { class: 'stack-s' }, d.prompts.map((p) => lazyDetails({ class: `fold entry ${enabled.get(p.identifier) === false ? 'off' : ''}` },
-                h('summary', {}, icon('chevronRight', { size: 14, cls: 'fold-chev' }), h('span', { class: 'entry-dot' }), h('span', { class: 'fold-title' }, p.name || p.identifier), p.role ? h('span', { class: 'chip-s' }, p.role) : null, p.marker ? h('span', { class: 'chip-s' }, '占位') : null),
+            h('div', { class: 'muted small' }, `按酒馆里的实际顺序排列，启用 ${list.filter((x) => x.enabled).length} / ${list.length} 条`),
+            h('div', { class: 'stack-s' }, list.map(({ p, enabled, used }) => lazyDetails({ class: `fold entry ${enabled ? '' : 'off'}` },
+                h('summary', {}, icon('chevronRight', { size: 14, cls: 'fold-chev' }), h('span', { class: 'entry-dot' }), h('span', { class: 'fold-title' }, p.name || p.identifier), p.role ? h('span', { class: 'chip-s' }, p.role) : null, p.marker ? h('span', { class: 'chip-s' }, '占位') : null,
+                    !used ? h('span', { class: 'chip-s' }, '未加入') : !enabled ? h('span', { class: 'chip-s' }, '关闭') : null),
                 () => (p.content ? h('div', { class: 'fold-body' }, h('div', { class: 'prose' }, p.content)) : h('div'))))),
+            rx.length ? fold(`附带正则 · ${rx.length} 条`, () => regexView(rx, { n: names(it) }), { ic: 'terminal' }) : null,
             fold('原始 JSON', () => h('pre', { class: 'code' }, JSON.stringify(d, null, 2)), { ic: 'braces' }));
     }
 
     function regexView(list, { sample = '', n = { char: '角色', user: state.prefs.userName?.trim() || '你' } } = {}) {
         return h('div', { class: 'stack-s' }, list.map((r) => lazyDetails({ class: `fold entry ${r.disabled ? 'off' : ''}` },
             h('summary', {}, icon('chevronRight', { size: 14, cls: 'fold-chev' }), h('span', { class: 'entry-dot' }), h('span', { class: 'fold-title' }, r.scriptName || '（未命名）'),
-                looksHtml(r.replaceString) ? h('span', { class: 'chip-s info' }, '美化') : null, r.disabled ? h('span', { class: 'chip-s' }, '禁用') : null),
+                looksHtml(r.replaceString) || hasHtmlFence(r.replaceString) ? h('span', { class: 'chip-s info' }, '美化') : null, r.disabled ? h('span', { class: 'chip-s' }, '禁用') : null),
             () => h('div', { class: 'fold-body' },
                 regexChips(r),
                 h('div', { class: 'sub-label' }, '查找'), h('pre', { class: 'code' }, r.findRegex || ''),
@@ -682,6 +694,7 @@ export function openDetail(id) {
     function regexPreview(r, sample, n) {
         const out = h('div', { class: 'st-wrap' });
         const info = h('div', { class: 'muted small' });
+        const runJs = h('input', { type: 'checkbox', checked: Boolean(state.prefs.stScripts), onchange: () => { state.prefs.stScripts = runJs.checked; savePrefs(); draw(); } });
         const input = h('textarea', { class: 'textarea st-sample', rows: 3, placeholder: '粘贴一段 AI 回复，看这条正则会把它变成什么样', value: sample });
         let timer = 0;
         const draw = () => {
@@ -698,14 +711,14 @@ export function openDetail(id) {
                     : text ? '示例文本里没有匹配的内容，下面先显示替换内容本身（$1 这类引用留空）' : '下面是替换内容本身（$1 这类引用留空）';
             }
             html = macroNames(html, n);
-            clear(out, !html.trim() ? null : looksHtml(html) ? htmlFrame(html) : richText(html, n));
+            clear(out, !html.trim() ? null : looksHtml(html) || hasHtmlFence(html) ? stView(html, { scripts: runJs.checked }) : richText(html, n));
         };
         input.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(draw, 250); });
         draw();
         return h('div', { class: 'st-preview' },
             h('div', { class: 'sub-label' }, '效果预览'), info, out,
             h('details', { class: 'st-sample-box', open: !sample }, h('summary', {}, '换一段示例文本'), input),
-            looksHtml(r.replaceString) && /<script/i.test(r.replaceString) ? h('div', { class: 'muted small' }, '这条正则带脚本，预览里脚本不会运行，动画、点击切换之类的效果看不到。') : null);
+            hasScript(r.replaceString) ? h('label', { class: 'check-line' }, runJs, h('span', {}, '运行脚本（翻页、点击切换等效果需要；脚本在隔离环境里运行，读不到藏馆的数据）')) : null);
     }
 
     function qrView(d) {
@@ -740,8 +753,23 @@ export function openDetail(id) {
             h('textarea', { class: 'textarea', value: g, oninput: (e) => { greets[i] = e.target.value; } }))),
         btn('添加备选开场白', { icon: 'plus', cls: 'sm', onclick: () => { greets.push(''); drawGreets(); } }));
         drawGreets();
+        // 防丢稿：改动随手存成草稿（只在这台设备的浏览器里），关闭时有改动先确认
+        const baseSha = (it.files.find((f) => f.primary) || it.files[0])?.sha || '';
+        const draftKey = `tv_draft_card_${id}_${baseSha.slice(0, 16)}`;
+        const snap = () => JSON.stringify({ f: Object.fromEntries(FIELDS.map(([k]) => [k, inputs[k].value])), tags: tagsInput.value, greets });
+        let initial = '';
+        const dropDraft = () => { try { localStorage.removeItem(draftKey); } catch { /* ignore */ } };
+        const saveDraft = debounce(() => {
+            try { const s = snap(); if (s === initial) localStorage.removeItem(draftKey); else localStorage.setItem(draftKey, JSON.stringify({ at: Date.now(), s })); } catch { /* 存不下就算了 */ }
+        }, 500);
         const es = sheet({
             title: `编辑 · ${d.name}`, full: true,
+            beforeClose: async () => {
+                if (snap() === initial) { dropDraft(); return true; }
+                const ok = await confirmDialog('有还没保存的修改，确定放弃？', { ok: '放弃修改', danger: true });
+                if (ok) dropDraft();
+                return ok;
+            },
             body: h('div', { class: 'stack' },
                 h('div', { class: 'note' }, icon('info', { size: 15 }), '保存后生成新版本，旧版本保留在「文件」页，可随时切回。PNG 卡会保留原立绘。'),
                 h('div', { class: 'fields' }, FIELDS.map(([k, label, kind]) => {
@@ -749,7 +777,7 @@ export function openDetail(id) {
                     return h('div', { class: `field ${kind === 'textarea' ? 'wide' : ''}` }, h('label', {}, label), inputs[k]);
                 }), h('div', { class: 'field wide' }, h('label', {}, '标签'), tagsInput), h('div', { class: 'field wide' }, h('label', {}, '备选开场白'), greetBox))),
             foot: [
-                btn('取消', { onclick: () => es.close() }),
+                btn('取消', { onclick: () => es.tryClose() }),
                 btn('保存', { icon: 'check', cls: 'primary', onclick: async (e) => {
                     const b = e.currentTarget;
                     b.disabled = true;
@@ -759,12 +787,30 @@ export function openDetail(id) {
                     try {
                         await api.put(`/api/items/${id}/card`, { card: { ...c.card, data: d } });
                         toast('已保存为新版本', 'ok');
+                        dropDraft();
                         content = null;
                         es.close();
                     } catch (err) { toast(err.message, 'err'); b.disabled = false; }
                 } }),
             ],
         });
+        initial = snap();
+        es.body.addEventListener('input', saveDraft);
+        es.body.addEventListener('click', () => setTimeout(saveDraft, 0)); // 增删备选开场白
+        let draft = null;
+        try { draft = JSON.parse(localStorage.getItem(draftKey) || 'null'); } catch { /* ignore */ }
+        if (draft?.s && draft.s !== initial) {
+            confirmDialog(`上次编辑这张卡时有没保存的修改（${fmtDate(new Date(draft.at).toISOString(), true)}），要恢复吗？`, { ok: '恢复', title: '恢复草稿' }).then((ok) => {
+                if (!ok) { dropDraft(); return; }
+                try {
+                    const v = JSON.parse(draft.s);
+                    for (const [k] of FIELDS) if (typeof v.f?.[k] === 'string') inputs[k].value = v.f[k];
+                    if (typeof v.tags === 'string') tagsInput.value = v.tags;
+                    if (Array.isArray(v.greets)) { greets.splice(0, greets.length, ...v.greets.map(String)); drawGreets(); }
+                    toast('已恢复草稿，记得保存', 'ok');
+                } catch { toast('草稿读取失败', 'err'); }
+            });
+        }
     }
 
     // ---------- 文件 ----------

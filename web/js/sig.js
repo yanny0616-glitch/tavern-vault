@@ -30,16 +30,17 @@ function stable(v) {
 }
 const omit = (obj, ...ks) => Object.fromEntries(Object.entries(obj || {}).filter(([k]) => !ks.includes(k)));
 
-function bookEntries(book) {
-    if (!book || typeof book !== 'object') return [];
-    const entries = Array.isArray(book.entries) ? book.entries : Object.values(book.entries || {});
-    return entries.map((e) => [
+const entriesOf = (book) => (!book || typeof book !== 'object' ? [] : Array.isArray(book.entries) ? book.entries : Object.values(book.entries || {}));
+
+/** mask 里的字母表示不参与比对的部分：t 条目标题、b 蓝灯/绿灯、s 启用/禁用 */
+function bookEntries(book, mask = '') {
+    return entriesOf(book).map((e) => [
         keys(e.key ?? e.keys).join('|'),
         keys(e.keysecondary ?? e.secondary_keys).join('|'),
         text(e.content),
-        text(e.comment ?? e.name),
-        e.constant ? 1 : 0,
-        e.disable || e.enabled === false ? 1 : 0,
+        mask.includes('t') ? '' : text(e.comment ?? e.name),
+        mask.includes('b') ? '' : e.constant ? 1 : 0,
+        mask.includes('s') ? '' : e.disable || e.enabled === false ? 1 : 0,
     ].join('\u0001')).sort();
 }
 
@@ -131,11 +132,26 @@ const PART_TEXT = {
     notes: ['creator_notes'],
 };
 
+/** 世界书条目里可以不算差异的部分（内嵌世界书和单独的世界书都适用） */
+export const ENTRY_FLAGS = {
+    entryState: '条目启用 / 禁用',
+    entryConst: '蓝灯 / 绿灯',
+    entryTitle: '条目标题',
+};
+const FLAG_CODE = { entryState: 's', entryConst: 'b', entryTitle: 't' };
+export const SYNC_OPTIONS = { ...CARD_PARTS, ...ENTRY_FLAGS };
+export const PARTS_VERSION = 2;
+// 世界书按「哪些部分不比对」各存一份哈希，查的时候按设置挑对应的那份
+const MASKS = ['', 's', 'b', 't', 'sb', 'st', 'bt', 'sbt'];
+const bookVariants = (book) => Object.fromEntries(MASKS.map((m) => [m ? `book.${m}` : 'book', hash53(bookEntries(book, m).join('\u0003'))]));
+
 const cardData = (obj) => (obj.data && typeof obj.data === 'object' ? obj.data : obj);
 
-/** 返回 { core, book, greet, setting, notes } 各段的哈希；不是角色卡返回 null */
-export function cardParts(type, obj) {
-    if (type !== 'character' || !obj || typeof obj !== 'object') return null;
+/** 角色卡：{ core, greet, setting, notes, book… }；世界书：{ book… }；其它类型返回 null */
+export function syncParts(type, obj) {
+    if (!obj || typeof obj !== 'object') return null;
+    if (type === 'worldbook') return { v: PARTS_VERSION, ...bookVariants(obj) };
+    if (type !== 'character') return null;
     const d = cardData(obj);
     const pick = (k) => text(d[k] ?? obj[k] ?? (k === 'creator_notes' ? obj.creatorcomment : ''));
     const src = {
@@ -143,16 +159,49 @@ export function cardParts(type, obj) {
         setting: [...PART_TEXT.setting.map(pick), text(d.extensions?.depth_prompt?.prompt)],
         greet: [pick('first_mes'), list(d.alternate_greetings).map(text).join('\u0002')],
         notes: [pick('creator_notes'), keys(d.tags ?? obj.tags).join('|')],
-        book: bookEntries(d.character_book),
     };
-    return Object.fromEntries(Object.entries(src).map(([k, v]) => [k, hash53(v.join('\u0003'))]));
+    return { v: PARTS_VERSION, ...Object.fromEntries(Object.entries(src).map(([k, v]) => [k, hash53(v.join('\u0003'))])), ...bookVariants(d.character_book) };
+}
+export const cardParts = syncParts;
+
+/** 忽略 ignore 里的部分后，两份分段指纹是否一致 */
+export function sameParts(a, b, ignore = []) {
+    if (!a || !b || a.v !== PARTS_VERSION || b.v !== PARTS_VERSION) return false;
+    const skip = new Set(ignore);
+    const isCard = 'core' in a;
+    if (!isCard) skip.delete('book'); // 单独的世界书不能整本忽略
+    const mask = ['entryState', 'entryConst', 'entryTitle'].filter((k) => skip.has(k)).map((k) => FLAG_CODE[k]).join('');
+    const ks = Object.keys(a).filter((k) => k !== 'v' && !k.startsWith('book'));
+    if (!skip.has('book')) ks.push(mask ? `book.${mask}` : 'book');
+    return ks.every((k) => skip.has(k) || (a[k] !== undefined && a[k] === b[k]));
 }
 
-/** 忽略 ignore 里的几段后，两份分段指纹是否一致 */
-export function sameParts(a, b, ignore = []) {
-    if (!a || !b) return false;
-    const skip = new Set(ignore);
-    return Object.keys(a).every((k) => skip.has(k) || a[k] === b[k]);
+/**
+ * 世界书条目：把 mask 指定的状态（启用、蓝灯、标题）换回藏馆里对应条目的值。
+ * 先按「关键词 + 内容」对应；内容改过的，关键词在两边都只出现一次时按关键词对应。
+ */
+function keepEntryFlags(tBook, vBook, mask) {
+    if (!tBook || !vBook || !mask) return;
+    const kw = (e) => keys(e.key ?? e.keys).join('|');
+    const ident = (e) => `${kw(e)}\u0001${text(e.content)}`;
+    const index = (list, f) => {
+        const m = new Map();
+        for (const e of list) { const k = f(e); m.set(k, m.has(k) ? null : e); } // 重复的标成 null，不用来对应
+        return m;
+    };
+    const vList = entriesOf(vBook);
+    const tList = entriesOf(tBook);
+    const byIdent = index(vList, ident);
+    const byKw = index(vList, kw);
+    const tKw = index(tList, kw);
+    const copy = (to, from, ks) => { for (const k of ks) { if (k in from) to[k] = structuredClone(from[k]); else delete to[k]; } };
+    for (const e of tList) {
+        const v = byIdent.get(ident(e)) || (kw(e) && tKw.get(kw(e)) ? byKw.get(kw(e)) : null);
+        if (!v) continue;
+        if (mask.includes('s')) copy(e, v, ['disable', 'enabled']);
+        if (mask.includes('b')) copy(e, v, ['constant']);
+        if (mask.includes('t')) copy(e, v, ['comment', 'name']);
+    }
 }
 
 /**
@@ -160,7 +209,15 @@ export function sameParts(a, b, ignore = []) {
  * 酒馆的 V2 卡顶层还有一份旧字段（description、first_mes、creatorcomment 等），一起改。
  */
 export function mergeParts(type, tavern, vault, ignore = []) {
-    if (type !== 'character' || !tavern || !vault || !ignore.length) return tavern;
+    if (!tavern || !vault || !ignore.length) return tavern;
+    const mask = ['entryState', 'entryConst', 'entryTitle'].filter((k) => ignore.includes(k)).map((k) => FLAG_CODE[k]).join('');
+    if (type === 'worldbook') {
+        if (!mask) return tavern;
+        const out = structuredClone(tavern);
+        keepEntryFlags(out, vault, mask);
+        return out;
+    }
+    if (type !== 'character') return tavern;
     const out = structuredClone(tavern);
     const td = cardData(out);
     const vd = cardData(vault);
@@ -168,6 +225,7 @@ export function mergeParts(type, tavern, vault, ignore = []) {
         if (v === undefined) delete td[k]; else td[k] = structuredClone(v);
         if (td !== out && top in out) out[top] = v === undefined ? '' : structuredClone(v);
     };
+    if (mask && !ignore.includes('book')) keepEntryFlags(td.character_book, vd.character_book, mask);
     for (const part of ignore) {
         if (part === 'book') {
             if (vd.character_book) td.character_book = structuredClone(vd.character_book); else delete td.character_book;

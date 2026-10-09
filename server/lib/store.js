@@ -20,7 +20,10 @@ const now = () => new Date().toISOString();
 export const newId = () => crypto.randomBytes(8).toString('hex');
 
 export class Store {
-    constructor(dir) {
+    /** recover()：db.json 损坏或丢失时调用，返回 { db, from } 或 null（从最近的备份里取） */
+    constructor(dir, { recover } = {}) {
+        this.recover = recover;
+        this.recovered = null;
         this.dir = dir;
         this.filesDir = path.join(dir, 'files');
         this.dbPath = path.join(dir, 'db.json');
@@ -34,10 +37,39 @@ export class Store {
     }
 
     #load() {
-        let db = {};
+        const read = (p) => {
+            try {
+                const d = JSON.parse(fs.readFileSync(p, 'utf8'));
+                return d && typeof d === 'object' && d.items && typeof d.items === 'object' ? d : null;
+            } catch { return null; }
+        };
+        let db = null;
+        const stamp = new Date().toISOString().replace(/\D/g, '').slice(0, 14);
         if (fs.existsSync(this.dbPath)) {
-            db = JSON.parse(fs.readFileSync(this.dbPath, 'utf8'));
+            db = read(this.dbPath);
+            if (!db) {
+                // 损坏：原文件另存一份，再依次找能用的：写到一半的临时文件、还原前留的副本、最近的备份
+                const bad = `db.json.corrupt-${stamp}`;
+                fs.copyFileSync(this.dbPath, path.join(this.dir, bad));
+                const points = path.join(this.dir, 'restore-points');
+                const cands = [[`${this.dbPath}.tmp`, '写入中途的临时文件']];
+                try { for (const f of fs.readdirSync(points).filter((x) => x.endsWith('.json')).sort().reverse()) cands.push([path.join(points, f), `还原点 ${f}`]); } catch { /* 没有还原点 */ }
+                for (const [p, from] of cands) { db = fs.existsSync(p) ? read(p) : null; if (db) { this.recovered = { from, bad }; break; } }
+                if (!db) { const r = this.recover?.(); if (r?.db) { db = r.db; this.recovered = { from: r.from, bad }; } }
+                if (!db) throw new Error(`db.json 已损坏，也没找到可用的备份。损坏的文件已另存为 ${bad}`);
+                console.log(`  [数据] db.json 已损坏，已从${this.recovered.from}恢复；损坏的文件另存为 ${bad}`);
+            }
+        } else if (this.#hasBlobs()) {
+            // 文件仓库里有东西，索引却不见了：多半是误删，先从最近的备份恢复
+            const r = this.recover?.();
+            if (r?.db) {
+                db = r.db;
+                this.recovered = { from: r.from, bad: '', missing: true };
+                console.log(`  [数据] db.json 不见了，已从${r.from}恢复`);
+            }
         }
+        db ||= {};
+        if (this.recovered) { db.settings ||= {}; db.settings.recoveredNote = { ...this.recovered, at: new Date().toISOString() }; }
         db.version ??= 1;
         db.items ??= {};
         db.collections ??= {};
@@ -60,6 +92,10 @@ export class Store {
             it.meta ??= {};
             if (it.files.length && !it.files.some((f) => f.primary)) it.files[it.files.length - 1].primary = true;
         }
+    }
+
+    #hasBlobs() {
+        try { return fs.readdirSync(this.filesDir).some((d) => /^[a-f0-9]{2}$/.test(d) && fs.readdirSync(path.join(this.filesDir, d)).length); } catch { return false; }
     }
 
     save() {
@@ -241,10 +277,11 @@ export class Store {
         return it;
     }
 
-    addFile(id, { sha, name, size, mime, label = '', primary = false, sig = '', parts = null }) {
+    addFile(id, { sha, name, size, mime, label = '', primary = false, sig = '', parts = null, ver = undefined }) {
         const it = this.db.items[id];
         if (!it) return null;
         const file = { id: newId(), sha, name, size, mime, label, primary: false, addedAt: now(), sig };
+        if (ver !== undefined) file.ver = ver;
         if (parts) file.parts = parts;
         if (primary || !it.files.length) {
             it.files.forEach((f) => { f.primary = false; });

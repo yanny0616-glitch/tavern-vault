@@ -3,7 +3,7 @@ import { h, clear, toast, confirmDialog, choiceDialog, sheet, downloadBlob, swit
 import { api } from '../api.js';
 import { bridge } from '../bridge.js';
 import { state, savePrefs, applyAccent, reload, TYPE_META, SKINS } from '../state.js';
-import { CARD_PARTS } from '../sig.js';
+import { CARD_PARTS, ENTRY_FLAGS } from '../sig.js';
 import { SORTS } from './library.js';
 import { topbar, ensureView } from './common.js';
 import { aiSettings } from './ai.js';
@@ -169,20 +169,24 @@ function syncIgnorePanel() {
             await api.put('/api/settings', patch);
             toast('已保存', 'ok');
         };
+        const chips = (opts) => h('div', { class: 'opts' }, Object.entries(opts).map(([k, label]) => h('button', { class: `opt ${ign.has(k) ? 'active' : ''}`, onclick: () => {
+            save({ syncIgnore: ign.has(k) ? [...ign].filter((x) => x !== k) : [...ign, k] });
+        } }, ign.has(k) ? icon('check', { size: 13, stroke: 3 }) : null, label)));
         clear(box,
-            h('div', { class: 'muted small' }, '在酒馆里改过角色卡（比如编辑了绑定的世界书、自己加了开场白）以后，酒馆页会显示「酒馆有改动」，收藏时会存成新版本。'
-                + '勾选的部分，比对时不看它们的差异：只有这几部分不同，就算「已同步」，也不会存成新版本。名字、作者、版本号始终会比对。'),
-            h('div', { class: 'opts' }, Object.entries(CARD_PARTS).map(([k, label]) => h('button', { class: `opt ${ign.has(k) ? 'active' : ''}`, onclick: () => {
-                const next = ign.has(k) ? [...ign].filter((x) => x !== k) : [...ign, k];
-                save({ syncIgnore: next });
-            } }, ign.has(k) ? icon('check', { size: 13, stroke: 3 }) : null, label))),
-            h('div', { class: 'muted small' }, '角色设定 = 描述、性格、场景、对话示例、系统提示词、后置指令、深度提示词。'),
-            ign.size ? setRow('收新版本时保留藏馆原来的这几部分', '其它部分有真正的改动、存成新版本时，勾选的部分仍用藏馆当前版本的内容，不把自己在酒馆里的改动存进去。关掉则原样保存酒馆里的卡',
+            h('div', { class: 'muted small' }, '在酒馆里改过以后，酒馆页会显示「酒馆有改动」，收藏时会存成新版本。'
+                + '勾选的部分，比对时不看它们的差异：只有这些不同，就算「已同步」，也不会存成新版本。角色的名字、作者、版本号始终会比对。默认都不勾选。'),
+            h('div', { class: 'sub-label' }, '角色卡'),
+            chips(CARD_PARTS),
+            h('div', { class: 'muted small' }, '角色设定 = 描述、性格、场景、对话示例、系统提示词、后置指令、深度提示词。「内嵌世界书」整本不比对，只建议在 TT 里对这张卡选过「保留当前版本」时使用：卡里的内嵌世界书平时就是作者原版，你在世界书编辑器里的改动不会进卡。'),
+            h('div', { class: 'sub-label' }, '世界书条目（内嵌世界书和单独的世界书都适用）'),
+            chips(ENTRY_FLAGS),
+            h('div', { class: 'muted small' }, '比如在酒馆里开关了某些条目、把蓝灯改成绿灯，勾选后这些改动不算差异。条目的关键词和内容始终比对；顺序、插入位置、深度、概率本来就不算差异。'),
+            ign.size ? setRow('收新版本时保留藏馆原来的这些部分', '其它部分有真正的改动、存成新版本时，勾选的部分仍用藏馆当前版本的内容（条目状态按关键词和内容对应到原来的条目），不把自己在酒馆里的改动存进去。关掉则原样保存',
                 switchEl(keep, (v) => save({ syncKeep: v }))) : null,
             ign.size ? h('div', { class: 'note' }, icon('info', { size: 15 }), h('span', {}, '「用藏馆版本覆盖酒馆」会整张替换酒馆里的卡，自己改过的这几部分也会被换掉。酒馆里单独的世界书文件不受影响。')) : null);
     };
     draw();
-    return panel('从酒馆同步时忽略自己的改动', 'user', null, box);
+    return panel('从酒馆同步时哪些不算差异', 'user', null, box);
 }
 
 function syncExcludePanel() {
@@ -377,7 +381,8 @@ function data() {
 function autoBackupPanel() {
     const body = h('div', { class: 'stack-s' }, h('span', { class: 'muted small' }, '正在读取…'));
     const draw = (cfg) => clear(body,
-        setRow('每天自动备份', '每天在服务器上存一份完整备份，内容没变化的日子不重复存', switchEl(cfg.on, async (v) => { await api.put('/api/settings', { autoBackup: { on: v } }); load(); })),
+        cfg.guard ? h('div', { class: 'note warn' }, icon('alert', { size: 15 }), h('span', {}, `自动备份已暂停：现在连回收站一共只有 ${cfg.guard.items} 个条目，最近一份备份里有 ${cfg.guard.ref} 个。如果不是你自己删的，用下面列表里条目数正常的那份还原；是自己删的，回到仓库页点「是我删的，继续备份」。`)) : null,
+        setRow('每天自动备份', '每天在服务器上存一份完整备份，内容没变化的日子不重复存。条目数突然少了一半以上时会暂停，免得好的备份被挤掉', switchEl(cfg.on, async (v) => { await api.put('/api/settings', { autoBackup: { on: v } }); load(); })),
         setRow('保留', '只保留最近几份自动备份，手动备份不会被自动删除', seg(cfg.keep, [[3, '3 份'], [7, '7 份'], [14, '14 份'], [30, '30 份']], async (v) => { await api.put('/api/settings', { autoBackup: { keep: v } }); load(); })),
         h('div', { class: 'row-actions' }, btn('立即备份', { icon: 'database', cls: 'sm', onclick: async (e) => {
             e.currentTarget.disabled = true;
@@ -388,7 +393,7 @@ function autoBackupPanel() {
             h('div', { class: 'row-thumb' }, icon('archive', { size: 18 })),
             h('div', { class: 'row-main' },
                 h('div', { class: 'row-title' }, h('span', {}, fmtDate(b.at, true))),
-                h('div', { class: 'row-sub' }, h('span', {}, b.auto ? '自动' : '手动'), h('span', {}, fmtBytes(b.size)))),
+                h('div', { class: 'row-sub' }, h('span', {}, b.auto ? '自动' : '手动'), cfg.counts?.[b.name] >= 0 ? h('span', {}, `${cfg.counts[b.name]} 个条目`) : null, h('span', {}, fmtBytes(b.size)))),
             h('div', { class: 'row-actions' },
                 btn('', { icon: 'download', cls: 'sm ghost', title: '下载', href: `/api/backups/${b.name}${api.token ? `?token=${encodeURIComponent(api.token)}` : ''}`, download: b.name }),
                 btn('', { icon: 'restore', cls: 'sm ghost', title: '从这份还原', onclick: () => restoreServerBackup(b) }),
