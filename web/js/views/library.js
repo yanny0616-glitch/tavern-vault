@@ -3,7 +3,7 @@ import { h, clear, toast, confirmDialog, promptDialog, debounce, downloadBlob, s
 import { api } from '../api.js';
 import { bridge } from '../bridge.js';
 import { state, live, allTags, savePrefs, TYPE_META, reload } from '../state.js';
-import { topbar, ensureView, itemCard, itemRow, collectionName, applyHit } from './common.js';
+import { topbar, ensureView, itemCard, itemRow, collectionName, applyHit, versionCount } from './common.js';
 import { openDetail } from './detail.js';
 import { openImporter } from './importer.js';
 import { importItemsToTavern } from './tavern.js';
@@ -38,7 +38,6 @@ export const deep = { text: '', items: null, hits: null, pending: '' };
 const deepReady = (text) => deep.hits && deep.text === text && deep.items === state.items;
 
 // 快捷筛选
-const versionCount = (it) => it.files.filter((x) => x.primary || x.sig).length;
 export const QUICK = {
     untagged: ['未打标签', (it) => !it.tags.length],
     unsorted: ['未整理', (it) => !it.tags.length && !it.notes && !it.rating && !it.favorite && !it.collections.length],
@@ -199,9 +198,10 @@ export function renderLibrary(root) {
         };
         const LIMIT = 300;
         const shown = list.slice(0, refs.limit || LIMIT);
+        const dupes = dupIds();
         const container = state.prefs.view === 'grid'
-            ? h('div', { class: `grid ${state.prefs.dense ? 'dense' : ''} ${state.prefs.cols ? `fixed-cols c${state.prefs.cols}` : ''}`, style: { '--cols': state.prefs.cols || null } }, withTimeGroups(shown, (it, i) => applyHit(itemCard(it, { onClick: click(it), selected: state.selection.has(it.id), selecting: state.selecting, index: i }), it, hitOf(it)), 'in-grid'))
-            : h('div', { class: 'rows' }, withTimeGroups(shown, (it, i) => applyHit(itemRow(it, { cache: true, onClick: click(it), selected: state.selection.has(it.id), index: i,
+            ? h('div', { class: `grid ${state.prefs.dense ? 'dense' : ''} ${state.prefs.cols ? `fixed-cols c${state.prefs.cols}` : ''}`, style: { '--cols': state.prefs.cols || null } }, withTimeGroups(shown, (it, i) => applyHit(itemCard(it, { onClick: click(it), selected: state.selection.has(it.id), selecting: state.selecting, index: i, dupe: dupes.has(it.id) }), it, hitOf(it)), 'in-grid'))
+            : h('div', { class: 'rows' }, withTimeGroups(shown, (it, i) => applyHit(itemRow(it, { cache: true, onClick: click(it), selected: state.selection.has(it.id), index: i, dupe: dupes.has(it.id),
                 right: state.selecting ? h('span', { class: `row-check ${state.selection.has(it.id) ? 'on' : ''}` }, icon('check', { size: 13, stroke: 3 })) : null }), it, hitOf(it)), 'in-rows'));
         clear(refs.content, container,
             list.length > shown.length ? h('div', { class: 'more' }, btn(`显示更多（剩余 ${list.length - shown.length}）`, { onclick: () => { refs.limit = (refs.limit || LIMIT) + LIMIT; renderLibrary(root); } })) : null);
@@ -235,9 +235,20 @@ export function renderHealth(el) {
             btn('知道了', { cls: 'sm ghost', onclick: async () => { try { await api.post('/api/health/ack'); await reload(); } catch (e) { toast(e.message, 'err'); } } })));
 }
 
-function renderDupNotice(el, busy) {
-    const ignore = (state.settings.dupIgnore || []).join('|');
+function dupGroups() {
+    const ignore = `${(state.settings.dupIgnore || []).join('|')}#${(state.settings.dupSeparators || []).join('')}`;
     if (dupMemo.items !== state.items || dupMemo.ignore !== ignore) dupMemo = { items: state.items, ignore, groups: findDuplicates() };
+    return dupMemo.groups;
+}
+/** 在「可能重复」组里的条目 id */
+function dupIds() {
+    const groups = dupGroups();
+    if (dupMemo.idsOf !== groups) { dupMemo.ids = new Set(groups.flatMap((g) => g.items.map((it) => it.id))); dupMemo.idsOf = groups; }
+    return dupMemo.ids;
+}
+
+function renderDupNotice(el, busy) {
+    dupGroups();
     const sig = dupMemo.groups.map((g) => g.key).join('|');
     el.hidden = busy || !dupMemo.groups.length || state.prefs.dupSeen === sig;
     if (el.hidden) return;
@@ -291,7 +302,8 @@ function openFilters(root) {
         };
         drawTags();
         return h('div', { class: 'form-group' },
-            h('div', { class: 'row-between' }, h('div', { class: 'form-label' }, `标签 · ${tags.length}`),
+            h('div', { class: 'row-between' }, h('div', { class: 'form-label' }, `标签 · ${tags.length}`), h('span', { class: 'grow' }),
+                btn('管理标签', { cls: 'sm ghost', onclick: () => { s.close(); location.hash = '#/settings/tags'; } }),
                 state.filter.tagsIn.length || state.filter.tagsOut.length ? btn('清除', { cls: 'sm ghost', onclick: () => { state.filter.tagsIn = []; state.filter.tagsOut = []; drawTags(); renderLibrary(root); } }) : null),
             tags.length > 12 ? h('label', { class: 'search inline' }, icon('search', { size: 15 }), h('input', { class: 'input search-input', placeholder: '找标签', value: tagQ, oninput: (e) => { tagQ = e.target.value; drawTags(); } })) : null,
             list,
@@ -396,8 +408,18 @@ function bindSelectGestures(refs, root) {
     box.addEventListener('contextmenu', (e) => { if (itemEl(e.target) && (timer || state.selecting)) e.preventDefault(); });
 }
 
+// 多选操作栏出现时，右下角的 AI 进度提示挪到它上面，免得被挡住点不到
+let selbarRO = null;
+function liftChip(bar) {
+    const r = bar.hidden || !bar.isConnected ? null : bar.getBoundingClientRect();
+    document.documentElement.style.setProperty('--chip-lift', r?.height ? `${Math.round(innerHeight - r.top + 10)}px` : '0px');
+}
+
 function renderSelbar(bar, list, root) {
     bar.hidden = !state.selecting;
+    if (!selbarRO) selbarRO = new ResizeObserver((es) => { for (const e of es) liftChip(e.target); });
+    selbarRO.observe(bar);
+    liftChip(bar);
     if (!state.selecting) return;
     const ids = [...state.selection];
     const n = ids.length;

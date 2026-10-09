@@ -2,7 +2,7 @@
 import path from 'node:path';
 import { isPng, readPngInfo, extractCardFromPng } from './png.js';
 import { readZip } from './zip.js';
-import { entriesOf, entryKeys, effectivePrompts, presetRegex } from '../../web/js/cardfmt.js';
+import { entriesOf, entryKeys, effectivePrompts, presetRegex, cardTokens } from '../../web/js/cardfmt.js';
 
 export const TYPES = {
     character: '角色卡',
@@ -77,7 +77,8 @@ export function summarizeCard(card) {
         scriptCount: helperScripts.length,
         talkativeness: ext.talkativeness ?? null,
         fav: Boolean(ext.fav),
-        estTokens: Math.round(textLen / 2.2),
+        estTokens: cardTokens(d)?.total || 0,
+        tokens: cardTokens(d),
         textLength: textLen,
     };
 }

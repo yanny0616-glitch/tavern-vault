@@ -111,7 +111,7 @@ export class AiConfig {
 
 // ---------------- 请求 ----------------
 export class AiError extends Error {
-    constructor(message, { status = 0, raw = '' } = {}) { super(message); this.status = status; this.raw = raw; }
+    constructor(message, { status = 0, raw = '', retryAfter = 0 } = {}) { super(message); this.status = status; this.raw = raw; this.retryAfter = retryAfter; }
 }
 
 /** 把用户填的地址整理成 API 根路径（.../v1） */
@@ -153,7 +153,7 @@ async function request(p, url, init, { signal, timeout = 120000 } = {}) {
     if (!res.ok) {
         const msg = json?.error?.message || json?.error || json?.message || text.slice(0, 300);
         const hint = res.status === 401 || res.status === 403 ? '（密钥不对或没有权限）' : res.status === 404 ? '（地址或模型名不对）' : res.status === 429 ? '（请求太频繁或额度用完）' : '';
-        throw new AiError(`AI 服务返回 ${res.status}${hint}：${redact(typeof msg === 'string' ? msg : JSON.stringify(msg), p).slice(0, 300)}`, { status: res.status, raw: redact(text, p) });
+        throw new AiError(`AI 服务返回 ${res.status}${hint}：${redact(typeof msg === 'string' ? msg : JSON.stringify(msg), p).slice(0, 300)}`, { status: res.status, raw: redact(text, p), retryAfter: Number(res.headers.get('retry-after')) || 0 });
     }
     if (!json) throw new AiError('AI 服务返回的不是 JSON，地址可能填错了', { status: res.status, raw: redact(text, p) });
     return { json, raw: redact(text, p), status: res.status, retryAfter: Number(res.headers.get('retry-after')) || 0 };
@@ -223,7 +223,11 @@ export function parseJsonReply(text) {
     if (a < 0 || b <= a) throw new AiError('AI 没有返回 JSON 对象', { raw: text });
     s = s.slice(a, b + 1);
     try { return JSON.parse(s); } catch { /* 再试一次 */ }
-    try { return JSON.parse(s.replace(/,\s*([}\]])/g, '$1').replace(/[“”]/g, '"')); } catch (e) {
+    // 先只修尾逗号：文字里的中文引号“”要原样保留
+    const s2 = s.replace(/,\s*([}\]])/g, '$1');
+    try { return JSON.parse(s2); } catch { /* 再试一次 */ }
+    // 最后才把中文引号当成 JSON 的引号（有的模型会用“”包键名）
+    try { return JSON.parse(s2.replace(/[“”]/g, '"')); } catch (e) {
         throw new AiError(`AI 返回的 JSON 无法解析：${e.message}`, { raw: text });
     }
 }

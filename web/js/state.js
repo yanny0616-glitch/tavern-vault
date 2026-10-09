@@ -42,8 +42,8 @@ export const state = {
     // 视图偏好（存本地）
     prefs: Object.assign({
         view: 'grid', dense: false, sort: 'updated', mode: 'auto', cols: 0,
-        start: 'library', readSize: 'md', reduceMotion: false,
-        showTags: true, showRating: true, showNo: true, blurNsfw: false,
+        start: 'library', reduceMotion: false,
+        showTags: true, showRating: true, showNo: true, showAi: true, blurNsfw: false,
         detailTab: 'overview', userName: '', foldAt: 500,
         uploadConc: 3, conflict: 'ask',
     }, lsGet('tv_prefs', {})),
@@ -84,8 +84,16 @@ const darkMq = matchMedia('(prefers-color-scheme: dark)');
 darkMq.addEventListener?.('change', () => applyAccent());
 
 /** 应用风格（全局，存服务器）与明暗（每台设备） */
-/** 界面字号：没选过时手机默认用「小」，电脑用「标准」 */
-export const uiSize = (p) => p.uiSize || (Math.min(screen.width, screen.height) < 600 ? 'sm' : 'md');
+// 字号可以自己填：界面字号按像素（基准 15），阅读字号按百分比。以前存的「小 / 标准 / 大」换算成数字
+const UI_PX = { xs: 13, sm: 14, md: 15, lg: 16 };
+const READ_PCT = { sm: 92, md: 100, lg: 112, xl: 126 };
+export const UI_FONT = { min: 11, max: 24, step: 0.5 };
+export const READ_ZOOM = { min: 70, max: 200, step: 5 };
+const clampNum = (v, { min, max }, d) => (Number.isFinite(Number(v)) && v !== '' && v != null ? Math.min(max, Math.max(min, Number(v))) : d);
+/** 界面字号（px）：没设过时手机默认 14，电脑 15 */
+export const uiFont = (p) => clampNum(p.uiFont, UI_FONT, UI_PX[p.uiSize] || (Math.min(screen.width, screen.height) < 600 ? 14 : 15));
+/** 阅读字号（%） */
+export const readZoom = (p) => clampNum(p.readZoom, READ_ZOOM, READ_PCT[p.readSize] || 100);
 
 export function applyAccent() {
     const root = document.documentElement;
@@ -98,13 +106,14 @@ export function applyAccent() {
     else root.style.removeProperty('--accent');
     // 每台设备自己的显示偏好，通过 html 上的属性交给 CSS
     const p = state.prefs;
-    root.dataset.read = p.readSize || 'md';
-    root.dataset.ui = uiSize(p);
+    root.style.setProperty('--fs', String(uiFont(p) / 15));
+    root.style.setProperty('--read-zoom', String(readZoom(p) / 100));
     const flag = (k, on) => { if (on) root.dataset[k] = ''; else delete root.dataset[k]; };
     flag('motion', p.reduceMotion);
     flag('hideTags', !p.showTags);
     flag('hideRating', !p.showRating);
     flag('hideNo', !p.showNo);
+    flag('hideAi', p.showAi === false);
     flag('blurNsfw', p.blurNsfw);
     const bg = getComputedStyle(root).getPropertyValue('--bg').trim();
     document.querySelector('meta[name="theme-color"]')?.setAttribute('content', bg || '#000');

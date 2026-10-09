@@ -1,8 +1,8 @@
 // 设置
-import { h, clear, toast, confirmDialog, choiceDialog, sheet, downloadBlob, switchEl, icon, btn, fmtBytes, fmtDate } from '../ui.js';
+import { h, clear, toast, confirmDialog, choiceDialog, promptDialog, sheet, downloadBlob, switchEl, icon, btn, fmtBytes, fmtDate } from '../ui.js';
 import { api } from '../api.js';
 import { bridge } from '../bridge.js';
-import { state, savePrefs, applyAccent, reload, TYPE_META, SKINS, uiSize } from '../state.js';
+import { state, savePrefs, applyAccent, reload, TYPE_META, SKINS, uiFont, readZoom, UI_FONT, READ_ZOOM, notify } from '../state.js';
 import { CARD_PARTS, ENTRY_FLAGS } from '../sig.js';
 import { SORTS } from './library.js';
 import { topbar, ensureView } from './common.js';
@@ -16,7 +16,8 @@ const ACCENTS = ['', '#8b4a2b', '#007aff', '#d4a24c', '#e0607e', '#c23a2b', '#22
 const SECTIONS = [
     { key: 'appearance', title: '外观', icon: 'palette', desc: () => `${SKINS[state.settings.skin]?.name || '典藏'} · ${{ auto: '跟随系统', light: '浅色', dark: '深色' }[state.prefs.mode || 'auto']}`, render: appearance },
     { key: 'browse', title: '浏览', icon: 'grid', desc: () => '打开页面、卡片显示、详情页', render: browse },
-    { key: 'import', title: '导入', icon: 'upload', desc: () => `同时上传 ${state.prefs.uploadConc || 3} 个 · 同名${CONFLICTS[state.prefs.conflict] || CONFLICTS.ask}`, render: importPrefs },
+    { key: 'import', title: '导入与导出', icon: 'upload', desc: () => `同时上传 ${state.prefs.uploadConc || 3} 个 · 同名${CONFLICTS[state.prefs.conflict] || CONFLICTS.ask}`, render: importPrefs },
+    { key: 'tags', title: '标签', icon: 'tag', desc: () => `${tagCounts().size} 个标签`, render: tagsSection },
     { key: 'fields', title: '自定义字段', icon: 'sliders', desc: () => `${state.fields.filter((f) => !f.hidden).length} 个字段在用`, render: fieldsSection },
     { key: 'ai', title: 'AI 助手', icon: 'sparkles', desc: () => (state.settings.ai?.ready ? '已配置' : '还没有配置'), render: () => panel('AI 助手', 'sparkles', null, aiSettings()) },
     { key: 'connect', title: '连接与设备', icon: 'beer', desc: () => (bridge.host ? `已连接 ${bridge.host.host}` : '酒馆插件、iPhone'), render: () => [connection(), shortcut()] },
@@ -59,26 +60,64 @@ export function renderSettings(root) {
     lastSec = sec.key;
 }
 
+/** 说明文字默认收起，点面板标题或设置名称旁边的「?」才显示 */
+const help = (...kids) => h('div', { class: 'muted small set-help' }, ...kids);
+// 记住展开过的说明：改了设置页面会重画，不要每次都收回去
+const openHelp = new Set();
+const helpBtn = (target, cls, key) => h('button', { class: 'help-btn', title: '说明', 'aria-label': '说明', onclick: (e) => {
+    e.stopPropagation();
+    const on = target().classList.toggle(cls);
+    if (on) openHelp.add(key); else openHelp.delete(key);
+} }, '?');
+
 function panel(title, ic, head, ...children) {
-    return h('section', { class: 'panel' }, h('div', { class: 'panel-head' }, icon(ic, { size: 16 }), h('h3', {}, title), head ? h('span', { class: 'grow' }) : null, head), children);
+    const key = `panel:${title}`;
+    const el = h('section', { class: `panel ${openHelp.has(key) ? 'show-help' : ''}` });
+    const title_ = h('h3', {}, title);
+    const headEl = h('div', { class: 'panel-head' }, icon(ic, { size: 16 }), title_, head ? h('span', { class: 'grow' }) : null, head);
+    el.append(headEl, ...children.flat(Infinity).filter(Boolean));
+    // 面板里有说明（包括之后重绘出来的）时才显示「?」
+    const btn_ = helpBtn(() => el, 'show-help', key);
+    title_.after(btn_);
+    const sync = () => { btn_.hidden = !el.querySelector('.set-help'); };
+    sync();
+    new MutationObserver(sync).observe(el, { childList: true, subtree: true });
+    return el;
 }
 
 /** 一行设置：左边名称和说明，右边开关 / 选项 */
 function setRow(label, desc, control) {
-    return h('div', { class: `set-row ${control.classList?.contains('switch') ? 'inline' : ''}` },
-        h('div', { class: 'set-row-text' }, h('div', { class: 'set-row-label' }, label), desc ? h('div', { class: 'set-row-desc' }, desc) : null),
+    const key = `row:${label}`;
+    const row = h('div', { class: `set-row ${control.classList?.contains('switch') ? 'inline' : ''} ${openHelp.has(key) ? 'show-desc' : ''}` });
+    row.append(
+        h('div', { class: 'set-row-text' }, h('div', { class: 'set-row-label' }, label, desc ? helpBtn(() => row, 'show-desc', key) : null), desc ? h('div', { class: 'set-row-desc' }, desc) : null),
         h('div', { class: 'set-row-ctl' }, control));
+    return row;
 }
 function seg(value, options, onPick) {
     return h('div', { class: 'opts' }, options.map(([v, label, ic]) => h('button', { class: `opt ${value === v ? 'active' : ''}`, onclick: () => onPick(v) }, ic ? icon(ic, { size: 14 }) : null, label)));
 }
+/** 数字输入框 + 加减按钮：可以直接填，也可以点加减 */
+function numStep(value, { min, max, step, unit, reset }, onSet) {
+    const fix = (v) => Math.round(Math.min(max, Math.max(min, v)) / step) * step;
+    const set = (v) => { if (Number.isFinite(v)) onSet(fix(v)); };
+    const input = h('input', { class: 'input sm', type: 'number', inputmode: 'decimal', min, max, step, value: String(value),
+        onchange: (e) => { if (e.target.value === '') { e.target.value = String(value); return; } set(Number(e.target.value)); },
+        onkeydown: (e) => { if (e.key === 'Enter') e.target.blur(); } });
+    return h('div', { class: 'num-step' },
+        h('button', { class: 'opt', title: '小一点', disabled: value <= min, onclick: () => set(value - step) }, icon('minus', { size: 14 })),
+        input, h('span', { class: 'num-unit' }, unit),
+        h('button', { class: 'opt', title: '大一点', disabled: value >= max, onclick: () => set(value + step) }, icon('plus', { size: 14 })),
+        value !== reset ? h('button', { class: 'opt', onclick: () => set(reset) }, '恢复标准') : null);
+}
+
 function setPref(patch) {
     Object.assign(state.prefs, patch);
     savePrefs();
     applyAccent();
     rerender();
 }
-const deviceNote = () => h('div', { class: 'muted small set-note' }, icon('phone', { size: 13 }), h('span', {}, '这一页的设置只对这台设备生效，手机和电脑可以分别设置。'));
+const deviceNote = () => help('这一页的设置只对这台设备生效，手机和电脑可以分别设置。');
 
 function skinPreview(key) {
     const mode = document.documentElement.dataset.mode;
@@ -104,7 +143,7 @@ function appearance() {
                     await api.put('/api/settings', { skin: k });
                 },
             }, skinPreview(k), h('div', { class: 'skin-name' }, h('b', {}, v.name), h('span', {}, v.desc)), current === k ? h('span', { class: 'skin-check' }, icon('check', { size: 13, stroke: 3 })) : null))),
-            h('div', { class: 'muted small' }, '风格、强调色和仓库名称对所有设备生效（网页和酒馆插件里一致）。'),
+            help( '风格、强调色和仓库名称对所有设备生效（网页和酒馆插件里一致）。'),
             setRow('强调色', '按钮、选中状态等使用的颜色', h('div', { class: 'color-picker' }, ACCENTS.map((c) => h('button', {
                 class: `${(state.settings.accent || '') === c ? 'active' : ''} ${c ? '' : 'auto'}`, style: { '--sw': c || 'var(--accent)' }, title: c || '跟随风格',
                 onclick: () => api.put('/api/settings', { accent: c }),
@@ -112,8 +151,10 @@ function appearance() {
             setRow('仓库名称', '显示在浏览器标签和登录页上', title)),
         panel('这台设备', 'monitor', null,
             setRow('明暗', null, seg(state.prefs.mode || 'auto', [['auto', '跟随系统', 'monitor'], ['light', '浅色', 'sun'], ['dark', '深色', 'moon']], (v) => setPref({ mode: v }))),
-            setRow('界面字号', '列表、按钮、设置等界面文字的大小。没选过时手机默认用「小」', seg(uiSize(state.prefs), [['xs', '更小'], ['sm', '小'], ['md', '标准'], ['lg', '大']], (v) => setPref({ uiSize: v }))),
-            setRow('阅读字号', '详情页里简介、开场白、角色卡内容的文字大小', seg(state.prefs.readSize || 'md', [['sm', '小'], ['md', '标准'], ['lg', '大'], ['xl', '特大']], (v) => setPref({ readSize: v }))),
+            setRow('界面字号', `列表、按钮、设置等界面文字的大小，单位像素，可填 ${UI_FONT.min}～${UI_FONT.max}。标准是 15，没设过时手机默认 14`,
+                numStep(uiFont(state.prefs), { ...UI_FONT, unit: 'px', reset: 15 }, (v) => setPref({ uiFont: v }))),
+            setRow('阅读字号', `详情页里简介、开场白、角色卡内容的文字大小，可填 ${READ_ZOOM.min}～${READ_ZOOM.max}%`,
+                numStep(readZoom(state.prefs), { ...READ_ZOOM, unit: '%', reset: 100 }, (v) => setPref({ readZoom: v }))),
             setRow('减少动画', '关闭弹出、切换时的过渡动画，旧手机上更跟手', switchEl(!!state.prefs.reduceMotion, (v) => setPref({ reduceMotion: v })))),
     ];
 }
@@ -128,8 +169,8 @@ function browse() {
         h('option', { value: 'group', selected: Boolean(p.groupTime) }, '按添加时间分组'));
     const userName = h('input', { class: 'input', value: p.userName || '', placeholder: '你', maxlength: 20, onchange: () => setPref({ userName: userName.value.trim() }) });
     return [
-        deviceNote(),
         panel('打开与视图', 'grid', null,
+            deviceNote(),
             setRow('打开时进入', null, seg(p.start || 'library', [['library', '仓库'], ['collections', '合集'], ['stats', '统计']], (v) => setPref({ start: v }))),
             setRow('仓库视图', null, seg(viewVal, [['grid', '卡片', 'grid'], ['dense', '紧凑', 'grid3'], ['list', '列表', 'list']], (v) => setPref({ view: v === 'list' ? 'list' : 'grid', dense: v === 'dense' }))),
             setRow('每行显示', '卡片视图下每行放几个，「自动」按屏幕宽度决定', cols),
@@ -138,6 +179,7 @@ function browse() {
             setRow('标签', null, switchEl(p.showTags !== false, (v) => setPref({ showTags: v }))),
             setRow('评分', null, switchEl(p.showRating !== false, (v) => setPref({ showRating: v }))),
             setRow('编号', '卡片角上的 No.001', switchEl(p.showNo !== false, (v) => setPref({ showNo: v }))),
+            setRow('AI 简介', 'AI 整理写的一句话简介，显示在卡片标题和列表行下面', switchEl(p.showAi !== false, (v) => setPref({ showAi: v }))),
             setRow('模糊 NSFW 封面', '资料里勾了 NSFW 的条目，在列表里模糊封面；打开详情时正常显示', switchEl(!!p.blurNsfw, (v) => setPref({ blurNsfw: v })))),
         panel('详情页', 'fileText', null,
             setRow('打开时先显示', null, seg(p.detailTab === 'content' ? 'content' : 'overview', [['overview', '介绍'], ['content', '内容']], (v) => setPref({ detailTab: v }))),
@@ -154,7 +196,34 @@ function importPrefs() {
             setRow('同名条目', '导入的文件和已有条目同名但内容不同时怎么处理。内容完全一样的会自动跳过', seg(CONFLICTS[p.conflict] ? p.conflict : 'ask', Object.entries(CONFLICTS), (v) => setPref({ conflict: v })))),
         syncIgnorePanel(),
         syncExcludePanel(),
+        dupPanel(),
+        panel('导出与推送到酒馆', 'download', null,
+            setRow('写入藏馆的整理信息', '下载、导出 ZIP、推送到酒馆的角色卡里，附上藏馆里的标签、评分、收藏、笔记和合集（放在卡的扩展字段里，不影响酒馆使用）。以后再导入这张卡，会自动恢复这些信息。卡里已经带着的，不管这里开没开都会读回来',
+                switchEl(state.settings.exportMeta === true, async (v) => { state.settings.exportMeta = v; await api.put('/api/settings', { exportMeta: v }); toast('已保存', 'ok'); }))),
     ];
+}
+
+/** 重复判断：名字里带这些分隔符的算衍生版本，不提示重复（所有设备共用） */
+const SEP_CHOICES = ['-', '·', '_', '~', '#', '/', '|', '+'];
+function dupPanel() {
+    const cur = state.settings.dupSeparators || [];
+    const save = async (list) => {
+        state.settings.dupSeparators = list;
+        await api.put('/api/settings', { dupSeparators: list });
+        toast('已保存', 'ok');
+        notify();
+        rerender();
+    };
+    const toggle = (c) => save(cur.includes(c) ? cur.filter((x) => x !== c) : [...cur, c]);
+    const custom = h('input', { class: 'input sm sep-input', maxlength: 4, placeholder: '其它符号',
+        onkeydown: (e) => { if (e.key === 'Enter') add(); } });
+    const add = () => { const v = custom.value.trim(); if (v && !cur.includes(v)) save([...cur, v]); };
+    const all = [...new Set([...SEP_CHOICES, ...cur])];
+    return panel('重复判断', 'layers', null,
+        setRow('衍生版本的分隔符', '名字里带选中符号的，算作不同的衍生版本，不提示「可能重复」。例如选了「-」和「·」，「蔚轶-31」和「蔚轶-34」、「赵长卿·重置版」和「赵长卿·鬓边花」都算不同的卡，名字完全一样才算重复。内容完全相同的仍然会提示；「-v2」「(2)」「副本」这类写法仍然算同一张卡的版本。导入时判断同名也按这个规则',
+            h('div', { class: 'stack-s' },
+                h('div', { class: 'opts' }, all.map((c) => h('button', { class: `opt sep-opt ${cur.includes(c) ? 'active' : ''}`, title: c === '·' ? '也包括 ・ 和 •' : '', onclick: () => toggle(c) }, cur.includes(c) ? icon('check', { size: 12, stroke: 3 }) : null, c))),
+                h('div', { class: 'row-actions' }, custom, btn('添加', { cls: 'sm', onclick: add })))));
 }
 
 /** 从酒馆同步时排除的世界书条目（所有设备共用） */
@@ -175,20 +244,98 @@ function syncIgnorePanel() {
             save({ syncIgnoreSet: { [k]: on } }, { syncIgnore: on ? [...ign, k] : [...ign].filter((x) => x !== k) });
         } }, ign.has(k) ? icon('check', { size: 13, stroke: 3 }) : null, label)));
         clear(box,
-            h('div', { class: 'muted small' }, '在酒馆里改过以后，酒馆页会显示「酒馆有改动」，收藏时会存成新版本。'
+            help( '在酒馆里改过以后，酒馆页会显示「酒馆有改动」，收藏时会存成新版本。'
                 + '勾选的部分，比对时不看它们的差异：只有这些不同，就算「已同步」，也不会存成新版本。角色的名字、作者、版本号始终会比对。默认都不勾选。'),
             h('div', { class: 'sub-label' }, '角色卡'),
             chips(CARD_PARTS),
-            h('div', { class: 'muted small' }, '角色设定 = 描述、性格、场景、对话示例、系统提示词、后置指令、深度提示词。「内嵌世界书」整本不比对，只建议在 TT 里对这张卡选过「保留当前版本」时使用：卡里的内嵌世界书平时就是作者原版，你在世界书编辑器里的改动不会进卡。'),
+            help( '角色设定 = 描述、性格、场景、对话示例、系统提示词、后置指令、深度提示词。「内嵌世界书」整本不比对，只建议在 TT 里对这张卡选过「保留当前版本」时使用：卡里的内嵌世界书平时就是作者原版，你在世界书编辑器里的改动不会进卡。'),
             h('div', { class: 'sub-label' }, '世界书条目（内嵌世界书和单独的世界书都适用）'),
             chips(ENTRY_FLAGS),
-            h('div', { class: 'muted small' }, '比如在酒馆里开关了某些条目、把蓝灯改成绿灯，勾选后这些改动不算差异。条目的关键词和内容始终比对；顺序、插入位置、深度、概率本来就不算差异。'),
+            help( '比如在酒馆里开关了某些条目、把蓝灯改成绿灯，勾选后这些改动不算差异。条目的关键词和内容始终比对；顺序、插入位置、深度、概率本来就不算差异。'),
             ign.size ? setRow('收新版本时保留藏馆原来的这些部分', '其它部分有真正的改动、存成新版本时，勾选的部分仍用藏馆当前版本的内容（条目状态按关键词和内容对应到原来的条目），不把自己在酒馆里的改动存进去。关掉则原样保存',
                 switchEl(keep, (v) => save({ syncKeep: v }))) : null,
-            ign.size ? h('div', { class: 'note' }, icon('info', { size: 15 }), h('span', {}, '「用藏馆版本覆盖酒馆」会整张替换酒馆里的卡，自己改过的这几部分也会被换掉。酒馆里单独的世界书文件不受影响。')) : null);
+            ign.size ? help('「用藏馆版本覆盖酒馆」会整张替换酒馆里的卡，自己改过的这几部分也会被换掉。酒馆里单独的世界书文件不受影响。') : null);
     };
     draw();
     return panel('从酒馆同步时哪些不算差异', 'user', null, box);
+}
+
+// ---------------- 标签管理 ----------------
+const TAG_SPLIT = /[，、,;；]/;
+const CARD_TAG_MODES = [['all', '全部收下'], ['known', '只收已有的'], ['none', '不收']];
+let tagQuery = '';
+let tagSort = 'count';
+
+/** 标签 → 使用次数（不含回收站） */
+function tagCounts() {
+    const m = new Map();
+    for (const it of state.items) if (!it.deletedAt) for (const t of it.tags) m.set(t, (m.get(t) || 0) + 1);
+    return m;
+}
+
+async function replaceTags(ops, done) {
+    try {
+        const r = await api.post('/api/tags/replace', { ops });
+        toast(done(r.count), 'ok');
+        await reload();
+    } catch (e) { toast(e.message, 'err'); }
+}
+
+function tagsSection() {
+    const counts = tagCounts();
+    const all = [...counts.entries()];
+    const splittable = all.filter(([t]) => TAG_SPLIT.test(t));
+    const mode = state.settings.cardTags || 'all';
+    const list = h('div', { class: 'rows tag-admin' });
+    const search = h('input', { class: 'input search-input', type: 'search', placeholder: `在 ${all.length} 个标签里找`, value: tagQuery, oninput: () => { tagQuery = search.value.trim(); draw(); } });
+    const sortSeg = h('div');
+
+    const rename = async (t) => {
+        const v = await promptDialog(`把「${t}」改成：`, { value: t, title: '改名', ok: '改名' });
+        const to = String(v ?? '').trim();
+        if (!to || to === t) return;
+        if (counts.has(to) && !(await confirmDialog(`已经有「${to}」这个标签（${counts.get(to)} 项）。改名后两个标签会合并成「${to}」。`, { ok: '合并', title: '合并标签' }))) return;
+        replaceTags([{ from: [t], to: [to] }], (n) => `已改名，涉及 ${n} 项`);
+    };
+    const split = (t) => {
+        const parts = t.split(TAG_SPLIT).map((x) => x.trim()).filter(Boolean);
+        replaceTags([{ from: [t], to: parts }], (n) => `已拆成 ${parts.length} 个标签，涉及 ${n} 项`);
+    };
+    const remove = async (t) => {
+        if (!(await confirmDialog(`从 ${counts.get(t)} 个条目里去掉标签「${t}」？`, { ok: '删除', danger: true, title: '删除标签' }))) return;
+        replaceTags([{ from: [t], to: [] }], (n) => `已从 ${n} 项里删除`);
+    };
+    const show = (t) => {
+        Object.assign(state.filter, { tagsIn: [t], tagsOut: [], quick: [], type: 'all', q: '' });
+        location.hash = '#/library';
+    };
+
+    const draw = () => {
+        clear(sortSeg, seg(tagSort, [['count', '按次数'], ['name', '按名称']], (v) => { tagSort = v; draw(); }));
+        const q = tagQuery.toLowerCase();
+        const rows = all.filter(([t]) => !q || t.toLowerCase().includes(q))
+            .sort(tagSort === 'name' ? (a, b) => a[0].localeCompare(b[0], 'zh') : (a, b) => b[1] - a[1] || a[0].localeCompare(b[0], 'zh'));
+        clear(list, rows.length ? rows.map(([t, n]) => h('div', { class: 'row-item tag-admin-row' },
+            h('button', { class: 'tag-admin-name', title: '在仓库里查看带这个标签的条目', onclick: () => show(t) }, h('span', { class: 'min0' }, t), h('span', { class: 'fold-count' }, n)),
+            TAG_SPLIT.test(t) ? btn('拆开', { cls: 'sm ghost', title: '按逗号拆成几个标签', onclick: () => split(t) }) : null,
+            btn('', { icon: 'pencil', cls: 'sm ghost icon', title: '改名 / 合并', onclick: () => rename(t) }),
+            btn('', { icon: 'trash', cls: 'sm ghost icon', title: '删除', onclick: () => remove(t) })))
+            : h('div', { class: 'muted small' }, all.length ? '没有匹配的标签' : '还没有标签'));
+    };
+    draw();
+
+    return [
+        panel('导入时', 'upload', null,
+            setRow('卡里自带的标签', '作者常在卡里塞很多标签。「只收已有的」：只收你仓库里已经有的标签；「不收」：一个都不要，自己打。用逗号连在一起的会自动拆开',
+                seg(mode, CARD_TAG_MODES, async (v) => { state.settings.cardTags = v; rerender(); await api.put('/api/settings', { cardTags: v }); toast('已保存', 'ok'); }))),
+        panel(`所有标签 · ${all.length}`, 'tag', null,
+            help('点标签名在仓库里查看。改名成已有的标签就是合并。回收站里的条目会一起改。'),
+            splittable.length ? h('div', { class: 'note' }, icon('info', { size: 15 }),
+                h('span', { class: 'grow' }, `有 ${splittable.length} 个标签是几个词用逗号连在一起的，比如「${splittable[0][0].slice(0, 16)}${splittable[0][0].length > 16 ? '…' : ''}」`),
+                btn('全部拆开', { cls: 'sm', onclick: () => replaceTags(splittable.map(([t]) => ({ from: [t], to: t.split(TAG_SPLIT).map((x) => x.trim()).filter(Boolean) })), (n) => `已拆开，涉及 ${n} 项`) })) : null,
+            all.length > 8 ? h('div', { class: 'tag-admin-tools' }, h('label', { class: 'search inline grow' }, icon('search', { size: 15 }), search), sortSeg) : null,
+            list),
+    ];
 }
 
 function syncExcludePanel() {
@@ -205,7 +352,7 @@ function syncExcludePanel() {
         input.value = '';
     };
     return panel('从酒馆同步时排除', 'beer', null,
-        h('div', { class: 'muted small' }, '酒馆保存角色卡时，会把角色主绑定的世界书整本写进卡里，总结类脚本（例如「数据库」）写进这本世界书的条目也会跟着进来。'
+        help( '酒馆保存角色卡时，会把角色主绑定的世界书整本写进卡里，总结类脚本（例如「数据库」）写进这本世界书的条目也会跟着进来。'
             + '标题包含下面任一文字的条目，在从酒馆收藏、存为新版本、对比和判断是否同步时都会去掉；酒馆里的数据不受影响。对所有设备生效。'),
         h('div', { class: 'rule-list' }, rules.length
             ? rules.map((r) => h('span', { class: 'rule-chip' }, h('code', {}, r), h('button', { title: '删除', onclick: () => save(rules.filter((x) => x !== r)) }, icon('x', { size: 12 }))))
@@ -237,7 +384,7 @@ function fieldsSection() {
     return panel('字段列表', 'sliders', h('div', { class: 'row-actions' },
         btn('新增', { icon: 'plus', cls: 'sm', onclick: () => editField({ id: `f_${Date.now().toString(36)}`, label: '', kind: 'text', types: [], options: [] }, (nf) => { fields.push(nf); mark(); draw(); }) }),
         saveBtn),
-    h('div', { class: 'muted small' }, '决定每个条目详情里记录哪些信息。可以限定只对某些类型显示，例如只给角色卡加「推荐模型」。'),
+    help( '决定每个条目详情里记录哪些信息。可以限定只对某些类型显示，例如只给角色卡加「推荐模型」。'),
     list,
     btn('恢复默认字段', { icon: 'restore', cls: 'sm ghost', onclick: async () => {
         if (await confirmDialog('恢复为默认字段？已填写的数据不会丢失，只是字段定义会重置。')) { await api.post('/api/fields/reset'); toast('已恢复默认'); }
@@ -283,7 +430,7 @@ function loginLogPanel() {
             : h('span', { class: 'muted small' }, '还没有登录记录'),
         log.length > 8 ? btn(`显示全部（${log.length}）`, { cls: 'sm ghost', onclick: (e) => { box.querySelectorAll('.login-row[hidden]').forEach((r) => { r.hidden = false; }); e.currentTarget.remove(); } }) : null)).catch((e) => clear(box, h('span', { class: 'muted small' }, e.message)));
     return panel('最近的登录', 'clock', null,
-        h('div', { class: 'muted small' }, '同一来源连续输错 5 次密码会暂停登录，之后每多错一次暂停时间翻倍（最长 30 分钟）。已经登录的设备不受影响。'),
+        help( '同一来源连续输错 5 次密码会暂停登录，之后每多错一次暂停时间翻倍（最长 30 分钟）。已经登录的设备不受影响。'),
         box);
 }
 
@@ -318,10 +465,10 @@ function copyBox(text) {
 function connection() {
     return panel('连接酒馆插件', 'beer', null,
         h('div', { class: 'sub-label' }, '插件安装地址'), copyBox(PLUGIN_REPO),
-        h('div', { class: 'muted small' }, '在 SillyTavern / TauriTavern 里：扩展 → 安装扩展 → 粘贴这个地址。已经装过的，在扩展管理里点更新。'),
+        help( '在 SillyTavern / TauriTavern 里：扩展 → 安装扩展 → 粘贴这个地址。已经装过的，在扩展管理里点更新。'),
         h('div', { class: 'small' }, '装好后在插件设置里填入：'),
         h('div', { class: 'sub-label' }, '服务器地址'), copyBox(location.origin),
-        h('div', { class: 'muted small' }, '密码就是上面设置的访问密码。iOS 版 TauriTavern 需要 https 地址。'),
+        help( '密码就是上面设置的访问密码。iOS 版 TauriTavern 需要 https 地址。'),
         btn('下载插件压缩包', { icon: 'download', cls: 'sm', href: '/api/extension.zip', download: 'tavern-vault-extension.zip' }));
 }
 
@@ -355,7 +502,7 @@ function data() {
                     b.disabled = false;
                 } }),
                 btn('从备份还原', { icon: 'restore', onclick: () => restoreInput.click() }), restoreInput),
-            h('div', { class: 'muted small' }, '备份 ZIP 包含全部条目、合集、字段和所有版本的文件（不含缩略图和 AI 密钥）。还原前会自动保存一份当前数据库，放在服务端 data/restore-points 目录。')),
+            help( '备份 ZIP 包含全部条目、合集、字段和所有版本的文件（不含缩略图和 AI 密钥）。还原前会自动保存一份当前数据库，放在服务端 data/restore-points 目录。')),
         autoBackupPanel(),
         panel('重复条目', 'merge', btn('查找重复', { cls: 'sm', onclick: () => openDuplicates() }),
             h('div', { class: 'muted small' }, (() => { const n = findDuplicates().length; return n ? `现在有 ${n} 组可能重复的条目。` : '现在没有发现重复的条目。'; })(),
@@ -376,7 +523,7 @@ function data() {
                     await reload();
                     rerender();
                 } })),
-            h('div', { class: 'muted small' }, '「清理无用文件」会删掉已经没有条目引用的文件（例如彻底删除后剩下的）。')),
+            help( '「清理无用文件」会删掉已经没有条目引用的文件（例如彻底删除后剩下的）。')),
     ];
 }
 
@@ -405,7 +552,7 @@ function autoBackupPanel() {
                     load();
                 } })))))
             : h('div', { class: 'muted small' }, '还没有备份，开启后一分钟内会存第一份。'),
-        h('div', { class: 'muted small' }, '备份放在服务器数据目录的 backups 文件夹里。服务器整个出问题时这些备份也会一起丢，建议偶尔用上面的「下载完整备份」存一份到自己的设备。'));
+        help( '备份放在服务器数据目录的 backups 文件夹里。服务器整个出问题时这些备份也会一起丢，建议偶尔用上面的「下载完整备份」存一份到自己的设备。'));
     const load = () => api.get('/api/backups').then(draw).catch((e) => clear(body, h('span', { class: 'muted small' }, e.message)));
     load();
     return panel('自动备份', 'clock', null, body);

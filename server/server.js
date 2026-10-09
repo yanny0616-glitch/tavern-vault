@@ -148,27 +148,95 @@ function applyDetection(it, det, sha, { keepUserFields = true } = {}) {
     store.updateItem(it.id, patch);
 }
 
-/** 用于判断「是不是同一个东西」的名字：去掉扩展名、版本号、副本标记 */
-function normName(s) {
+/** 作者把几个标签用逗号连成一个时拆开：「酸涩，破镜重圆」→「酸涩」「破镜重圆」 */
+const splitTag = (t) => String(t || '').split(/[，、,;；]/).map((x) => x.trim()).filter(Boolean);
+const TAG_MODES = ['all', 'known', 'none'];
+/** 导入时卡里自带的标签：全部收下 / 只收仓库里已有的 / 不收（设置里选） */
+function cardTagsToKeep(tags) {
+    const mode = TAG_MODES.includes(store.db.settings.cardTags) ? store.db.settings.cardTags : 'all';
+    if (mode === 'none') return [];
+    const list = [...new Set((tags || []).flatMap(splitTag))];
+    if (mode === 'all') return list;
+    const known = new Set(Object.values(store.db.items).flatMap((it) => it.tags));
+    return list.filter((t) => known.has(t));
+}
+
+/** 去掉扩展名、版本号（-v2、(2)）、副本标记 */
+function stripVer(s) {
     return String(s || '').toLowerCase()
         .replace(/\.(png|json|charx|jsonl|txt|md|js|css|webp|jpe?g|gif|zip|ya?ml)$/i, '')
         .replace(/[\s_\-]*[(（[【]\s*(?:v(?:er(?:sion)?)?\.?\s*\d+(?:\.\d+)*[a-z]?|\d+|副本|copy)\s*[)）\]】]\s*$/i, '')
         .replace(/[\s_\-]+v(?:er(?:sion)?)?\.?\s*\d+(?:\.\d+)*[a-z]?$/i, '')
         .replace(/[\s_\-]*(?:副本|copy)$/i, '')
-        .replace(/[\s_\-·・]+/g, ' ')
         .trim();
+}
+/** 用于判断「是不是同一个东西」的名字 */
+function normName(s) {
+    return stripVer(s).replace(/[\s_\-·・]+/g, ' ').trim();
+}
+// 设置里的「衍生版本分隔符」：名字里带这些符号的（如「蔚轶-31」「赵长卿·重置版」）是不同的衍生版本，名字要完全一样才算同一个
+const hasDerivSep = (s, seps) => seps.some((c) => (c === '·' ? /[·・•]/.test(s) : s.includes(c)));
+function nameKey(s) {
+    const base = stripVer(s);
+    return hasDerivSep(base, store.db.settings.dupSeparators || []) ? `=${base}` : normName(s);
 }
 
 /** 同类型、同名（作者不冲突）的已有条目，最近更新的在前 */
 function findSimilar(det) {
-    const name = normName(det.name);
+    const name = nameKey(det.name);
     if (!name) return [];
     const author = normName(det.author);
     return Object.values(store.db.items)
-        .filter((it) => !it.deletedAt && it.type === det.type && it.files.length && normName(it.name) === name)
+        .filter((it) => !it.deletedAt && it.type === det.type && it.files.length && nameKey(it.name) === name)
         .filter((it) => det.type !== 'preset' || !det.meta?.apiId || !it.meta?.apiId || det.meta.apiId === it.meta.apiId)
         .filter((it) => !author || !it.author || normName(it.author) === author)
         .sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
+}
+
+// ---- 藏馆的整理信息（标签、评分、收藏、笔记、合集）写进导出的角色卡，再导入时读回来 ----
+const VAULT_EXT = 'tavern_vault';
+const exportMetaOn = () => store.db.settings.exportMeta === true;
+const cardOf = (buf) => {
+    if (isPng(buf)) return extractCardFromPng(buf);
+    try { return JSON.parse(buf.toString('utf8').replace(/^\uFEFF/, '')); } catch { return null; }
+};
+const cardDataOf = (card) => (card && typeof card === 'object' ? (card.data && typeof card.data === 'object' ? card.data : card) : null);
+
+/** 设置里开了「导出时写入整理信息」时，把条目的整理信息写进角色卡的 extensions.tavern_vault */
+async function withVaultMeta(buf, it) {
+    if (!exportMetaOn() || it?.type !== 'character') return buf;
+    try {
+        const card = cardOf(buf);
+        const d = cardDataOf(card);
+        if (!d) return buf;
+        d.extensions = { ...(d.extensions || {}), [VAULT_EXT]: {
+            v: 1,
+            tags: it.tags,
+            rating: it.rating || 0,
+            favorite: Boolean(it.favorite),
+            notes: it.notes || '',
+            collections: it.collections.map((id) => store.db.collections[id]?.name).filter(Boolean),
+            exportedAt: new Date().toISOString(),
+        } };
+        return isPng(buf) ? await writeCardToPng(buf, card) : Buffer.from(JSON.stringify(card, null, 2));
+    } catch { return buf; }
+}
+
+/** 导入新条目时，卡里带着藏馆整理信息的，读回标签、评分、收藏、笔记、合集 */
+function vaultMetaFrom(buf, det) {
+    if (det.type !== 'character') return null;
+    try {
+        const m = cardDataOf(cardOf(buf))?.extensions?.[VAULT_EXT];
+        if (!m || typeof m !== 'object') return null;
+        const strs = (v, n) => (Array.isArray(v) ? v : []).map((x) => String(x).trim().slice(0, 60)).filter(Boolean).slice(0, n);
+        return {
+            tags: strs(m.tags, 100),
+            rating: Math.max(0, Math.min(5, Math.round(Number(m.rating) || 0))),
+            favorite: m.favorite === true,
+            notes: String(m.notes || '').slice(0, 20000),
+            collections: strs(m.collections, 30).map((name) => store.ensureCollection(name)?.id).filter(Boolean),
+        };
+    } catch { return null; }
 }
 
 function withCollections(opts) {
@@ -268,9 +336,10 @@ function ingest(buf, filename, opts = {}) {
             const cand = candidates[0];
             if (action === 'version') {
                 // 版本号比当前低：存为历史版本，不顶替当前版本（从酒馆收录、手动指定的除外）
-                const curVer = opts.origin === 'tavern' || opts.primary === true ? '' : olderThanCurrent(cand, det, fname);
-                const item = addVersion(cand, file, { ...opts, primary: !curVer });
-                return { ...base, status: 'version', duplicate: false, older: Boolean(curVer), currentVersion: curVer, newVersion: versionOf(det, fname), item: slim(item) };
+                const curVer = opts.origin === 'tavern' || opts.primary !== undefined ? '' : olderThanCurrent(cand, det, fname);
+                const keepCurrent = opts.primary === false || Boolean(curVer);
+                const item = addVersion(cand, file, { ...opts, primary: !keepCurrent });
+                return { ...base, status: 'version', duplicate: false, older: keepCurrent, currentVersion: curVer, newVersion: versionOf(det, fname), item: slim(item) };
             }
             if (action === 'skip') return { ...base, status: 'skipped', duplicate: false, item: slim(cand) };
             if (action === 'ask') {
@@ -287,6 +356,7 @@ function ingest(buf, filename, opts = {}) {
         }
     }
 
+    const vm = vaultMetaFrom(buf, det);
     const item = store.createItem({
         type: opts.type && TYPES[opts.type] ? opts.type : det.type,
         subtype: det.subtype,
@@ -294,8 +364,9 @@ function ingest(buf, filename, opts = {}) {
         description: det.description,
         author: det.author,
         version: det.version,
-        tags: [...(det.tags || []), ...(opts.tags || [])],
-        collections: withCollections(opts),
+        tags: [...new Set([...(vm ? vm.tags : cardTagsToKeep(det.tags)), ...(opts.tags || [])])],
+        collections: [...new Set([...withCollections(opts), ...(vm?.collections || [])])],
+        ...(vm ? { rating: vm.rating, favorite: vm.favorite, notes: vm.notes } : {}),
         meta: det.meta,
         searchText: det.searchText,
         source: opts.source || '',
@@ -380,6 +451,8 @@ function parseOpts(url) {
         label: sp.get('label') || '',
         source: sp.get('source') || '',
         origin: sp.get('origin') || '',
+        // primary=0：只存为历史版本，不顶替当前版本（例如酒馆里的其实是旧版）
+        primary: sp.get('primary') === '0' ? false : sp.get('primary') === '1' ? true : undefined,
     };
 }
 
@@ -519,6 +592,8 @@ route('POST', '/api/items', async ({ req, url }) => {
     let buf = await readBody(req);
     if (!buf.length) throw new HttpError(400, '空文件');
     let merged = false;
+    // 对比用：酒馆只发来角色卡的文字（JSON），套进藏馆当前版本的图片里，省得手机上传整张 PNG
+    if (url.searchParams.get('probe') === '1' && opts.target) ({ buf, filename: opts.filename } = await probeCard(buf, opts.filename, opts.target));
     if (opts.origin === 'tavern') {
         buf = await stripFromTavern(buf, opts.filename);
         if (opts.target) ({ buf, merged } = await keepVaultParts(buf, opts.filename, opts.target));
@@ -534,6 +609,18 @@ const syncExclude = () => store.db.settings.syncExclude ?? DEFAULT_SYNC_EXCLUDE;
 // 从酒馆同步时忽略的角色卡分段；syncKeep：收新版本时，这几段沿用藏馆原来的内容
 const syncIgnore = () => (store.db.settings.syncIgnore || []).filter((k) => k in SYNC_OPTIONS);
 const syncKeep = () => store.db.settings.syncKeep !== false;
+
+/** 角色卡 JSON + 藏馆当前版本的 PNG 图片 → 一张完整的 PNG 卡（只用于对比，图片按藏馆的算） */
+async function probeCard(buf, filename, targetId) {
+    const it = store.db.items[targetId];
+    const prev = it && store.primaryFile(it);
+    if (it?.type !== 'character' || !prev || !store.hasBlob(prev.sha)) return { buf, filename };
+    const img = store.readBlob(prev.sha);
+    if (!isPng(img)) return { buf, filename };
+    let card;
+    try { card = JSON.parse(buf.toString('utf8')); } catch { throw new HttpError(400, '角色卡内容不是 JSON'); }
+    return { buf: await writeCardToPng(img, card), filename: String(filename || 'card').replace(/\.json$/i, '') + '.png' };
+}
 
 /** 酒馆里的卡收成新版本前：把忽略的那几段换回藏馆当前版本的内容 */
 async function keepVaultParts(buf, filename, targetId) {
@@ -840,6 +927,30 @@ route('PUT', '/api/items/:id/card', async ({ req, p }) => {
     return slim(store.db.items[it.id]);
 });
 
+// 标签管理：改名、合并、拆开、删除都是「把 from 里的标签换成 to」，回收站里的条目一起改
+route('POST', '/api/tags/replace', async ({ req }) => {
+    const { ops = [] } = await readJson(req);
+    const clean = (v) => [...new Set((Array.isArray(v) ? v : []).map((t) => String(t).trim().slice(0, 60)).filter(Boolean))];
+    const list = (Array.isArray(ops) ? ops : []).slice(0, 500).map((o) => ({ from: clean(o?.from), to: clean(o?.to) })).filter((o) => o.from.length);
+    if (!list.length) throw new HttpError(400, '没有要改的标签');
+    const stamp = new Date().toISOString();
+    const ids = [];
+    for (const it of Object.values(store.db.items)) {
+        let tags = it.tags;
+        for (const { from, to } of list) {
+            const at = tags.findIndex((t) => from.includes(t));
+            if (at < 0) continue;
+            const rest = tags.filter((t) => !from.includes(t));
+            const pos = tags.slice(0, at).filter((t) => !from.includes(t)).length;
+            tags = [...new Set([...rest.slice(0, pos), ...to, ...rest.slice(pos)])];
+        }
+        if (tags !== it.tags) { it.tags = tags; it.updatedAt = stamp; ids.push(it.id); }
+    }
+    store.save();
+    broadcast('change', { ids });
+    return { ok: true, count: ids.length };
+});
+
 // 批量操作
 route('POST', '/api/batch', async ({ req }) => {
     const { ids = [], action, value } = await readJson(req);
@@ -875,7 +986,7 @@ route('POST', '/api/export', async ({ req, res }) => {
         const it = store.db.items[id];
         if (!it) continue;
         const f = store.primaryFile(it);
-        if (f) entries.push({ name: `${typeDir(it.type)}/${f.name}`, data: store.readBlob(f.sha) });
+        if (f) entries.push({ name: `${typeDir(it.type)}/${f.name}`, data: await withVaultMeta(store.readBlob(f.sha), it) });
         if (withMeta) entries.push({ name: `${typeDir(it.type)}/_info/${safeFilename(it.name)}.json`, data: Buffer.from(JSON.stringify({ ...it, searchText: undefined }, null, 2)) });
     }
     const zip = buildZip(entries);
@@ -1036,9 +1147,21 @@ route('DELETE', '/api/backups/:name', ({ p }) => { fs.unlinkSync(backupFile(p.na
 route('POST', '/api/backups/:name/restore', async ({ p, url }) => restoreFrom(fs.readFileSync(backupFile(p.name)), url.searchParams.get('mode') === 'replace' ? 'replace' : 'merge'));
 
 // 文件下载
-route('GET', '/api/files/:sha', ({ req, res, p, url }) => {
+route('GET', '/api/files/:sha', async ({ req, res, p, url }) => {
     if (!store.hasBlob(p.sha)) throw new HttpError(404, '文件不存在');
     const name = url.searchParams.get('name') || p.sha;
+    // 带 item 参数（下载、推送到酒馆）且开了「写入整理信息」：角色卡里写上藏馆的标签、评分等
+    const owner = store.db.items[url.searchParams.get('item') || ''];
+    if (owner && exportMetaOn() && owner.type === 'character' && owner.files.some((f) => f.sha === p.sha)) {
+        const out = await withVaultMeta(store.readBlob(p.sha), owner);
+        send(res, 200, out, {
+            'Content-Type': isPng(out) ? 'image/png' : mimeOf(name),
+            'Content-Length': out.length,
+            'Cache-Control': 'no-store',
+            'Content-Disposition': contentDisposition(name, url.searchParams.get('dl') === '1'),
+        });
+        return null;
+    }
     const etag = `"${p.sha}"`;
     if (req.headers['if-none-match'] === etag) { res.writeHead(304); res.end(); return null; }
     const buf = store.readBlob(p.sha);
@@ -1157,6 +1280,9 @@ route('PUT', '/api/settings', async ({ req }) => {
         store.db.settings.syncIgnore = [...cur];
     }
     if (typeof body.syncKeep === 'boolean') store.db.settings.syncKeep = body.syncKeep;
+    if (TAG_MODES.includes(body.cardTags)) store.db.settings.cardTags = body.cardTags;
+    if (typeof body.exportMeta === 'boolean') store.db.settings.exportMeta = body.exportMeta;
+    if (Array.isArray(body.dupSeparators)) store.db.settings.dupSeparators = [...new Set(body.dupSeparators.map((x) => String(x).trim().slice(0, 4)).filter(Boolean))].slice(0, 12);
     if (Array.isArray(body.syncExclude)) store.db.settings.syncExclude = [...new Set(body.syncExclude.map((x) => String(x).trim().slice(0, 60)).filter(Boolean))].slice(0, 30);
     store.save();
     if (body.trashDays) purgeTrash();
@@ -1294,7 +1420,7 @@ function searchSegs(it) {
     const key = `${f?.sha || ''}|${it.updatedAt}`;
     const c = searchCache.get(it.id);
     if (c && c.key === key) return c.segs;
-    const segs = [['名称', it.name], ['作者', it.author], ['标签', it.tags.join(' ')], ['简介', it.description], ['笔记', it.notes], ['资料', Object.values(it.fields || {}).join(' ')]]
+    const segs = [['名称', it.name], ['作者', it.author], ['标签', it.tags.join(' ')], ['简介', it.description], ['AI 简介', it.ai?.summary], ['笔记', it.notes], ['资料', Object.values(it.fields || {}).join(' ')]]
         .map(([l, v]) => [l, str(v)]).filter(([, v]) => v);
     if (f && f.size < 64 * 1024 * 1024 && store.hasBlob(f.sha)) {
         try { segs.push(...contentSegs(it.type, parseFile(store.readBlob(f.sha), f.name))); } catch { /* 读不了就只搜资料 */ }
@@ -1339,7 +1465,7 @@ route('GET', '/api/search', ({ url }) => {
 });
 
 // 识别规则更新过（比如预设的启用数、对象形式的世界书条目）：启动时按文件重新算一遍统计信息
-const DETECT_VERSION = 2;
+const DETECT_VERSION = 3; // 3：token 估算改为全部开场白 + 世界书，按中文字数换算
 async function redetect() {
     if ((store.db.detectVersion || 1) >= DETECT_VERSION) return 0;
     let n = 0;

@@ -53,7 +53,7 @@ function docPreview(it) {
     else if (it.type === 'regex' && (m.findRegex || m.scripts?.length)) body = m.findRegex ? h('pre', { class: 'doc-code' }, m.findRegex) : lines(m.scripts);
     else if (it.type === 'theme' && m.colors?.length) body = h('div', { class: 'doc-swatches' }, m.colors.slice(0, 7).map((c) => h('i', { style: { background: c } })));
     else if (it.type === 'chat' && m.messages != null) body = h('div', { class: 'doc-big' }, h('b', {}, String(m.messages)), h('span', {}, '条消息'));
-    else if (it.searchText || it.description || it.notes) body = h('p', { class: 'doc-text' }, (it.description || it.notes || it.searchText).slice(0, 160));
+    else if (it.ai?.summary || it.searchText || it.description || it.notes) body = h('p', { class: 'doc-text' }, (it.ai?.summary || it.description || it.notes || it.searchText).slice(0, 160));
     const foot = metaLine(it);
     return h('div', { class: 'doc', style: { '--tc': tm.color } },
         h('div', { class: 'doc-head' }, icon(tm.icon, { size: 14 }), h('span', {}, tm.label)),
@@ -84,8 +84,17 @@ export function metaLine(it) {
 const cardCache = new Map();
 const cardNo = (i) => `No.${String(i + 1).padStart(3, '0')}`;
 
-export function itemCard(it, { onClick, selected = false, selecting = false, index = 0 } = {}) {
-    const key = [it.updatedAt, it.thumb, it.cover, it.favorite, it.rating].join('|');
+/** 版本数：当前版本和有内容指纹的旧版本（不算附件） */
+export const versionCount = (it) => it.files.filter((x) => x.primary || x.sig).length;
+
+/** 卡片 / 列表行上的角标：「3 版」「可能重复」 */
+function badgesOf(it, dupe) {
+    const n = versionCount(it);
+    return [n > 1 ? ['ver', `${n} 版`] : null, dupe ? ['dupe', '可能重复'] : null].filter(Boolean);
+}
+
+export function itemCard(it, { onClick, selected = false, selecting = false, index = 0, dupe = false } = {}) {
+    const key = [it.updatedAt, it.thumb, it.cover, it.favorite, it.rating, it.files.length, dupe].join('|');
     const hit = cardCache.get(it.id);
     if (hit && hit.key === key) {
         hit.el.tvClick = onClick;
@@ -95,7 +104,7 @@ export function itemCard(it, { onClick, selected = false, selecting = false, ind
         if (no) no.textContent = cardNo(index);
         return hit.el;
     }
-    const el = buildCard(it, { selected, selecting, index });
+    const el = buildCard(it, { selected, selecting, index, dupe });
     el.dataset.id = it.id;
     el.tvClick = onClick;
     el.addEventListener('click', (e) => el.tvClick?.(e));
@@ -104,13 +113,13 @@ export function itemCard(it, { onClick, selected = false, selecting = false, ind
     return el;
 }
 
-function buildCard(it, { selected, selecting, index }) {
+function buildCard(it, { selected, selecting, index, dupe }) {
     const tm = typeMeta(it.type);
     const media = it.cover ? coverImg(it) : docPreview(it);
     const sub = metaLine(it);
     return h('article', { class: `card ${it.cover ? 'has-cover' : 'is-doc'} ${it.fields?.nsfw ? 'nsfw' : ''} ${selected ? 'selected' : ''} ${selecting ? 'selecting' : ''}`, style: { '--tc': tm.color }, dataset: { type: it.type } },
         h('div', { class: 'card-media' },
-            h('div', { class: 'card-frame' }, media),
+            h('div', { class: 'card-frame' }, media, badgeEls(it, dupe, 'card-badges')),
             h('span', { class: 'card-no' }, cardNo(index)),
             h('span', { class: 'card-type' }, icon(tm.icon, { size: 11 }), h('span', {}, tm.label)),
             it.favorite ? h('span', { class: 'card-fav' }, icon('star', { size: 13, fill: true })) : null,
@@ -120,6 +129,7 @@ function buildCard(it, { selected, selecting, index }) {
         h('div', { class: 'card-body' },
             h('div', { class: 'card-title' }, it.name),
             h('div', { class: 'card-sub' }, sub || tm.label),
+            aiLine(it, 'card-ai'),
             it.tags.length ? h('div', { class: 'card-tags' }, it.tags.slice(0, 3).map((t) => h('span', {}, t))) : null,
             it.rating ? h('div', { class: 'card-stars' }, starsEl(it.rating, null, { size: 11 })) : null));
 }
@@ -164,11 +174,11 @@ const rowCache = new Map();
 
 export function itemRow(it, opts = {}) {
     if (!opts.cache) return buildRow(it, opts);
-    const { onClick, selected = false, right = null, index = null } = opts;
-    const key = [it.updatedAt, it.thumb, it.cover, selected, index, right ? right.className : ''].join('|');
+    const { onClick, selected = false, right = null, index = null, dupe = false } = opts;
+    const key = [it.updatedAt, it.thumb, it.cover, selected, index, right ? right.className : '', it.files.length, dupe].join('|');
     const hit = rowCache.get(it.id);
     if (hit && hit.key === key) { hit.el.tvClick = onClick; return hit.el; }
-    const el = buildRow(it, { selected, right, index });
+    const el = buildRow(it, { selected, right, index, dupe });
     el.dataset.id = it.id;
     el.tvClick = onClick;
     el.addEventListener('click', (e) => el.tvClick?.(e));
@@ -177,16 +187,28 @@ export function itemRow(it, opts = {}) {
     return el;
 }
 
-function buildRow(it, { onClick, selected = false, right = null, index = null } = {}) {
+function buildRow(it, { onClick, selected = false, right = null, index = null, dupe = false } = {}) {
     const tm = typeMeta(it.type);
     return h('div', { class: `row-item ${it.fields?.nsfw ? 'nsfw' : ''} ${selected ? 'selected' : ''}`, style: { '--tc': tm.color }, onclick: onClick },
         index != null ? h('span', { class: 'row-no' }, String(index + 1).padStart(2, '0')) : null,
         h('div', { class: 'row-thumb' }, it.cover ? coverImg(it) : icon(tm.icon, { size: 20 })),
         h('div', { class: 'row-main' },
             h('div', { class: 'row-title' }, it.favorite ? icon('star', { size: 13, fill: true, cls: 'row-fav' }) : null, h('span', {}, it.name)),
-            h('div', { class: 'row-sub' }, h('span', { class: 'row-type' }, tm.label), metaLine(it) ? h('span', {}, metaLine(it)) : null,
-                it.tags.slice(0, 2).map((t) => h('span', { class: 'row-tag' }, t)))),
+            h('div', { class: 'row-sub' }, h('span', { class: 'row-type' }, tm.label), badgeEls(it, dupe, 'row-badges'), metaLine(it) ? h('span', {}, metaLine(it)) : null,
+                it.tags.slice(0, 2).map((t) => h('span', { class: 'row-tag' }, t))),
+            aiLine(it, 'row-ai')),
         right ?? icon('chevronRight', { size: 16, cls: 'row-chev' }));
+}
+
+/** AI 整理写的一句话简介（设置里可以关掉） */
+function aiLine(it, cls) {
+    const s = it.ai?.summary;
+    return s ? h('div', { class: `ai-line ${cls}`, title: `AI 简介：${s}` }, s) : null;
+}
+
+function badgeEls(it, dupe, cls) {
+    const list = badgesOf(it, dupe);
+    return list.length ? h('span', { class: cls }, list.map(([k, label]) => h('span', { class: `badge-${k}` }, label))) : null;
 }
 
 export function collectionName(id) {

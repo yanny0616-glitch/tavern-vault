@@ -2,7 +2,7 @@
 import { h, clear, sheet, toast, debounce, confirmDialog, promptDialog, lightbox, fmtBytes, fmtDate, timeAgo, downloadBlob, switchEl, icon, btn, starsEl, emptyState } from '../ui.js';
 import { api } from '../api.js';
 import { bridge } from '../bridge.js';
-import { state, typeMeta, TYPE_META, fieldsFor, subscribe, allTags, notify, savePrefs, applyAccent } from '../state.js';
+import { state, typeMeta, TYPE_META, fieldsFor, subscribe, allTags, notify, savePrefs, applyAccent, readZoom, READ_ZOOM } from '../state.js';
 import { collectionName, typeBadge } from './common.js';
 import { pickCollection } from './library.js';
 import { importItemsToTavern, TAVERN_IMPORTABLE } from './tavern.js';
@@ -33,22 +33,21 @@ function clampBox(build, text, title = '全文', onMore = null) {
     return h('div', { class: 'clamp-wrap' }, box, more);
 }
 
-const READ_SIZES = ['sm', 'md', 'lg', 'xl'];
-
-/** 阅读页右上角的字号加减，和「设置 → 阅读字号」是同一个设置 */
+/** 阅读页右上角的字号加减，和「设置 → 阅读字号」是同一个设置，每次 10% */
 function readTools() {
-    const idx = () => Math.max(0, READ_SIZES.indexOf(state.prefs.readSize || 'md'));
+    const cur = () => readZoom(state.prefs);
     const step = (d) => {
-        state.prefs.readSize = READ_SIZES[Math.min(READ_SIZES.length - 1, Math.max(0, idx() + d))];
+        state.prefs.readZoom = Math.min(READ_ZOOM.max, Math.max(READ_ZOOM.min, Math.round(cur() / 10) * 10 + d * 10));
         savePrefs();
         applyAccent();
         sync();
     };
     const minus = btn('', { icon: 'minus', cls: 'ghost icon sm', title: '字小一点', onclick: () => step(-1) });
     const plus = btn('', { icon: 'plus', cls: 'ghost icon sm', title: '字大一点', onclick: () => step(1) });
-    const sync = () => { minus.disabled = idx() === 0; plus.disabled = idx() === READ_SIZES.length - 1; };
+    const sync = () => { minus.disabled = cur() <= READ_ZOOM.min; plus.disabled = cur() >= READ_ZOOM.max; label.textContent = `${cur()}%`; };
+    const label = h('span', { class: 'read-tools-label' });
     sync();
-    return h('div', { class: 'read-tools' }, minus, h('span', { class: 'read-tools-label' }, '字号'), plus);
+    return h('div', { class: 'read-tools' }, minus, label, plus);
 }
 
 /** 对话示例有多段时，可以直接跳到第几段 */
@@ -145,6 +144,9 @@ function fieldDisplay(f, v) {
  * 条目详情。opts.seq：从仓库打开时传入当前筛选结果的 id 顺序，可以左右滑动 / 方向键 / 顶部箭头切到上一项、下一项；
  * opts.onLeave(id)：关闭时告诉仓库最后看的是哪一项
  */
+
+/** 12345 → 1.2 万 */
+const fmtTok = (n) => (n >= 10000 ? `${(n / 10000).toFixed(1).replace(/\.0$/, '')} 万` : String(n));
 export function openDetail(id, { seq = null, onLeave = null } = {}) {
     let tab = state.prefs.detailTab === 'content' ? 'content' : 'overview';
     let content = null;
@@ -294,7 +296,7 @@ export function openDetail(id, { seq = null, onLeave = null } = {}) {
             it.deletedAt
                 ? btn('恢复', { icon: 'restore', cls: 'primary', onclick: async () => { await api.post(`/api/items/${id}/restore`); toast('已恢复', 'ok'); } })
                 : btn('编辑资料', { icon: 'pencil', onclick: () => editItem(it) }),
-            p ? btn('下载', { icon: 'download', cls: toTavern || it.deletedAt ? '' : 'primary', href: api.fileUrl(p.sha, p.name, true), download: p.name }) : null,
+            p ? btn('下载', { icon: 'download', cls: toTavern || it.deletedAt ? '' : 'primary', href: api.fileUrl(p.sha, p.name, true, it.id), download: p.name }) : null,
             toTavern ? btn('导入到酒馆', { icon: 'beer', cls: 'primary', onclick: () => importItemsToTavern([it]) }) : null);
     }
 
@@ -323,7 +325,7 @@ export function openDetail(id, { seq = null, onLeave = null } = {}) {
                 it.type === 'character' && p && !it.deletedAt ? item('user', '编辑角色卡内容（保存为新版本）', () => withCard((c) => editCard(it, c))) : null,
                 it.type === 'character' && p && it.cover ? item('image', '导出 PNG 角色卡（用当前封面）', () => exportPng(it)) : null,
                 it.type === 'character' && p ? item('braces', '导出角色卡 JSON', () => withCard((c) => downloadBlob(new Blob([JSON.stringify(c.card, null, 2)], { type: 'application/json' }), `${c.data?.name || it.name}.json`))) : null,
-                p ? item('download', '下载当前文件', () => { h('a', { href: api.fileUrl(p.sha, p.name, true), download: p.name }).click(); }) : null,
+                p ? item('download', '下载当前文件', () => { h('a', { href: api.fileUrl(p.sha, p.name, true, it.id), download: p.name }).click(); }) : null,
                 it.cover ? item('maximize', '查看大图', () => lightbox(api.fileUrl(it.cover))) : null,
                 !it.deletedAt ? item('image', '更换封面 / 添加图片', () => switchTab('files')) : null,
                 it.deletedAt
@@ -349,7 +351,7 @@ export function openDetail(id, { seq = null, onLeave = null } = {}) {
             `${c.greetings} 条开场白`,
             c.bookEntries && `${c.bookEntries} 个世界书词条`,
             c.regexCount && `${c.regexCount} 条正则`,
-            `约 ${c.estTokens} tokens`,
+            c.estTokens ? `约 ${fmtTok(c.estTokens)} tokens` : '',
         ].filter(Boolean) : [it.version && `v${it.version}`].filter(Boolean);
         return h('div', { class: `hero ${it.cover ? 'has-cover' : 'no-cover'}`, style: { '--tc': tm.color } },
             it.cover ? h('div', { class: 'hero-bg', style: { backgroundImage: `url("${coverSrc(it)}")` } }) : null,
@@ -394,8 +396,8 @@ export function openDetail(id, { seq = null, onLeave = null } = {}) {
                     icon('book', { size: 14 }), h('span', {}, `阅读全文 · ${source.length} 字`)))
             : clampBox((t) => h('p', { class: 'lead' }, t), desc, '简介');
         return h('div', { class: 'stack' },
-            lead || (!it.deletedAt ? h('button', { class: 'lead-empty', onclick: () => editItem(it, 'description') }, icon('pencil', { size: 14 }), '写一句简介') : null),
-            aiStamp(it),
+            lead || (!it.deletedAt && !it.ai?.summary ? h('button', { class: 'lead-empty', onclick: () => editItem(it, 'description') }, icon('pencil', { size: 14 }), '写一句简介') : null),
+            aiStamp(it, !it.deletedAt ? () => editItem(it, 'ai') : null),
             it.type === 'character' && it.files.length ? greetingCard(it) : null,
             quickInfo(it),
             note && !(desc && note.startsWith(desc)) ? section('作者的话', 'feather', clampBox((t) => h('blockquote', { class: 'quote' }, t), note, '作者的话')) : null,
@@ -439,7 +441,7 @@ export function openDetail(id, { seq = null, onLeave = null } = {}) {
         const stats = [];
         if (it.type === 'character' && m.card) {
             const c = m.card;
-            stats.push(['开场白', c.greetings], ['世界书词条', c.bookEntries], ['内嵌正则', c.regexCount], ['内嵌脚本', c.scriptCount], ['估算 Token', c.estTokens]);
+            stats.push(['开场白', c.greetings], ['世界书词条', c.bookEntries], ['内嵌正则', c.regexCount], ['内嵌脚本', c.scriptCount], ['估算 Token', c.estTokens ? fmtTok(c.estTokens) : '']);
             if (m.image) stats.push(['立绘尺寸', `${m.image.width}×${m.image.height}`]);
         } else if (it.type === 'worldbook') stats.push(['条目', m.entries], ['常驻', m.constant], ['禁用', m.disabled]);
         else if (it.type === 'preset') stats.push(['提示词', m.prompts], ['已启用', m.enabledPrompts], ['温度', m.temperature], ['上下文', m.maxContext], ['回复长度', m.maxTokens]);
@@ -451,7 +453,20 @@ export function openDetail(id, { seq = null, onLeave = null } = {}) {
         if (!shown.length) return null;
         return h('section', { class: 'panel facts-panel' },
             h('div', { class: 'facts' }, shown.map(([k, v]) => h('div', { class: 'fact' }, h('b', {}, String(v)), h('span', {}, k)))),
-            m.card?.world ? h('div', { class: 'muted small' }, '绑定世界书：', m.card.world) : null);
+            tokenLine(m.card?.tokens),
+            m.card?.bookName ? h('div', { class: 'muted small' }, '内嵌世界书：', m.card.bookName) : null,
+            m.card?.world && m.card.world !== m.card.bookName ? h('div', { class: 'muted small' }, '酒馆里绑定的世界书：', m.card.world) : null);
+    }
+
+    /** token 分项：常驻、开场白、世界书 */
+    function tokenLine(t) {
+        if (!t?.total) return null;
+        const parts = [
+            t.perm && `常驻 ${fmtTok(t.perm)}`,
+            t.greet && `开场白 ${fmtTok(t.greet)}${t.greet !== t.first && t.first ? `（主开场白 ${fmtTok(t.first)}）` : ''}`,
+            (t.bookConst || t.bookTrig) && `世界书 ${[t.bookConst && `蓝灯 ${fmtTok(t.bookConst)}`, t.bookTrig && `绿灯 ${fmtTok(t.bookTrig)}`].filter(Boolean).join(' / ')}`,
+        ].filter(Boolean);
+        return h('div', { class: 'muted small token-line', title: '中文每字约 0.7、其它字符约 0.3 估算，不同模型会有出入；禁用的世界书条目不算' }, `Token：${parts.join(' · ')}`);
     }
 
     /** 其它类型的内容速览 */
@@ -515,7 +530,7 @@ export function openDetail(id, { seq = null, onLeave = null } = {}) {
     // ---------- 资料编辑（单独面板，点保存才写入） ----------
     function editItem(it, focus = '') {
         const d = {
-            name: it.name, type: it.type, description: it.description || '', notes: it.notes || '',
+            name: it.name, type: it.type, description: it.description || '', notes: it.notes || '', aiSummary: it.ai?.summary || '',
             tags: [...it.tags], collections: [...it.collections], fields: { ...it.fields },
             top: Object.fromEntries([...TOP_LEVEL_FIELDS].map((k) => [k, it[k]])),
         };
@@ -526,6 +541,7 @@ export function openDetail(id, { seq = null, onLeave = null } = {}) {
             Object.entries(TYPE_META).map(([k, v]) => h('option', { value: k, selected: d.type === k }, v.label)));
         const descCount = h('span', { class: 'muted small' }, `${d.description.length} 字`);
         const desc = h('textarea', { class: 'textarea', rows: 3, value: d.description, placeholder: '一句话说清这是什么、有什么看点', oninput: (e) => { d.description = e.target.value; descCount.textContent = `${d.description.length} 字`; mark(); } });
+        const aiSum = h('textarea', { class: 'textarea', rows: 2, value: d.aiSummary, placeholder: '用「AI 整理」生成，也可以自己写', oninput: (e) => { d.aiSummary = e.target.value; mark(); } });
         const notes = h('textarea', { class: 'textarea notes', rows: 5, value: d.notes, placeholder: '玩法心得、搭配建议、修改记录……', oninput: (e) => { d.notes = e.target.value; mark(); } });
 
         // 标签：已选 + 输入 + 常用建议
@@ -568,6 +584,10 @@ export function openDetail(id, { seq = null, onLeave = null } = {}) {
             if (d.type !== it.type) patch.type = d.type;
             if (d.description !== (it.description || '')) patch.description = d.description;
             if (d.notes !== (it.notes || '')) patch.notes = d.notes;
+            if (d.aiSummary.trim() !== (it.ai?.summary || '')) {
+                const { summary: _old, ...rest } = it.ai || {};
+                patch.ai = d.aiSummary.trim() ? { ...rest, summary: d.aiSummary.trim() } : (Object.keys(rest).length ? rest : null);
+            }
             if (JSON.stringify(d.tags) !== JSON.stringify(it.tags)) patch.tags = d.tags;
             if (JSON.stringify(d.collections) !== JSON.stringify(it.collections)) patch.collections = d.collections;
             if (JSON.stringify(d.fields) !== JSON.stringify(it.fields || {})) patch.fields = d.fields;
@@ -588,7 +608,8 @@ export function openDetail(id, { seq = null, onLeave = null } = {}) {
                 h('div', { class: 'fields' },
                     h('div', { class: 'field' }, h('label', {}, '名称'), name),
                     h('div', { class: 'field' }, h('label', {}, '类型'), typeSel),
-                    h('div', { class: 'field wide' }, h('div', { class: 'row-between' }, h('label', {}, '简介'), descCount), desc)),
+                    h('div', { class: 'field wide' }, h('div', { class: 'row-between' }, h('label', {}, '简介'), descCount), desc),
+                    h('div', { class: 'field wide' }, h('label', {}, 'AI 简介'), aiSum)),
                 h('div', { class: 'field' }, h('label', {}, '标签'), tagBox, suggest),
                 h('div', { class: 'field' }, h('label', {}, '合集'), colBox),
                 h('div', { class: 'edit-sec' }, h('div', { class: 'form-label' }, '资料字段'), fieldBox,
@@ -602,7 +623,7 @@ export function openDetail(id, { seq = null, onLeave = null } = {}) {
             beforeClose: async () => !dirty || confirmDialog('放弃未保存的修改？', { ok: '放弃' }),
         });
         es.el.classList.add('edit-sheet');
-        const target = { description: desc, notes, tags: tagInput }[focus];
+        const target = { description: desc, notes, tags: tagInput, ai: aiSum }[focus];
         if (target) setTimeout(() => { target.focus(); target.scrollIntoView({ block: 'center' }); }, 120);
     }
 
@@ -664,7 +685,7 @@ export function openDetail(id, { seq = null, onLeave = null } = {}) {
         txt('depth', '深度提示词', ext.depth_prompt?.prompt);
         txt('notes', '作者注释', d.creator_notes);
         const bookN = entriesOf(book).length;
-        if (bookN) secs.push({ key: 'book', title: '内嵌世界书', meta: `${bookN} 条`, node: worldbookView(book, n) });
+        if (bookN) secs.push({ key: 'book', title: '内嵌世界书', meta: [String(book.name || '').trim(), `${bookN} 条`].filter(Boolean).join(' · '), node: worldbookView(book, n) });
         if (regex.length) secs.push({ key: 'regex', title: '内嵌正则', meta: `${regex.length} 条`, node: regexView(regex, { sample: String(greetings[0] || ''), n }) });
         const anchor = (k) => `sec-${id}-${k}`;
         return h('div', { class: 'reader' },
@@ -908,7 +929,7 @@ export function openDetail(id, { seq = null, onLeave = null } = {}) {
                         h('div', { class: 'file-name' }, h('span', { class: 'min0' }, f.name), f.primary ? h('span', { class: 'chip-s ok' }, '当前') : null),
                         h('div', { class: 'file-meta' }, `${fmtBytes(f.size)} · ${fmtDate(f.addedAt, true)}`, f.label ? ` · ${f.label}` : '')),
                     !f.primary && cur && verNo.has(f.id) ? btn('', { icon: 'eye', cls: 'sm ghost', title: '与当前版本对比', onclick: () => compare(f, cur) }) : null,
-                    btn('', { icon: 'download', cls: 'sm ghost', href: api.fileUrl(f.sha, f.name, true), download: f.name, title: '下载' }),
+                    btn('', { icon: 'download', cls: 'sm ghost', href: api.fileUrl(f.sha, f.name, true, it.id), download: f.name, title: '下载' }),
                     btn('', { icon: 'more', cls: 'sm ghost', onclick: () => fileMenu(it, f, { compare, prev: prevOf(f), cur }) }))))),
             h('div', { class: 'muted small' }, '「当前」版本决定条目显示的信息，也是「导入到酒馆」时使用的文件。旧版本会一直保留，随时可以切回去。'));
     }

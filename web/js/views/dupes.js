@@ -6,15 +6,20 @@ import { coverImg } from '../thumbs.js';
 import { openDetail } from './detail.js';
 
 // 和服务端导入时判断同名的规则一致：去掉扩展名、版本号、副本标记
-const normName = (s) => String(s || '').toLowerCase()
+const stripVer = (s) => String(s || '').toLowerCase()
     .replace(/\.(png|json|charx|jsonl|txt|md|js|css|webp|jpe?g|gif|zip|ya?ml)$/i, '')
     .replace(/[\s_\-]*[(（[【]\s*(?:v(?:er(?:sion)?)?\.?\s*\d+(?:\.\d+)*[a-z]?|\d+|副本|copy)\s*[)）\]】]\s*$/i, '')
     .replace(/[\s_\-]+v(?:er(?:sion)?)?\.?\s*\d+(?:\.\d+)*[a-z]?$/i, '')
     .replace(/[\s_\-]*(?:副本|copy)$/i, '')
-    .replace(/[\s_\-·・]+/g, ' ')
     .trim();
-// 更宽松：名字末尾多一两位数字（「周承奕1」）也算相近
-const looseName = (s) => normName(s).replace(/(\D)\s*\d{1,2}$/, '$1').trim();
+const normName = (s) => stripVer(s).replace(/[\s_\-·・]+/g, ' ').trim();
+/** 设置里的「衍生版本分隔符」：名字里带这些符号的（如「蔚轶-31」）是不同的衍生版本，名字完全一样才算重复 */
+export const hasDerivSep = (s, seps = state.settings.dupSeparators || []) => seps.some((c) => (c === '·' ? /[·・•]/.test(s) : s.includes(c)));
+// 名字比较用的键：衍生版本按原名；其余更宽松，名字末尾多一两位数字（「周承奕1」）也算相近
+const looseName = (s) => {
+    const base = stripVer(s);
+    return hasDerivSep(base) ? `=${base}` : normName(s).replace(/(\D)\s*\d{1,2}$/, '$1').trim();
+};
 const primaryOf = (it) => it.files?.find((f) => f.primary) || it.files?.[0];
 const groupKey = (ids) => [...ids].sort().join(',');
 const authorOk = (a, b) => !a.author || !b.author || normName(a.author) === normName(b.author);

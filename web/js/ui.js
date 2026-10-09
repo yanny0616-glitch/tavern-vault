@@ -45,10 +45,88 @@ export function toast(msg, kind = '') {
  * 打开底部弹层。
  * beforeClose：点 X、点遮罩、按 Esc 时先调用，返回 false（或 Promise<false>）就不关；代码里调用 close() 不经过它
  */
+// ---- 返回手势 / 安卓返回键：先关掉最上面的弹窗，而不是切走页面 ----
+// 打开弹窗时往浏览历史里压一步；按返回时关弹窗。用按钮关掉的，把那一步退回去
+const sheetStack = [];
+let sheetSeq = 0;
+let skipPops = 0;
+window.addEventListener('popstate', () => {
+    if (skipPops > 0) { skipPops--; return; }
+    const top = sheetStack[sheetStack.length - 1];
+    if (!top) return;
+    top.pushed = false; // 这一步已经被退掉了
+    top.tryClose().then(() => {
+        // 有没保存的内容、选择不关时，把这一步补回来，下次返回还是先问
+        if (top.overlay.isConnected && !top.pushed) {
+            try { history.pushState({ tvSheet: top.id }, ''); top.pushed = true; } catch { /* ignore */ }
+        }
+    });
+});
+function trackSheet(entry) {
+    // 当前这一步属于刚关掉的弹窗（关一个马上开另一个）：直接沿用，不再多压一步
+    const cur = history.state?.tvSheet;
+    const reuse = cur && !sheetStack.some((x) => x.id === cur);
+    sheetStack.push(entry);
+    try {
+        if (reuse) history.replaceState({ tvSheet: entry.id }, ''); else history.pushState({ tvSheet: entry.id }, '');
+        entry.pushed = true;
+    } catch { /* ignore */ }
+}
+function untrackSheet(entry) {
+    const i = sheetStack.indexOf(entry);
+    if (i >= 0) sheetStack.splice(i, 1);
+    if (!entry.pushed) return;
+    entry.pushed = false;
+    // 稍后再退：关弹窗后紧接着跳转页面的，历史已经变了，就不要再退（否则会把刚跳的页面退回去）
+    setTimeout(() => {
+        if (history.state?.tvSheet === entry.id) { skipPops++; history.back(); }
+    }, 0);
+}
+
+/** 往下拖弹窗顶部（小横条和标题栏）关掉弹窗 */
+function dragToClose(box, overlay, tryClose) {
+    const grabs = () => [box.querySelector('.sheet-grip'), box.querySelector('.sheet-head')];
+    let y0 = 0;
+    let t0 = 0;
+    let dy = 0;
+    let on = false;
+    const reset = () => { box.style.transition = ''; box.style.transform = ''; overlay.style.background = ''; };
+    box.addEventListener('touchstart', (e) => {
+        if (e.touches.length !== 1 || box.classList.contains('dialog')) return;
+        if (!grabs().some((g) => g?.contains(e.target)) || e.target.closest('button, a, input, select, textarea')) return;
+        on = true; y0 = e.touches[0].clientY; t0 = Date.now(); dy = 0;
+        box.style.transition = 'none';
+    }, { passive: true });
+    box.addEventListener('touchmove', (e) => {
+        if (!on) return;
+        dy = Math.max(0, e.touches[0].clientY - y0);
+        box.style.transform = dy ? `translateY(${dy}px)` : '';
+    }, { passive: true });
+    const end = async () => {
+        if (!on) return;
+        on = false;
+        const fast = dy > 30 && dy / Math.max(1, Date.now() - t0) > 0.6;
+        box.style.transition = 'transform .2s ease';
+        if (dy > Math.min(120, box.offsetHeight * 0.25) || fast) {
+            box.style.transform = `translateY(${box.offsetHeight}px)`;
+            await new Promise((r) => setTimeout(r, 160));
+            await tryClose();
+            if (overlay.isConnected) reset(); // 有没保存的内容、选择不关
+        } else {
+            box.style.transform = '';
+            setTimeout(reset, 220);
+        }
+    };
+    box.addEventListener('touchend', end);
+    box.addEventListener('touchcancel', end);
+}
+
 export function sheet({ title, body, foot, full = false, onClose, headExtra, beforeClose } = {}) {
     const close = () => {
+        if (!overlay.isConnected) return;
         overlay.remove();
         document.removeEventListener('keydown', onKey);
+        untrackSheet(entry);
         onClose?.();
     };
     let asking = false;
@@ -71,6 +149,9 @@ export function sheet({ title, body, foot, full = false, onClose, headExtra, bef
     const overlay = h('div', { class: 'overlay', onclick: (e) => { if (e.target === overlay) tryClose(); } }, box);
     document.body.append(overlay);
     document.addEventListener('keydown', onKey);
+    const entry = { id: ++sheetSeq, overlay, tryClose, pushed: false };
+    trackSheet(entry);
+    dragToClose(box, overlay, tryClose);
     return { close, tryClose, body: bodyEl, foot: footEl, title: titleEl, el: box };
 }
 

@@ -1,7 +1,7 @@
 // AI 助手：服务配置、整理（草稿 → 审核 → 写入）、任务状态
 import { h, clear, toast, sheet, btn, icon, switchEl, confirmDialog, promptDialog, choiceDialog, fmtDate, emptyState } from '../ui.js';
 import { api } from '../api.js';
-import { state, typeMeta } from '../state.js';
+import { state, typeMeta, reload } from '../state.js';
 import { typeBadge } from './common.js';
 import { openDetail } from './detail.js';
 import { coverImg } from '../thumbs.js';
@@ -9,7 +9,7 @@ import { coverImg } from '../thumbs.js';
 const AI_KINDS = new Set(['text', 'textarea', 'select', 'checkbox', 'number', 'tags']);
 const SKIP_FIELDS = new Set(['source', 'author', 'version', 'rating', 'downloadedAt', 'status']);
 const SCOPES = {
-    brief: ['精简', '名称、简介、作者注释、世界书标题，最省'],
+    brief: ['精简', '名称、作者注释、角色描述开头、世界书标题，最省'],
     standard: ['标准', '再加性格、场景、开场白、对话示例和世界书条目摘要'],
     full: ['完整', '几乎全部内容，适合内容少的卡或想要更准的结果'],
 };
@@ -40,7 +40,7 @@ export function renderChip() {
     if (chipEl.hidden) return;
     clear(chipEl,
         busy ? h('span', { class: 'spinner sm' }) : icon('sparkles', { size: 15 }),
-        h('span', {}, busy ? `AI 整理中 ${pending}/${busy + pending}` : `AI 待审核 ${a.done || 0}`),
+        h('span', {}, busy ? `AI 整理中 · 完成 ${pending}/${busy + pending}` : `AI 待审核 ${a.done || 0}`),
         a.error ? h('span', { class: 'ai-chip-err' }, `失败 ${a.error}`) : null);
 }
 
@@ -246,9 +246,11 @@ function showPreview(id, extra) {
 let reviewOpen = null;
 const fmtVal = (v) => (v === true ? '是' : v === false ? '否' : Array.isArray(v) ? v.join('、') : v == null || v === '' ? '—' : String(v));
 
+// 审核时改过的标签、简介：关掉审核界面再打开还在
+const choices = new Map();
+
 export function openAiReview() {
     if (reviewOpen) return reviewOpen;
-    const choices = new Map();
     const cards = new Map();
     let drafts = [];
     const head = h('div', { class: 'ai-head' });
@@ -272,16 +274,13 @@ export function openAiReview() {
         const sig = d.at || '';
         let c = choices.get(d.id);
         if (!c || c.sig !== sig) {
-            const desc = (it.description || '').trim();
-            const card = it.meta?.card || {};
-            // 导入时自动填的简介（作者注释 / 描述摘录）视为可以替换
-            const auto = !desc || desc.length > 120 || desc === (card.creatorNotesPreview || '').trim() || desc === (card.descriptionPreview || '').trim();
             c = {
                 sig,
                 tags: new Set(d.result.tags.map((t) => t.name)),
                 tagMode: 'append',
                 summary: d.result.summary,
-                summaryMode: d.result.summary && auto ? 'replace' : 'keep',
+                // AI 简介单独存，不会覆盖作者写的简介，默认采用
+                summaryMode: d.result.summary ? 'ai' : 'keep',
                 fields: Object.fromEntries(Object.keys(d.result.fields).map((f) => [f, true])),
             };
             choices.set(d.id, c);
@@ -300,12 +299,13 @@ export function openAiReview() {
             const r = await api.post('/api/ai/drafts/apply', { items: list2.map(payload) });
             toast(`已写入 ${r.applied} 项`, 'ok');
             for (const d of list2) { choices.delete(d.id); cards.delete(d.id); }
+            await reload();
             refresh();
         } catch (e) { toast(e.message, 'err'); }
     }
     async function discard(ids) {
         await api.post('/api/ai/drafts/discard', { ids });
-        for (const id of ids) cards.delete(id);
+        for (const id of ids) { cards.delete(id); choices.delete(id); }
         refresh();
     }
     async function retry(ids, extra) {
@@ -389,9 +389,10 @@ export function openAiReview() {
         }).filter(Boolean);
         return h('div', { class: 'ai-card is-done' }, top,
             h('div', { class: 'ai-sec' }, h('div', { class: 'ai-sec-head' }, h('span', {}, '标签'), sel(c.tagMode, [['append', '追加到现有标签'], ['replace', '替换现有标签'], ['keep', '不改标签']], (v) => { c.tagMode = v; drawTags(); })), tagBox),
-            h('div', { class: 'ai-sec' }, h('div', { class: 'ai-sec-head' }, h('span', {}, '简介'), sel(c.summaryMode, [['replace', '替换简介'], ['notes', '追加到笔记'], ['keep', '不改简介']], (v) => { c.summaryMode = v; })),
-                it.description ? h('div', { class: 'ai-cur' }, h('span', {}, '当前：'), it.description.length > 90 ? `${it.description.slice(0, 90)}…` : it.description) : h('div', { class: 'ai-cur' }, '当前没有简介'),
-                summary, d.result.overLength ? h('div', { class: 'muted small' }, '比设定的字数长一些，可以手动删减。') : null),
+            h('div', { class: 'ai-sec' }, h('div', { class: 'ai-sec-head' }, h('span', {}, 'AI 简介'), sel(c.summaryMode, [['ai', '存为 AI 简介'], ['keep', '不要']], (v) => { c.summaryMode = v; })),
+                it.ai?.summary ? h('div', { class: 'ai-cur' }, h('span', {}, '之前的：'), it.ai.summary) : null,
+                summary,
+                h('div', { class: 'muted small' }, d.result.overLength ? `比设定的${rules?.summaryChars ? ` ${rules.summaryChars} ` : ''}字数长一些，可以手动删减。` : '单独保存，显示在卡片和列表上，不会改动作者写的简介。')),
             fieldRows.length ? h('div', { class: 'ai-sec' }, h('div', { class: 'ai-sec-head' }, h('span', {}, '字段')), fieldRows) : null,
             h('div', { class: 'ai-acts' },
                 h('span', { class: 'muted small ai-model' }, [d.model, d.batchSize > 1 ? `合并请求 ${d.batchSize} 项` : '', d.truncated ? '输出被截断' : ''].filter(Boolean).join(' · ')),
@@ -411,8 +412,15 @@ export function openAiReview() {
 }
 
 /** 条目详情里显示的整理记录 */
-export function aiStamp(it) {
-    return it.ai?.at ? h('div', { class: 'muted small ai-stamp' }, icon('sparkles', { size: 12 }), `AI 整理于 ${fmtDate(it.ai.at, true)}${it.ai.model ? ` · ${it.ai.model}` : ''}`) : null;
+export function aiStamp(it, onEdit) {
+    const a = it.ai || {};
+    const stamp = a.at ? `AI 整理于 ${fmtDate(a.at, true)}${a.model ? ` · ${a.model}` : ''}` : '';
+    if (!a.summary) return stamp ? h('div', { class: 'muted small ai-stamp' }, icon('sparkles', { size: 12 }), stamp) : null;
+    return h('div', { class: 'ai-summary' },
+        h('div', { class: 'ai-summary-head' }, icon('sparkles', { size: 13 }), h('span', {}, 'AI 简介'), h('span', { class: 'grow' }),
+            onEdit ? h('button', { class: 'ai-summary-edit', title: '修改 AI 简介', onclick: onEdit }, icon('pencil', { size: 12 })) : null),
+        h('p', {}, a.summary),
+        stamp ? h('div', { class: 'muted small' }, stamp) : null);
 }
 
 // ---------------- 版本解读 ----------------

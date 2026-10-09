@@ -276,6 +276,16 @@ export function createAiTasks({ dataDir, store, config, loadContent, broadcast }
     }
 
     /** 合并请求：一次整理多项 */
+    const TRUNCATED = '回复被截断了（输出长度不够），没能拿到完整结果。可以在 AI 服务设置里调大「最大输出 tokens」，或调小「每次最多几项」后重试';
+    /** 解析回复；回复被截断导致解析失败时，换成能看懂的提示 */
+    function parseReply(r) {
+        try { return parseJsonReply(r.text); } catch (e) {
+            if (r.truncated) e.message = TRUNCATED;
+            e.truncated = r.truncated;
+            throw e;
+        }
+    }
+
     async function runBatch(ids) {
         const list = [];
         for (const id of ids) {
@@ -300,17 +310,17 @@ export function createAiTasks({ dataDir, store, config, loadContent, broadcast }
                 x.text = itemText(x.it, content, opts.scope);
                 x.fields = aiFields(store.db.fields, x.it.type, opts.fields);
             }
-            const extra = [...new Set(list.map((x) => x.d.extra).filter(Boolean))].join('；');
+            const extra = list[0].d.extra || '';
             const { system, user } = organizeBatchPrompt(list, { opts, tagLib, extra });
             const r = await chat(profile, { system, user, maxTokens: Math.max(profile.maxTokens, OUTPUT_PER_ITEM * list.length + 300), signal: ac.signal, timeout: 180000 });
-            const reply = parseJsonReply(r.text);
+            const reply = parseReply(r);
             const got = new Map(arr(reply?.items).map((e) => [String(e?.id ?? ''), e]));
             const at = new Date().toISOString();
             list.forEach((x, i) => {
                 if (db.drafts[x.id] !== x.d) return;
                 const e = got.get(String(i + 1));
                 const base = { raw: r.text.slice(0, 8000), truncated: r.truncated, usage: r.usage, model: r.model, profile: profile.name, chars: x.text.length, at, batchSize: list.length };
-                if (!e) { Object.assign(x.d, base, { status: 'error', error: r.truncated ? '回复被截断，这一项没有结果，可以重试或调小「每次最多几项」' : '合并回复里没有这一项的结果，可以重试' }); return; }
+                if (!e) { Object.assign(x.d, base, { status: 'error', error: r.truncated ? TRUNCATED : '合并回复里没有这一项的结果，可以重试' }); return; }
                 try {
                     Object.assign(x.d, base, { status: 'done', result: normalizeOrganize(e, { opts, fields: x.fields, tagLib }) });
                 } catch (err) {
@@ -321,7 +331,7 @@ export function createAiTasks({ dataDir, store, config, loadContent, broadcast }
             for (const x of list) {
                 if (db.drafts[x.id] !== x.d) continue;
                 if (ac.signal.aborted) { delete db.drafts[x.id]; continue; }
-                Object.assign(x.d, { status: 'error', error: e.message, raw: String(e.raw || '').slice(0, 8000), at: new Date().toISOString() });
+                Object.assign(x.d, { status: 'error', error: e.message, raw: String(e.raw || '').slice(0, 8000), truncated: Boolean(e.truncated), batchSize: list.length, at: new Date().toISOString() });
             }
         } finally {
             for (const x of list) running.delete(x.id);
@@ -334,16 +344,22 @@ export function createAiTasks({ dataDir, store, config, loadContent, broadcast }
     /** 按设置把队列分成一批：最多 batch 项，内容总字数不超过 batchChars（至少一项） */
     function takeBatch() {
         const { batch = 1, batchChars = 24000, scope } = config.data.organize;
+        while (queue.length && db.drafts[queue[0]]?.status !== 'queued') queue.shift();
+        if (!queue.length) return [];
+        // 排在最前面的有单独要求（例如重写时补充的「简介更短」）：单独发，免得要求串到别的卡上
+        if (db.drafts[queue[0]].extra) return [queue.shift()];
         const ids = [];
         let chars = 0;
-        while (queue.length && ids.length < batch) {
-            const id = queue[0];
-            if (db.drafts[id]?.status !== 'queued') { queue.shift(); continue; }
+        for (let i = 0; i < queue.length && ids.length < batch;) {
+            const id = queue[i];
+            const d = db.drafts[id];
+            if (d?.status !== 'queued') { queue.splice(i, 1); continue; }
+            if (d.extra) { i++; continue; } // 带要求的留在队列里，轮到时单独发
             const it = store.db.items[id];
             let len = 0;
             try { len = it ? itemText(it, loadContent(it), scope).length : 0; } catch { /* ignore */ }
             if (ids.length && chars + len > batchChars) break;
-            queue.shift();
+            queue.splice(i, 1);
             ids.push(id);
             chars += len;
         }
@@ -363,13 +379,13 @@ export function createAiTasks({ dataDir, store, config, loadContent, broadcast }
         try {
             const { system, user, ctx, chars } = build(it, { extra: d.extra });
             const r = await chat(profile, { system, user, maxTokens: Math.max(profile.maxTokens, 600), signal: ac.signal });
-            const result = normalizeOrganize(parseJsonReply(r.text), ctx);
+            const result = normalizeOrganize(parseReply(r), ctx);
             if (db.drafts[id] !== d) return; // 已被放弃
             Object.assign(d, { status: 'done', result, raw: r.text.slice(0, 8000), truncated: r.truncated, usage: r.usage, model: r.model, profile: profile.name, chars, at: new Date().toISOString() });
         } catch (e) {
             if (db.drafts[id] !== d) return;
             if (ac.signal.aborted) { delete db.drafts[id]; return; }
-            Object.assign(d, { status: 'error', error: e.message, raw: String(e.raw || '').slice(0, 8000), at: new Date().toISOString() });
+            Object.assign(d, { status: 'error', error: e.message, raw: String(e.raw || '').slice(0, 8000), truncated: Boolean(e.truncated), at: new Date().toISOString() });
         } finally {
             running.delete(id);
             save();
@@ -472,13 +488,14 @@ export function createAiTasks({ dataDir, store, config, loadContent, broadcast }
                 const it = store.db.items[a.id];
                 if (!it) continue;
                 const d = db.drafts[a.id];
-                const patch = { ai: { at: now, model: d?.model || '', profile: d?.profile || '' } };
-                const tags = arr(a.tags).map((t) => String(t).trim()).filter(Boolean);
-                if (a.tagMode === 'replace') patch.tags = tags;
-                else if (a.tagMode !== 'keep' && tags.length) patch.tags = [...it.tags, ...tags];
                 const s = String(a.summary ?? '').trim();
-                if (s && a.summaryMode === 'replace') patch.description = s;
-                else if (s && a.summaryMode === 'notes') patch.notes = it.notes ? `${it.notes}\n\n${s}` : s;
+                // AI 简介单独存在 ai.summary，作者写的简介不动；选「不要」时保留之前的 AI 简介
+                const summary = s && a.summaryMode !== 'keep' ? s.slice(0, 2000) : (it.ai?.summary || '');
+                const patch = { ai: { at: now, model: d?.model || '', profile: d?.profile || '', ...(summary ? { summary } : {}) } };
+                const tags = arr(a.tags).map((t) => String(t).trim()).filter(Boolean);
+                // 「替换标签」但一个都没选：当作不改，免得把标签清空
+                if (a.tagMode === 'replace' && tags.length) patch.tags = tags;
+                else if (a.tagMode !== 'keep' && a.tagMode !== 'replace' && tags.length) patch.tags = [...new Set([...it.tags, ...tags])];
                 if (a.fields && typeof a.fields === 'object' && Object.keys(a.fields).length) patch.fields = { ...it.fields, ...a.fields };
                 store.updateItem(it.id, patch);
                 delete db.drafts[a.id];
@@ -491,6 +508,7 @@ export function createAiTasks({ dataDir, store, config, loadContent, broadcast }
 
         async explain(d, { aLabel, bLabel, key, force = false }) {
             if (d.sameContent) return { summary: '两个版本内容相同，没有需要解读的改动。', points: [], cautions: [], cached: false, local: true };
+            key = `${key}|${config.active?.model || ''}`; // 换了模型要重新解读
             if (!force && db.explains[key]) return { ...db.explains[key], cached: true };
             if (!config.ready) throw new AiError('还没有配置好 AI 服务');
             const profile = config.active;

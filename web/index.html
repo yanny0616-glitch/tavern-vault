@@ -17,7 +17,8 @@
   (function () {
     var d = document.documentElement, mode = 'auto', skin = '', p = {};
     try { p = JSON.parse(localStorage.getItem('tv_prefs') || '{}') || {}; mode = p.mode || 'auto'; skin = localStorage.getItem('tv_skin') || ''; } catch (e) {}
-    d.dataset.ui = p.uiSize || (Math.min(screen.width, screen.height) < 600 ? 'sm' : 'md');
+    var fs = Number(p.uiFont) || { xs: 13, sm: 14, md: 15, lg: 16 }[p.uiSize] || (Math.min(screen.width, screen.height) < 600 ? 14 : 15);
+    d.style.setProperty('--fs', String(Math.min(24, Math.max(11, fs)) / 15));
     if (mode === 'auto') mode = matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
     d.dataset.mode = mode;
     if (skin) d.dataset.skin = skin;

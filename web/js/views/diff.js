@@ -80,19 +80,30 @@ export function renderDiff(d, { aLabel = '旧版本', bLabel = '新版本' } = {
  * @param {{sha, name, label}} b 新
  * @param {{title?: string, foot?: (close) => Node[]}} opts
  */
-export function openDiff(a, b, { title = '版本对比', foot } = {}) {
-    const body = h('div', { class: 'loading' }, h('span', { class: 'spinner' }), h('span', {}, '正在对比'));
-    const s = sheet({ title, body, full: true });
-    if (foot) {
-        const f = h('div', { class: 'sheet-foot' }, foot(s.close));
-        s.el.append(f);
-    }
-    api.diff({ sha: a.sha, name: a.name }, { sha: b.sha, name: b.name })
-        .then((d) => {
-            const view = renderDiff(d, { aLabel: a.label || '旧版本', bLabel: b.label || '新版本' });
-            if (aiReady() && !d.sameContent && d.changes) view.firstChild.after(explainPanel({ ...a, label: a.label || '旧版本' }, { ...b, label: b.label || '新版本' }));
-            clear(s.body, view);
-        })
-        .catch((e) => clear(s.body, h('div', { class: 'note warn' }, icon('alert', { size: 15 }), h('span', {}, `对比失败：${e.message}`))));
+/**
+ * prepare(step)：要对比的文件还没准备好时（例如还要从酒馆读取），先打开弹层显示进度，
+ * 准备好后返回 { a, b, foot }；返回 null 表示不用对比了（弹层自动关闭）
+ */
+export function openDiff(a, b, { title = '版本对比', foot, prepare, onClose } = {}) {
+    const stepEl = h('span', {}, prepare ? '正在准备' : '正在对比');
+    const body = h('div', { class: 'loading' }, h('span', { class: 'spinner' }), stepEl);
+    let closed = false;
+    const s = sheet({ title, body, full: true, onClose: () => { closed = true; onClose?.(); } });
+    (async () => {
+        if (prepare) {
+            const r = await prepare((t) => { stepEl.textContent = t; });
+            if (closed) return;
+            if (!r) { s.close(); return; }
+            ({ a, b } = r);
+            foot = r.foot || foot;
+            stepEl.textContent = '正在对比';
+        }
+        if (foot) s.el.append(h('div', { class: 'sheet-foot' }, foot(s.close)));
+        const d = await api.diff({ sha: a.sha, name: a.name }, { sha: b.sha, name: b.name });
+        if (closed) return;
+        const view = renderDiff(d, { aLabel: a.label || '旧版本', bLabel: b.label || '新版本' });
+        if (aiReady() && !d.sameContent && d.changes) view.firstChild.after(explainPanel({ ...a, label: a.label || '旧版本' }, { ...b, label: b.label || '新版本' }));
+        clear(s.body, view);
+    })().catch((e) => { if (!closed) clear(s.body, h('div', { class: 'note warn' }, icon('alert', { size: 15 }), h('span', {}, `对比失败：${e.message}`))); });
     return s;
 }

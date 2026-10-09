@@ -1,5 +1,5 @@
 // 酒馆联通页：浏览酒馆本地内容、收藏进仓库；比对两边版本；把仓库条目导入（或覆盖）到酒馆
-import { h, clear, toast, sheet, icon, btn, emptyState, choiceDialog } from '../ui.js';
+import { h, clear, toast, sheet, icon, btn, emptyState, choiceDialog, fmtDate } from '../ui.js';
 import { api } from '../api.js';
 import { bridge } from '../bridge.js';
 import { state, findByName, typeMeta, reload } from '../state.js';
@@ -152,7 +152,7 @@ export function renderTavern(root) {
                         h('a', { href: '#/settings/import', onclick: (e) => e.stopPropagation() }, '在设置里设为不算差异')) : cn.text;
                     right = h('div', { class: 'row-actions' },
                         btn('对比', { icon: 'eye', cls: 'sm ghost', onclick: stop(() => compareWithTavern(r, st.item)) }),
-                        btn('存为新版本', { cls: 'sm primary', onclick: stop(() => collect([r])) }));
+                        btn('同步', { cls: 'sm primary', onclick: stop(() => syncChoice(r, st.item, cn.text)) }));
                     break;
                 }
                 case 'older':
@@ -255,41 +255,86 @@ async function exportFromTavern(kind, r) {
     return { blob: new Blob([exp.data]), filename: exp.filename };
 }
 
-/** 对比：把酒馆里的版本临时上传（不建条目），和藏馆当前版本做对比 */
-async function compareWithTavern(r, item) {
+// 正在对比的条目：对比中再点「对比」不会重复打开
+const comparing = new Set();
+
+/**
+ * 对比：把酒馆里的版本临时上传（不建条目），和藏馆当前版本做对比。
+ * 角色卡只上传文字内容（套用藏馆的图片），不传整张 PNG，手机上快很多；真要保存时再取完整的卡
+ */
+function compareWithTavern(r, item) {
     const kind = ui.kind;
-    try {
-        const { blob, filename } = await exportFromTavern(kind, r);
-        const res = await api.upload(blob, { filename, target: item.id, match: 'ask', origin: 'tavern' });
-        const cur = item.files.find((f) => f.primary) || item.files[item.files.length - 1];
-        if (res.status === 'duplicate') {
-            toast(res.ignoredOnly ? (res.current ? '只有设置里忽略的部分不同，算作和藏馆当前版本相同' : '只有忽略的部分不同，酒馆里是藏馆中的一个旧版本')
-                : res.current ? '内容和藏馆当前版本相同' : '酒馆里是藏馆中的一个旧版本', 'ok');
-            if (res.current) return;
-        }
-        const tavernFile = res.status === 'duplicate' ? item.files.find((f) => f.sha === res.sha) || item.files.find((f) => sameAs(f, ui.sigs.get(sigKey(kind, r.id)), kind)) : { sha: res.sha, name: res.filename };
-        if (!tavernFile) return;
-        openDiff({ sha: cur.sha, name: cur.name, label: `藏馆 · 当前版本` }, { sha: tavernFile.sha, name: tavernFile.name, label: '酒馆里的版本' }, {
-            title: `对比：${item.name}`,
-            foot: (close) => [
-                btn('关闭', { cls: 'ghost', onclick: close }),
-                btn('用藏馆版本覆盖酒馆', { onclick: () => { close(); importItemsToTavern([item], { decide: 'replace' }); } }),
-                res.status === 'conflict' ? btn('把酒馆版本存为新版本', { cls: 'primary', onclick: async () => {
+    const key = sigKey(kind, r.id);
+    if (comparing.has(key)) return;
+    comparing.add(key);
+    const cur = item.files.find((f) => f.primary) || item.files[item.files.length - 1];
+    const probe = kind === 'character' && bridge.has('raw') && /\.png$/i.test(cur?.name || '');
+    openDiff(null, null, {
+        title: `对比：${item.name}`,
+        onClose: () => comparing.delete(key),
+        prepare: async (step) => {
+            step('正在从酒馆读取');
+            let upload;
+            if (probe) {
+                const [one] = await bridge.call('raw', { kind, ids: [r.id] }, [], 30000);
+                if (!one?.data) throw new Error('酒馆里读不到这张卡');
+                upload = { blob: new Blob([JSON.stringify(one.data)]), filename: `${r.name || 'card'}.json` };
+            } else upload = await exportFromTavern(kind, r);
+            step('正在上传');
+            const res = await api.upload(upload.blob, { filename: upload.filename, target: item.id, match: 'ask', origin: 'tavern', probe });
+            if (res.status === 'duplicate') {
+                toast(res.ignoredOnly ? (res.current ? '只有设置里忽略的部分不同，算作和藏馆当前版本相同' : '只有忽略的部分不同，酒馆里是藏馆中的一个旧版本')
+                    : res.current ? '内容和藏馆当前版本相同' : '酒馆里是藏馆中的一个旧版本', 'ok');
+                if (res.current) return null;
+            }
+            const tavernFile = res.status === 'duplicate' ? item.files.find((f) => f.sha === res.sha) || item.files.find((f) => sameAs(f, ui.sigs.get(key), kind)) : { sha: res.sha, name: res.filename };
+            if (!tavernFile) return null;
+            const foot = (close) => {
+                const save = (primary) => async () => {
                     close();
-                    await api.resolve(res, 'version', { target: item.id });
-                    toast('已存为新版本', 'ok');
+                    // 对比时上传的只是文字，保存时取酒馆里完整的卡（含图片）
+                    if (probe) { await collect([r], { primary }); return; }
+                    try {
+                        await api.resolve(res, 'version', { target: item.id, primary });
+                        toast(primary ? '已存为新版本，设为当前版本' : '已存为旧版本，藏馆当前版本不变', 'ok');
+                    } catch (e) { toast(e.message, 'err'); return; }
                     await reload();
                     rerender();
-                } }) : null,
-            ],
-        });
-    } catch (e) {
-        toast(`对比失败：${e.message}`, 'err');
-    }
+                };
+                return [
+                    btn('藏馆的较新：更新到酒馆', { onclick: () => { close(); importItemsToTavern([item], { decide: 'replace' }); } }),
+                    res.status === 'conflict' ? btn('酒馆的较旧：存为旧版本', { onclick: save(false) }) : null,
+                    res.status === 'conflict' ? btn('酒馆的较新：存为新版本', { cls: 'primary', onclick: save(true) }) : null,
+                ];
+            };
+            return { a: { sha: cur.sha, name: cur.name, label: '藏馆 · 当前版本' }, b: { sha: tavernFile.sha, name: tavernFile.name, label: '酒馆里的版本' }, foot };
+        },
+    });
 }
 
-/** 从酒馆导出并上传到仓库；已收藏的条目会存为新版本 */
-async function collect(rows) {
+/**
+ * 两边内容不同时选择怎么同步：酒馆的较新 → 存为新版本；酒馆的较旧 → 只留作历史版本；
+ * 藏馆的较新 → 用藏馆当前版本覆盖酒馆
+ */
+function syncChoice(r, item, diffText) {
+    const cur = item.files.find((f) => f.primary) || item.files[item.files.length - 1];
+    const curInfo = [cur?.ver ? `v${String(cur.ver).replace(/^v/i, '')}` : '', cur?.addedAt ? `${fmtDate(cur.addedAt, true)} 收录` : ''].filter(Boolean).join(' · ');
+    const opt = (ic, label, note, fn, cls = '') => h('button', { class: `menu-item ${cls}`, onclick: () => { s.close(); fn(); } },
+        icon(ic, { size: 17 }), h('span', { class: 'grow' }, h('span', { class: 'menu-label' }, label), h('span', { class: 'menu-note' }, note)));
+    const s = sheet({
+        title: `「${r.name}」两边不一样`,
+        body: h('div', { class: 'stack-s' },
+            h('div', { class: 'muted small' }, [diffText, curInfo ? `藏馆当前版本：${curInfo}` : ''].filter(Boolean).join('。')),
+            h('div', { class: 'menu' },
+                opt('download', '酒馆的较新：存为新版本', '存进藏馆，并设为当前版本', () => collect([r], { primary: true })),
+                opt('clock', '酒馆的较旧：存为旧版本', '存进藏馆的历史版本，藏馆当前版本不变', () => collect([r], { primary: false })),
+                opt('upload', '藏馆的较新：更新到酒馆', '用藏馆当前版本覆盖酒馆里的', () => importItemsToTavern([item], { decide: 'replace' })),
+                opt('eye', '先对比再决定', '看看两边具体哪里不同', () => compareWithTavern(r, item)))),
+    });
+}
+
+/** 从酒馆导出并上传到仓库；已收藏的条目会存为新版本（primary=false 时存为历史版本） */
+async function collect(rows, { primary } = {}) {
     const kind = ui.kind;
     const prog = progressSheet(`收藏到仓库（${rows.length}）`);
     const n = { created: 0, version: 0, duplicate: 0, fail: 0 };
@@ -299,7 +344,7 @@ async function collect(rows) {
         try {
             const { blob, filename } = await exportFromTavern(kind, r);
             const item = findByName(kind, r.name);
-            const res = await api.upload(blob, { filename, origin: 'tavern', type: kind === 'background' ? 'background' : '', ...(item ? { target: item.id, match: 'version' } : { match: 'ask' }) });
+            const res = await api.upload(blob, { filename, origin: 'tavern', type: kind === 'background' ? 'background' : '', ...(item ? { target: item.id, match: 'version', primary } : { match: 'ask' }) });
             if (res.status === 'conflict') conflicts.push(res);
             else n[res.status === 'version' ? 'version' : res.duplicate ? 'duplicate' : 'created']++;
         } catch (e) {
@@ -307,7 +352,7 @@ async function collect(rows) {
             prog.log(`${r.name}：${e.message}`, 'err');
         }
     }
-    const msg = [n.created && `新增 ${n.created}`, n.version && `新版本 ${n.version}`, n.duplicate && `已是最新 ${n.duplicate}`, n.fail && `失败 ${n.fail}`, conflicts.length && `同名待处理 ${conflicts.length}`].filter(Boolean).join('，');
+    const msg = [n.created && `新增 ${n.created}`, n.version && (primary === false ? `存为旧版本 ${n.version}` : `新版本 ${n.version}`), n.duplicate && `已是最新 ${n.duplicate}`, n.fail && `失败 ${n.fail}`, conflicts.length && `同名待处理 ${conflicts.length}`].filter(Boolean).join('，');
     if (conflicts.length) {
         prog.log(`${conflicts.length} 项和藏馆里的条目同名（名字写法略有不同），请选择：`, '');
         prog.actions(
@@ -378,7 +423,7 @@ export async function importItemsToTavern(items, { decide } = {}) {
         prog.update(i, run.length, it.name);
         try {
             const f = it.files.find((x) => x.primary) || it.files[0];
-            const data = await (await api.fetchFile(f.sha)).arrayBuffer();
+            const data = await (await api.fetchFile(f.sha, it.id)).arrayBuffer();
             const extra = m.existing && canReplace ? (action === 'replace' ? { replace: m.existing.id } : action === 'new' ? { asNew: true } : {}) : {};
             const res = await bridge.call('import', { kind: it.type, filename: f.name, name: it.name, apiId: it.meta?.apiId || '', data, ...extra }, [data]);
             ok++;

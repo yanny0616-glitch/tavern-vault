@@ -66,7 +66,9 @@ export const api = {
     upload(file, opts = {}) {
         const q = new URLSearchParams({ filename: opts.filename || file.name || 'upload.bin' });
         for (const k of ['type', 'name', 'mode', 'source', 'origin', 'match', 'target', 'collectionName', 'label']) if (opts[k]) q.set(k, opts[k]);
+        if (opts.probe) q.set('probe', '1');
         if (opts.zipCollection) q.set('zipCollection', '1');
+        if (typeof opts.primary === 'boolean') q.set('primary', opts.primary ? '1' : '0');
         if (opts.unzip === false) q.set('unzip', '0');
         if (opts.tags?.length) q.set('tags', opts.tags.join(','));
         if (opts.collections?.length) q.set('collections', opts.collections.join(','));
@@ -86,10 +88,11 @@ export const api = {
         const q = new URLSearchParams({ filename: filename || file.name || 'file.bin', primary: primary ? '1' : '0', label });
         return api.req('POST', `/api/items/${id}/files?${q}`, file, { raw: true, headers: { 'Content-Type': 'application/octet-stream' } });
     },
-    fileUrl(sha, name = '', dl = false) {
+    fileUrl(sha, name = '', dl = false, item = '') {
         const q = new URLSearchParams();
         if (name) q.set('name', name);
         if (dl) q.set('dl', '1');
+        if (item) q.set('item', item);
         if (token) q.set('token', token);
         return `/api/files/${sha}?${q}`;
     },
@@ -99,8 +102,9 @@ export const api = {
     putThumb(sha, blob) {
         return api.req('PUT', `/api/thumbs/${sha}`, blob, { raw: true, headers: { 'Content-Type': blob.type } });
     },
-    fetchFile(sha) {
-        return api.req('GET', `/api/files/${sha}`, undefined, { blob: true });
+    /** item：所属条目，开了「导出时写入整理信息」时服务端会把标签、评分等写进角色卡 */
+    fetchFile(sha, item = '') {
+        return api.req('GET', `/api/files/${sha}${item ? `?item=${encodeURIComponent(item)}` : ''}`, undefined, { blob: true });
     },
 
     /** 实时事件 */
