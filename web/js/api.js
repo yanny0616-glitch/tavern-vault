@@ -107,13 +107,20 @@ export const api = {
     events(onEvent, onStatus) {
         let es;
         let retry = 1000;
+        let dropped = false;
         const connect = () => {
             es = new EventSource(`/api/events${token ? `?token=${encodeURIComponent(token)}` : ''}`);
-            es.addEventListener('hello', () => { retry = 1000; onStatus?.(true); });
+            es.addEventListener('hello', () => {
+                retry = 1000;
+                onStatus?.(true);
+                // 断线期间别处的改动收不到，重连后重新读一次
+                if (dropped) { dropped = false; onEvent('change', {}); }
+            });
             es.addEventListener('change', (e) => onEvent('change', JSON.parse(e.data || '{}')));
             es.addEventListener('auth', () => onEvent('auth', {}));
             es.addEventListener('ai', (e) => onEvent('ai', JSON.parse(e.data || '{}')));
             es.onerror = () => {
+                dropped = true;
                 onStatus?.(false);
                 es.close();
                 setTimeout(connect, retry);

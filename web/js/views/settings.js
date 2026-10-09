@@ -164,14 +164,15 @@ function syncIgnorePanel() {
     const draw = () => {
         const ign = new Set(state.settings.syncIgnore || []);
         const keep = state.settings.syncKeep !== false;
-        const save = async (patch) => {
-            Object.assign(state.settings, patch);
+        const save = async (patch, local = patch) => {
+            Object.assign(state.settings, local);
             draw();
             await api.put('/api/settings', patch);
             toast('已保存', 'ok');
         };
         const chips = (opts) => h('div', { class: 'opts' }, Object.entries(opts).map(([k, label]) => h('button', { class: `opt ${ign.has(k) ? 'active' : ''}`, onclick: () => {
-            save({ syncIgnore: ign.has(k) ? [...ign].filter((x) => x !== k) : [...ign, k] });
+            const on = !ign.has(k);
+            save({ syncIgnoreSet: { [k]: on } }, { syncIgnore: on ? [...ign, k] : [...ign].filter((x) => x !== k) });
         } }, ign.has(k) ? icon('check', { size: 13, stroke: 3 }) : null, label)));
         clear(box,
             h('div', { class: 'muted small' }, '在酒馆里改过以后，酒馆页会显示「酒馆有改动」，收藏时会存成新版本。'

@@ -135,7 +135,7 @@ const PART_TEXT = {
 /** 世界书条目里可以不算差异的部分（内嵌世界书和单独的世界书都适用） */
 export const ENTRY_FLAGS = {
     entryState: '条目启用 / 禁用',
-    entryConst: '蓝灯 / 绿灯',
+    entryConst: '蓝灯（常驻）/ 绿灯',
     entryTitle: '条目标题',
 };
 const FLAG_CODE = { entryState: 's', entryConst: 'b', entryTitle: 't' };
@@ -174,6 +174,33 @@ export function sameParts(a, b, ignore = []) {
     const ks = Object.keys(a).filter((k) => k !== 'v' && !k.startsWith('book'));
     if (!skip.has('book')) ks.push(mask ? `book.${mask}` : 'book');
     return ks.every((k) => skip.has(k) || (a[k] !== undefined && a[k] === b[k]));
+}
+
+/**
+ * 两份分段指纹哪里不同（已忽略的部分不算），返回 SYNC_OPTIONS 里的键。
+ * 世界书只有条目状态不同时，返回对应的 entryState / entryConst / entryTitle，方便提示可以设为不算差异；
+ * 关键词或内容也改了则返回 'book'（单独的世界书返回 'entries'）。
+ */
+export function partsDiff(a, b, ignore = []) {
+    if (!a || !b || a.v !== PARTS_VERSION || b.v !== PARTS_VERSION) return null;
+    const skip = new Set(ignore);
+    const isCard = 'core' in a;
+    if (!isCard) skip.delete('book');
+    const out = Object.keys(a).filter((k) => k !== 'v' && !k.startsWith('book') && !skip.has(k) && a[k] !== b[k]);
+    if (skip.has('book')) return out;
+    const flags = ['entryState', 'entryConst', 'entryTitle'];
+    const maskOf = (set) => flags.filter((k) => set.has(k)).map((k) => FLAG_CODE[k]).join('');
+    const bookKey = (m) => (m ? `book.${m}` : 'book');
+    const base = maskOf(skip);
+    if (a[bookKey(base)] === b[bookKey(base)]) return out;
+    // 依次多忽略一种、两种状态，找出最少要忽略哪些条目状态才一致
+    const rest = flags.filter((k) => !skip.has(k));
+    const combos = [...rest.map((k) => [k]), ...rest.flatMap((k, i) => rest.slice(i + 1).map((j) => [k, j])), rest];
+    for (const c of combos) {
+        const m = maskOf(new Set([...skip, ...c]));
+        if (a[bookKey(m)] === b[bookKey(m)]) return [...out, ...c];
+    }
+    return [...out, isCard ? 'book' : 'entries'];
 }
 
 /**

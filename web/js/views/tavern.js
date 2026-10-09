@@ -3,7 +3,7 @@ import { h, clear, toast, sheet, icon, btn, emptyState, choiceDialog } from '../
 import { api } from '../api.js';
 import { bridge } from '../bridge.js';
 import { state, findByName, typeMeta, reload } from '../state.js';
-import { sigOf, stripSyncEntries, syncParts, sameParts, CARD_PARTS, ENTRY_FLAGS, SYNC_OPTIONS } from '../sig.js';
+import { sigOf, stripSyncEntries, syncParts, sameParts, partsDiff, CARD_PARTS, ENTRY_FLAGS, SYNC_OPTIONS } from '../sig.js';
 import { topbar, ensureView } from './common.js';
 import { openDetail } from './detail.js';
 import { openDiff } from './diff.js';
@@ -64,7 +64,15 @@ function statusOf(kind, r) {
     if (sameAs(cur, t, kind)) return { s: 'synced', item, ignored: cur.sig !== t.sig };
     const same = item.files.find((f) => sameAs(f, t, kind));
     if (same) return { s: same.addedAt < cur.addedAt ? 'older' : 'other', item };
-    return { s: 'changed', item };
+    return { s: 'changed', item, parts: partsDiff(cur.parts, t.parts, ignoreFor(kind)) };
+}
+
+/** 「有差异」时写清楚是哪几部分不同；只有可以设为不算差异的部分不同时，提示去设置里勾选 */
+function changedNote(kind, parts) {
+    if (!parts?.length) return { text: '酒馆里的内容和藏馆当前版本不同' };
+    const label = (k) => (k === 'entries' ? '条目的关键词或内容' : k === 'book' ? '内嵌世界书的关键词或内容' : SYNC_OPTIONS[k] || k);
+    const canIgnore = parts.every((k) => k in ENTRY_FLAGS || (kind === 'character' && k in CARD_PARTS));
+    return { text: `不同的部分：${parts.map(label).join('、')}`, hint: canIgnore };
 }
 
 const FILTERS = [['all', '全部'], ['new', '未收藏'], ['diff', '有差异']];
@@ -138,12 +146,15 @@ export function renderTavern(root) {
                     if (st.ignored) note = `不算差异：${ignoreFor(kind).filter((k) => !(k === 'book' && kind !== 'character')).map((k) => SYNC_OPTIONS[k]).join('、')}`;
                     right = h('button', { class: 'chip-s ok as-btn', title: st.ignored ? note : '在仓库中查看', onclick: stop(() => openDetail(st.item.id)) }, icon('check', { size: 11, stroke: 3 }), '已同步');
                     break;
-                case 'changed':
-                    note = '酒馆里的内容和藏馆当前版本不同';
+                case 'changed': {
+                    const cn = changedNote(kind, st.parts);
+                    note = cn.hint ? h('span', {}, cn.text, '。只有这些不同时可以',
+                        h('a', { href: '#/settings/import', onclick: (e) => e.stopPropagation() }, '在设置里设为不算差异')) : cn.text;
                     right = h('div', { class: 'row-actions' },
                         btn('对比', { icon: 'eye', cls: 'sm ghost', onclick: stop(() => compareWithTavern(r, st.item)) }),
                         btn('存为新版本', { cls: 'sm primary', onclick: stop(() => collect([r])) }));
                     break;
+                }
                 case 'older':
                 case 'other':
                     note = st.s === 'older' ? '酒馆里是旧版本，藏馆有更新' : '酒馆里是藏馆的另一个版本（不是当前版本）';
@@ -160,7 +171,7 @@ export function renderTavern(root) {
                 h('div', { class: 'row-main' },
                     h('div', { class: 'row-title' }, h('span', {}, r.name)),
                     isDiff(st)
-                        ? h('div', { class: 'row-sub' }, h('span', { class: `chip-s ${st.s === 'changed' ? 'warn' : 'info'}` }, { changed: '酒馆有改动', older: '藏馆较新', other: '版本不同' }[st.s]), h('span', { title: note }, note))
+                        ? h('div', { class: 'row-sub' }, h('span', { class: `chip-s ${st.s === 'changed' ? 'warn' : 'info'}` }, { changed: '酒馆有改动', older: '藏馆较新', other: '版本不同' }[st.s]), h('span', { title: typeof note === 'string' ? note : note.textContent }, note))
                         : st.ignored ? h('div', { class: 'row-sub' }, h('span', { class: 'chip-s' }, '自己改过'), h('span', { title: note }, note))
                             : r.sub ? h('div', { class: 'row-sub' }, h('span', {}, r.sub)) : null),
                 right);

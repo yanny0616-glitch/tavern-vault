@@ -1150,6 +1150,12 @@ route('PUT', '/api/settings', async ({ req }) => {
     // 标记为「不是重复」的条目组（排序后的 id 用逗号连接）
     if (Array.isArray(body.dupIgnore)) store.db.settings.dupIgnore = [...new Set(body.dupIgnore.map((x) => String(x).replace(/[^\w,-]/g, '').slice(0, 400)).filter(Boolean))].slice(-300);
     if (Array.isArray(body.syncIgnore)) store.db.settings.syncIgnore = [...new Set(body.syncIgnore.map(String))].filter((k) => k in SYNC_OPTIONS);
+    // 只改一项：在服务器上的当前列表上增删，别的设备、没刷新的页面不会把别人刚勾的覆盖掉
+    if (body.syncIgnoreSet && typeof body.syncIgnoreSet === 'object') {
+        const cur = new Set(syncIgnore());
+        for (const [k, on] of Object.entries(body.syncIgnoreSet)) if (k in SYNC_OPTIONS) on ? cur.add(k) : cur.delete(k);
+        store.db.settings.syncIgnore = [...cur];
+    }
     if (typeof body.syncKeep === 'boolean') store.db.settings.syncKeep = body.syncKeep;
     if (Array.isArray(body.syncExclude)) store.db.settings.syncExclude = [...new Set(body.syncExclude.map((x) => String(x).trim().slice(0, 60)).filter(Boolean))].slice(0, 30);
     store.save();
