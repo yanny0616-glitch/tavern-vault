@@ -1,10 +1,13 @@
 // 轻量 DOM 工具
+import { icon } from './icons.js';
+
+export { icon };
 export function h(tag, props = {}, ...children) {
     const el = document.createElement(tag);
     for (const [k, v] of Object.entries(props || {})) {
         if (v == null || v === false) continue;
         if (k === 'class') el.className = v;
-        else if (k === 'style' && typeof v === 'object') Object.assign(el.style, v);
+        else if (k === 'style' && typeof v === 'object') { for (const [sk, sv] of Object.entries(v)) { if (sv == null || sv === '') continue; if (sk.startsWith('--')) el.style.setProperty(sk, sv); else el.style[sk] = sv; } }
         else if (k === 'html') el.innerHTML = v;
         else if (k.startsWith('on') && typeof v === 'function') el.addEventListener(k.slice(2).toLowerCase(), v);
         else if (k === 'dataset') Object.assign(el.dataset, v);
@@ -31,9 +34,10 @@ export function clear(el, ...children) {
 
 export function toast(msg, kind = '') {
     const box = document.getElementById('toasts');
-    const t = h('div', { class: `toast ${kind}` }, msg);
+    const ic = kind === 'err' ? 'alert' : kind === 'ok' ? 'checkCircle' : 'info';
+    const t = h('div', { class: `toast ${kind}` }, icon(ic, { size: 16 }), h('span', {}, msg));
     box.append(t);
-    setTimeout(() => { t.style.transition = '.3s'; t.style.opacity = '0'; }, kind === 'err' ? 4200 : 2400);
+    setTimeout(() => t.classList.add('out'), kind === 'err' ? 4200 : 2400);
     setTimeout(() => t.remove(), kind === 'err' ? 4600 : 2800);
 }
 
@@ -49,7 +53,8 @@ export function sheet({ title, body, foot, full = false, onClose, headExtra } = 
     const footEl = foot ? h('div', { class: 'sheet-foot' }, foot) : null;
     const titleEl = h('h2', {}, title);
     const box = h('div', { class: `sheet ${full ? 'full' : ''}` },
-        h('div', { class: 'sheet-head' }, titleEl, headExtra, h('button', { class: 'btn icon ghost', onclick: close, 'aria-label': '关闭' }, '✕')),
+        h('div', { class: 'sheet-grip' }),
+        h('div', { class: 'sheet-head' }, titleEl, headExtra, h('button', { class: 'btn icon ghost sheet-x', onclick: close, 'aria-label': '关闭' }, icon('x', { size: 20 }))),
         bodyEl, footEl);
     const overlay = h('div', { class: 'overlay', onclick: (e) => { if (e.target === overlay) close(); } }, box);
     document.body.append(overlay);
@@ -140,4 +145,31 @@ export function downloadBlob(blob, name) {
 export function switchEl(checked, onchange) {
     const input = h('input', { type: 'checkbox', checked, onchange: () => onchange(input.checked) });
     return h('label', { class: 'switch' }, input, h('span'));
+}
+
+/** 带图标的按钮 */
+export function btn(label, { icon: ic, cls = '', onclick, title, href, download, disabled } = {}) {
+    const children = [ic ? icon(ic, { size: cls.includes('sm') ? 15 : 17 }) : null, label ? h('span', {}, label) : null];
+    if (href) return h('a', { class: `btn ${cls} ${label ? '' : 'icon'}`, href, download, title }, children);
+    return h('button', { class: `btn ${cls} ${label ? '' : 'icon'}`, onclick, title, disabled, type: 'button' }, children);
+}
+
+/** 星级 */
+export function starsEl(value, onSet, { size = 18 } = {}) {
+    const wrap = h('span', { class: 'stars' });
+    const draw = (v) => clear(wrap, [1, 2, 3, 4, 5].map((n) => {
+        const s = h('span', { class: n <= (v || 0) ? 'on' : '', onclick: onSet ? (e) => { e.stopPropagation(); const nv = v === n ? 0 : n; onSet(nv); draw(nv); } : null }, icon('star', { size, fill: n <= (v || 0) }));
+        return s;
+    }));
+    draw(value);
+    return wrap;
+}
+
+/** 空状态 */
+export function emptyState(ic, title, text, action) {
+    return h('div', { class: 'empty' },
+        h('div', { class: 'empty-ic' }, icon(ic, { size: 30, stroke: 1.5 })),
+        title ? h('div', { class: 'empty-title' }, title) : null,
+        text ? h('div', { class: 'empty-text' }, text) : null,
+        action ? h('div', { class: 'empty-act' }, action) : null);
 }

@@ -195,7 +195,7 @@ const route = (method, pattern, handler, { open = false } = {}) => {
     routes.push({ method, re, keys, handler, open });
 };
 
-route('GET', '/api/health', () => ({ ok: true, app: 'tavern-vault', version: VERSION, auth: authEnabled(), title: store.db.settings.title }), { open: true });
+route('GET', '/api/health', () => ({ ok: true, app: 'tavern-vault', version: VERSION, auth: authEnabled(), title: store.db.settings.title, skin: store.db.settings.skin }), { open: true });
 
 route('POST', '/api/login', async ({ req }) => {
     const { password } = await readJson(req);
@@ -480,7 +480,7 @@ route('GET', '/api/files/:sha', ({ req, res, p, url }) => {
 // 合集
 route('POST', '/api/collections', async ({ req }) => {
     const body = await readJson(req);
-    const c = { id: newId(), name: String(body.name || '新合集').slice(0, 60), icon: body.icon || '📁', color: body.color || '', description: body.description || '', createdAt: new Date().toISOString() };
+    const c = { id: newId(), name: String(body.name || '新合集').slice(0, 60), icon: /^[a-zA-Z]+$/.test(body.icon || '') ? body.icon : 'folder', color: body.color || '', description: body.description || '', createdAt: new Date().toISOString() };
     store.db.collections[c.id] = c;
     store.save();
     broadcast('change', {});
@@ -529,6 +529,7 @@ route('POST', '/api/fields/reset', () => {
 route('PUT', '/api/settings', async ({ req }) => {
     const body = await readJson(req);
     for (const k of ['title', 'accent']) if (typeof body[k] === 'string') store.db.settings[k] = body[k].slice(0, 80);
+    if (['atelier', 'minimal', 'tavern', 'sakura', 'ink', 'neon'].includes(body.skin)) store.db.settings.skin = body.skin;
     store.save();
     broadcast('change', {});
     return { ok: true };
@@ -591,13 +592,13 @@ const server = http.createServer(async (req, res) => {
 
 server.requestTimeout = 0;
 server.listen(PORT, HOST, () => {
-    console.log(`\n  📦 TavernVault 酒馆藏馆 v${VERSION}`);
+    console.log(`\n  TavernVault 酒馆藏馆 v${VERSION}`);
     console.log(`  数据目录: ${DATA_DIR}`);
     console.log(`  本机访问: http://localhost:${PORT}`);
     for (const list of Object.values(os.networkInterfaces())) {
         for (const a of list || []) if (a.family === 'IPv4' && !a.internal) console.log(`  局域网:   http://${a.address}:${PORT}`);
     }
-    if (!authEnabled()) console.log('\n  ⚠️  尚未设置访问密码！公网部署前请在网页「设置」中设置密码，或用 TV_PASSWORD 环境变量启动。');
+    if (!authEnabled()) console.log('\n  [警告] 尚未设置访问密码！公网部署前请在网页「设置」中设置密码，或用 TV_PASSWORD 环境变量启动。');
     console.log('');
 });
 

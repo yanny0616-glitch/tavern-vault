@@ -242,6 +242,15 @@ let panel;
 let iframe;
 let loadedSrc = '';
 
+const SVG = (d, size = 18) => `<svg class="tv-ic" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`;
+const IC = {
+    archive: '<rect x="2" y="3" width="20" height="5" rx="1"/><path d="M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8"/><path d="M10 12h4"/>',
+    refresh: '<path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/><path d="M3 21v-5h5"/>',
+    x: '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>',
+    wifiOff: '<path d="M12 20h.01"/><path d="M8.5 16.43a5 5 0 0 1 7 0"/><path d="M2 8.82a15 15 0 0 1 4.17-2.65"/><path d="M10.66 5c4.01-.36 8.14.9 11.34 3.76"/><path d="M16.85 11.25a10 10 0 0 1 2.22 1.68"/><path d="M5 13a10 10 0 0 1 5.24-2.76"/><path d="m2 2 20 20"/>',
+    link: '<path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>',
+};
+
 function vaultOrigin() {
     try { return new URL(baseUrl()).origin; } catch { return ''; }
 }
@@ -251,12 +260,12 @@ function buildPanel() {
     panel.id = 'tv-panel';
     panel.innerHTML = `
         <div class="tv-bar">
-            <span class="tv-title">📦 酒馆藏馆</span>
-            <button type="button" data-act="reload" title="刷新">↻</button>
-            <button type="button" data-act="close" title="关闭">✕</button>
+            <span class="tv-title">${SVG(IC.archive, 17)}<span>酒馆藏馆</span></span>
+            <button type="button" data-act="reload" title="刷新">${SVG(IC.refresh)}</button>
+            <button type="button" data-act="close" title="关闭">${SVG(IC.x)}</button>
         </div>
         <iframe allow="clipboard-write; clipboard-read; fullscreen" referrerpolicy="no-referrer"></iframe>
-        <div class="tv-error"><div style="font-size:42px">📡</div><div class="tv-error-msg"></div>
+        <div class="tv-error"><div class="tv-error-ic">${SVG(IC.wifiOff, 40)}</div><div class="tv-error-msg"></div>
             <button type="button" class="menu_button" data-act="retry">重试</button></div>`;
     document.body.append(panel);
     iframe = panel.querySelector('iframe');
@@ -334,7 +343,7 @@ function renderFab() {
     fab.id = 'tv-fab';
     fab.type = 'button';
     fab.title = '酒馆藏馆';
-    fab.textContent = '📦';
+    fab.innerHTML = SVG(IC.archive, 24);
     const pos = settings().fabPos;
     if (pos) { fab.style.left = `${pos.x}px`; fab.style.top = `${pos.y}px`; fab.style.right = 'auto'; fab.style.bottom = 'auto'; }
     let start = null;
@@ -371,15 +380,15 @@ function buildSettings() {
     <div id="tv-settings" class="tv-settings">
       <div class="inline-drawer">
         <div class="inline-drawer-toggle inline-drawer-header">
-          <b>📦 TavernVault 酒馆藏馆</b>
+          <b>TavernVault 酒馆藏馆</b>
           <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
         </div>
         <div class="inline-drawer-content">
           <div class="tv-row"><label>服务器</label><input id="tv-url" class="text_pole" type="text" placeholder="https://vault.example.com"></div>
           <div class="tv-row"><label>密码</label><input id="tv-pass" class="text_pole" type="password" placeholder="藏馆访问密码（未设置可留空）"></div>
           <div class="tv-row">
-            <div id="tv-connect" class="menu_button">🔗 连接</div>
-            <div id="tv-open" class="menu_button">📦 打开藏馆</div>
+            <div id="tv-connect" class="menu_button">${SVG(IC.link, 15)} 连接</div>
+            <div id="tv-open" class="menu_button">${SVG(IC.archive, 15)} 打开藏馆</div>
           </div>
           <div id="tv-status" class="tv-status"></div>
           <label class="checkbox_label"><input id="tv-fab-toggle" type="checkbox"> 显示悬浮按钮（可拖动）</label>
@@ -423,9 +432,9 @@ function buildSettings() {
             $('tv-pass').value = '';
             save();
             loadedSrc = '';
-            status(`✅ 已连接：${health.title || '酒馆藏馆'} v${health.version}`, 'ok');
+            status(`已连接：${health.title || '酒馆藏馆'} v${health.version}`, 'ok');
         } catch (e) {
-            status(`❌ ${e.message}`, 'err');
+            status(`连接失败：${e.message}`, 'err');
         }
     });
 }
@@ -437,7 +446,7 @@ function addMenuItem() {
     item.id = 'tv-menu-item';
     item.className = 'list-group-item flex-container flexGap5 interactable';
     item.tabIndex = 0;
-    item.innerHTML = '<span>📦</span><span>酒馆藏馆</span>';
+    item.innerHTML = `<span class="tv-menu-ic">${SVG(IC.archive, 16)}</span><span>酒馆藏馆</span>`;
     item.addEventListener('click', openPanel);
     menu.append(item);
 }

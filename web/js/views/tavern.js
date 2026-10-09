@@ -1,5 +1,5 @@
 // 酒馆联通页：浏览酒馆本地内容、收藏进仓库；以及把仓库条目导入酒馆
-import { h, clear, toast, sheet } from '../ui.js';
+import { h, clear, toast, sheet, icon, btn, emptyState } from '../ui.js';
 import { api } from '../api.js';
 import { bridge } from '../bridge.js';
 import { state, findByName, typeMeta, reload } from '../state.js';
@@ -7,13 +7,13 @@ import { topbar, ensureView } from './common.js';
 import { openDetail } from './detail.js';
 
 const KINDS = [
-    ['character', '🎭 角色卡'],
-    ['worldbook', '📖 世界书'],
-    ['preset', '🎛️ 预设'],
-    ['regex', '🧩 正则'],
-    ['quickreply', '⚡ 快速回复'],
-    ['theme', '🎨 主题'],
-    ['background', '🖼️ 背景'],
+    ['character', '角色卡'],
+    ['worldbook', '世界书'],
+    ['preset', '预设'],
+    ['regex', '正则'],
+    ['quickreply', '快速回复'],
+    ['theme', '主题'],
+    ['background', '背景'],
 ];
 export const TAVERN_IMPORTABLE = new Set(KINDS.map(([k]) => k));
 
@@ -30,26 +30,29 @@ bridge.on((event) => {
 
 export function renderTavern(root) {
     const refs = ensureView(root, 'tavern', () => {
-        const seg = h('div', { class: 'chips' });
-        const head = topbar(bridge.host ? `酒馆 · ${bridge.host.host}` : '酒馆', h('button', { class: 'btn sm', onclick: () => refresh(true) }, '🔄 刷新'));
-        head.append(seg);
-        const toolbar = h('div', { class: 'toolbar' });
+        const seg = h('div', { class: 'seg' });
+        const actions = h('div', { class: 'tb-actions-inner' });
+        const head = topbar('酒馆', { kicker: bridge.host ? `Connected · ${bridge.host.host}` : 'Tavern', sub: '浏览酒馆里的内容，收藏进仓库', actions: [actions] });
+        const searchInput = h('input', { class: 'input search-input', type: 'search', placeholder: '筛选', oninput: (e) => { ui.q = e.target.value; renderTavern(root); } });
+        head.append(h('label', { class: 'search' }, icon('search', { size: 16 }), searchInput), seg);
+        const toolbar = h('div', { class: 'toolbar-row' });
         const content = h('div');
         const selbar = h('div', { class: 'selbar', hidden: true });
         root.append(head, h('div', { class: 'page' }, toolbar, content), selbar);
+        clear(actions, btn('', { icon: 'refresh', cls: 'ghost', title: '重新读取', onclick: () => refresh(true) }));
         return { seg, toolbar, content, selbar };
     });
     if (!bridge.host) {
-        clear(refs.content, h('div', { class: 'empty' }, h('div', { class: 'big' }, '🔌'), '这个页面需要在酒馆插件里打开才能使用'));
+        clear(refs.content, emptyState('beer', '未连接酒馆', '这个页面需要在酒馆插件里打开'));
         return;
     }
-    clear(refs.seg, KINDS.map(([k, label]) => h('button', { class: `chip ${ui.kind === k ? 'active' : ''}`, onclick: () => { ui.kind = k; ui.selected.clear(); refresh(); } },
-        label, ui.lists[k] ? h('span', { class: 'n' }, ui.lists[k].length) : null)));
+    clear(refs.seg, KINDS.map(([k, label]) => h('button', { class: `seg-item ${ui.kind === k ? 'active' : ''}`, onclick: () => { ui.kind = k; ui.selected.clear(); refresh(); } },
+        icon(typeMeta(k).icon, { size: 14 }), h('span', { class: 'seg-label' }, label), ui.lists[k] ? h('span', { class: 'seg-n' }, ui.lists[k].length) : null)));
 
     const list = ui.lists[ui.kind];
     if (!list) {
         if (!ui.loading) refresh();
-        clear(refs.content, h('div', { class: 'empty' }, h('span', { class: 'spinner' }), h('div', { style: { marginTop: '8px' } }, '正在读取酒馆数据…')));
+        clear(refs.content, h('div', { class: 'loading' }, h('span', { class: 'spinner' }), h('span', {}, '正在读取酒馆数据')));
         clear(refs.toolbar);
         refs.selbar.hidden = true;
         return;
@@ -57,42 +60,41 @@ export function renderTavern(root) {
 
     const q = ui.q.toLowerCase();
     const rows = list.filter((x) => (!q || `${x.name} ${x.sub || ''}`.toLowerCase().includes(q)) && (!ui.onlyNew || !findByName(ui.kind, x.name)));
-    const search = h('input', { class: 'input', type: 'search', placeholder: '筛选…', value: ui.q, style: { maxWidth: '260px', height: '32px', fontSize: '14px' },
-        oninput: (e) => { ui.q = e.target.value; renderTavern(root); setTimeout(() => { const el = root.querySelector('.toolbar input'); el?.focus(); el?.setSelectionRange(el.value.length, el.value.length); }); } });
     const newCount = list.filter((x) => !findByName(ui.kind, x.name)).length;
     clear(refs.toolbar,
-        search,
-        h('button', { class: `chip ${ui.onlyNew ? 'active' : ''}`, onclick: () => { ui.onlyNew = !ui.onlyNew; renderTavern(root); } }, `只看未收藏 (${newCount})`),
-        h('span', { class: 'spacer' }),
-        h('button', { class: 'btn sm', onclick: () => { const all = rows.every((r) => ui.selected.has(r.id)); rows.forEach((r) => (all ? ui.selected.delete(r.id) : ui.selected.add(r.id))); renderTavern(root); } }, '全选/取消'));
+        h('button', { class: `pill ${ui.onlyNew ? 'active' : ''}`, onclick: () => { ui.onlyNew = !ui.onlyNew; renderTavern(root); } }, h('span', {}, `只看未收藏 · ${newCount}`)),
+        h('span', { class: 'grow' }),
+        btn('全选', { cls: 'sm ghost', onclick: () => { const all = rows.every((r) => ui.selected.has(r.id)); rows.forEach((r) => (all ? ui.selected.delete(r.id) : ui.selected.add(r.id))); renderTavern(root); } }));
 
     if (!rows.length) {
-        clear(refs.content, h('div', { class: 'empty' }, h('div', { class: 'big' }, '🍃'), list.length ? '没有符合条件的内容' : '酒馆里还没有这类内容'));
+        clear(refs.content, emptyState(typeMeta(ui.kind).icon, list.length ? '没有符合条件的内容' : '酒馆里还没有这类内容'));
     } else {
         const io = new IntersectionObserver((entries) => {
             for (const e of entries) if (e.isIntersecting) { io.unobserve(e.target); loadThumb(e.target); }
         }, { rootMargin: '200px' });
-        clear(refs.content, h('div', { class: 'list' }, rows.map((r) => {
+        const toggle = (r) => { ui.selected.has(r.id) ? ui.selected.delete(r.id) : ui.selected.add(r.id); renderTavern(root); };
+        clear(refs.content, h('div', { class: 'rows' }, rows.map((r) => {
             const inVault = findByName(ui.kind, r.name);
             const sel = ui.selected.has(r.id);
-            const thumb = h('div', { class: 'thumb', dataset: { kind: ui.kind, id: r.id } }, typeMeta(ui.kind).icon);
+            const thumb = h('div', { class: 'row-thumb', dataset: { kind: ui.kind, id: r.id } }, icon(typeMeta(ui.kind).icon, { size: 20 }));
             if (r.thumb) io.observe(thumb);
-            return h('div', { class: `list-row ${sel ? 'selected' : ''}`, onclick: () => { sel ? ui.selected.delete(r.id) : ui.selected.add(r.id); renderTavern(root); } },
-                h('input', { type: 'checkbox', checked: sel, style: { width: '18px', height: '18px', accentColor: 'var(--accent)' }, onclick: (e) => e.stopPropagation(), onchange: () => { sel ? ui.selected.delete(r.id) : ui.selected.add(r.id); renderTavern(root); } }),
+            return h('div', { class: `row-item ${sel ? 'selected' : ''}`, style: { '--tc': typeMeta(ui.kind).color }, onclick: () => toggle(r) },
+                h('span', { class: `row-check ${sel ? 'on' : ''}` }, icon('check', { size: 13, stroke: 3 })),
                 thumb,
-                h('div', { class: 'grow' }, h('div', { class: 'title ellipsis' }, r.name), r.sub ? h('div', { class: 'meta ellipsis' }, r.sub) : null),
+                h('div', { class: 'row-main' }, h('div', { class: 'row-title' }, h('span', {}, r.name)), r.sub ? h('div', { class: 'row-sub' }, h('span', {}, r.sub)) : null),
                 inVault
-                    ? h('button', { class: 'badge ok', style: { border: 0, cursor: 'pointer' }, title: '在仓库中查看', onclick: (e) => { e.stopPropagation(); openDetail(inVault.id); } }, '✓ 已收藏')
-                    : h('button', { class: 'btn sm', onclick: (e) => { e.stopPropagation(); collect([r]); } }, '收藏'));
+                    ? h('button', { class: 'chip-s ok as-btn', title: '在仓库中查看', onclick: (e) => { e.stopPropagation(); openDetail(inVault.id); } }, icon('check', { size: 11, stroke: 3 }), '已收藏')
+                    : btn('收藏', { icon: 'download', cls: 'sm', onclick: (e) => { e.stopPropagation(); collect([r]); } }));
         })));
     }
 
     const n = ui.selected.size;
     refs.selbar.hidden = !n;
     if (n) {
-        clear(refs.selbar, h('span', { class: 'count' }, `已选 ${n}`),
-            h('button', { class: 'btn sm primary', onclick: () => collect(list.filter((r) => ui.selected.has(r.id))) }, '📥 收藏到仓库'),
-            h('button', { class: 'btn sm', onclick: () => { ui.selected.clear(); renderTavern(root); } }, '取消'));
+        clear(refs.selbar, h('div', { class: 'sel-top' }, h('span', { class: 'sel-count' }, `已选 ${n} 项`),
+            h('span', { class: 'grow' }),
+            btn('取消', { cls: 'sm ghost', onclick: () => { ui.selected.clear(); renderTavern(root); } }),
+            btn('收藏到仓库', { icon: 'download', cls: 'sm primary', onclick: () => collect(list.filter((r) => ui.selected.has(r.id))) })));
     }
 }
 
@@ -144,7 +146,7 @@ async function collect(rows) {
             if (res.duplicate) dup++; else ok++;
         } catch (e) {
             fail++;
-            prog.log(`❌ ${r.name}：${e.message}`);
+            prog.log(`${r.name}：${e.message}`, 'err');
         }
     }
     prog.done(`完成：新增 ${ok}，已存在 ${dup}${fail ? `，失败 ${fail}` : ''}`);
@@ -168,9 +170,9 @@ export async function importItemsToTavern(items) {
             const data = await blob.arrayBuffer();
             const res = await bridge.call('import', { kind: it.type, filename: f.name, name: it.name, apiId: it.meta?.apiId || '', data }, [data]);
             ok++;
-            if (res?.message) prog.log(`✅ ${it.name}：${res.message}`);
+            if (res?.message) prog.log(`${it.name}：${res.message}`, 'ok');
         } catch (e) {
-            prog.log(`❌ ${it.name}：${e.message}`);
+            prog.log(`${it.name}：${e.message}`, 'err');
         }
     }
     prog.done(`已导入 ${ok}/${supported.length}${skipped ? `，${skipped} 项不支持已跳过` : ''}`);
@@ -179,12 +181,12 @@ export async function importItemsToTavern(items) {
 
 function progressSheet(title) {
     const bar = h('i', { style: { width: '0%' } });
-    const label = h('div', { class: 'small muted', style: { margin: '8px 0' } }, '准备中…');
-    const log = h('div', { class: 'small', style: { maxHeight: '200px', overflow: 'auto' } });
-    const s = sheet({ title, body: h('div', {}, h('div', { class: 'progress' }, bar), label, log) });
+    const label = h('div', { class: 'progress-label' }, '准备中');
+    const log = h('div', { class: 'progress-log' });
+    const s = sheet({ title, body: h('div', { class: 'stack-s' }, h('div', { class: 'progress' }, bar), label, log) });
     return {
-        update(i, n, name) { bar.style.width = `${(i / n) * 100}%`; label.textContent = `(${i + 1}/${n}) ${name}`; },
-        log(msg) { log.append(h('div', {}, msg)); },
+        update(i, n, name) { bar.style.width = `${(i / n) * 100}%`; label.textContent = `${i + 1} / ${n} · ${name}`; },
+        log(msg, kind = '') { log.append(h('div', { class: `log-line ${kind}` }, icon(kind === 'err' ? 'xCircle' : 'checkCircle', { size: 14 }), h('span', {}, msg))); },
         done(msg) {
             bar.style.width = '100%';
             label.textContent = msg;

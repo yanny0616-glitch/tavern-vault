@@ -38,8 +38,11 @@ export class Store {
         db.items ??= {};
         db.collections ??= {};
         db.fields ??= structuredClone(DEFAULT_FIELDS);
-        db.settings ??= { title: 'TavernVault 酒馆藏馆', accent: '#c084fc', passwordHash: '', secret: crypto.randomBytes(32).toString('hex') };
+        db.settings ??= { title: '酒馆藏馆', skin: 'atelier', accent: '', passwordHash: '', secret: crypto.randomBytes(32).toString('hex') };
         db.settings.secret ||= crypto.randomBytes(32).toString('hex');
+        db.settings.skin ||= 'atelier';
+        if (db.settings.accent === '#c084fc') db.settings.accent = ''; // 旧版默认值 → 跟随风格
+        for (const c of Object.values(db.collections)) if (!/^[a-zA-Z]+$/.test(c.icon || '')) c.icon = 'folder';
         return db;
     }
 
