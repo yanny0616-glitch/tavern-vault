@@ -1,0 +1,9 @@
+# Cloudflare Tunnel 配置示例（命令行方式创建隧道时使用）
+# 放到 /etc/cloudflared/config.yml
+tunnel: <隧道ID>
+credentials-file: /root/.cloudflared/<隧道ID>.json
+
+ingress:
+  - hostname: vault.example.com
+    service: http://127.0.0.1:5180
+  - service: http_status:404

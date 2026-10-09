@@ -1,0 +1,12 @@
+{
+  "name": "TavernVault 酒馆藏馆",
+  "short_name": "藏馆",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#14111c",
+  "theme_color": "#14111c",
+  "icons": [
+    { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" },
+    { "src": "/icon-180.png", "sizes": "180x180", "type": "image/png" }
+  ]
+}

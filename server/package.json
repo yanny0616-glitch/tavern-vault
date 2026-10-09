@@ -1,0 +1,14 @@
+{
+  "name": "tavern-vault-server",
+  "version": "1.0.0",
+  "description": "TavernVault 酒馆藏馆 - SillyTavern / TauriTavern 资源仓库服务端（零依赖）",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "MIT"
+}

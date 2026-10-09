@@ -1,0 +1,22 @@
+# systemd 服务：开机自启、崩溃自动重启
+# 安装：sudo cp deploy/tavern-vault.service /etc/systemd/system/ && sudo systemctl daemon-reload && sudo systemctl enable --now tavern-vault
+[Unit]
+Description=TavernVault 酒馆藏馆
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/root/vibe-coding/tavern-vault/server
+ExecStart=/usr/bin/env node server.js
+Restart=always
+RestartSec=3
+# 只监听本机，由 cloudflared 对外提供 HTTPS；不要直接暴露端口
+Environment=TV_HOST=127.0.0.1
+Environment=TV_PORT=5180
+# 数据目录（默认 server/data）
+# Environment=TV_DATA=/var/lib/tavern-vault
+# 首次启动时设置的访问密码（之后可在网页中修改，修改后此项不再生效）
+# Environment=TV_PASSWORD=请改成你的密码
+
+[Install]
+WantedBy=multi-user.target
