@@ -48,7 +48,8 @@ export const state = {
         uploadConc: 3, conflict: 'ask',
     }, lsGet('tv_prefs', {})),
     // 仓库筛选（会话内）
-    filter: { q: '', type: 'all', tag: '', collection: '', fav: false, ai: '' },
+    // tagsIn：都要有；tagsOut：都不能有；quick：未打标签 / 未整理 / 多版本
+    filter: { q: '', type: 'all', tagsIn: [], tagsOut: [], quick: [], collection: '', fav: false, ai: '' },
     selection: new Set(),
     selecting: false,
 };
@@ -83,6 +84,9 @@ const darkMq = matchMedia('(prefers-color-scheme: dark)');
 darkMq.addEventListener?.('change', () => applyAccent());
 
 /** 应用风格（全局，存服务器）与明暗（每台设备） */
+/** 界面字号：没选过时手机默认用「小」，电脑用「标准」 */
+export const uiSize = (p) => p.uiSize || (Math.min(screen.width, screen.height) < 600 ? 'sm' : 'md');
+
 export function applyAccent() {
     const root = document.documentElement;
     const skin = SKINS[state.settings.skin] ? state.settings.skin : 'atelier';
@@ -95,6 +99,7 @@ export function applyAccent() {
     // 每台设备自己的显示偏好，通过 html 上的属性交给 CSS
     const p = state.prefs;
     root.dataset.read = p.readSize || 'md';
+    root.dataset.ui = uiSize(p);
     const flag = (k, on) => { if (on) root.dataset[k] = ''; else delete root.dataset[k]; };
     flag('motion', p.reduceMotion);
     flag('hideTags', !p.showTags);

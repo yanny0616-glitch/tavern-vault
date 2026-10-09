@@ -4,6 +4,7 @@ import { h, icon, starsEl } from '../ui.js';
 import { coverImg } from '../thumbs.js';
 import { api } from '../api.js';
 import { typeMeta, state, SKINS } from '../state.js';
+import { bridge } from '../bridge.js';
 
 /** 页面标题栏：kicker / 标题 / 副标题 + 右侧操作 */
 export function topbar(title, { kicker = '', sub = '', actions = [] } = {}) {
@@ -13,7 +14,9 @@ export function topbar(title, { kicker = '', sub = '', actions = [] } = {}) {
                 h('div', { class: 'tb-kicker' }, kicker || (SKINS[state.settings.skin]?.en || 'Atelier')),
                 h('h1', { class: 'tb-title' }, title),
                 sub ? h('div', { class: 'tb-sub' }, sub) : null),
-            h('div', { class: 'tb-actions' }, actions)));
+            h('div', { class: 'tb-actions' }, actions,
+                // 在酒馆插件里全屏打开时，插件自己的标题栏会隐藏，关闭按钮放在这里
+                bridge.embedded ? h('button', { class: 'btn ghost icon tb-close', title: '关闭，回到酒馆', 'aria-label': '关闭', onclick: () => bridge.close() }, icon('x', { size: 19 })) : null)));
 }
 
 /** 保证页面骨架只创建一次，避免重渲染时输入框失焦 */
@@ -93,6 +96,7 @@ export function itemCard(it, { onClick, selected = false, selecting = false, ind
         return hit.el;
     }
     const el = buildCard(it, { selected, selecting, index });
+    el.dataset.id = it.id;
     el.tvClick = onClick;
     el.addEventListener('click', (e) => el.tvClick?.(e));
     cardCache.set(it.id, { key, el });
@@ -165,6 +169,7 @@ export function itemRow(it, opts = {}) {
     const hit = rowCache.get(it.id);
     if (hit && hit.key === key) { hit.el.tvClick = onClick; return hit.el; }
     const el = buildRow(it, { selected, right, index });
+    el.dataset.id = it.id;
     el.tvClick = onClick;
     el.addEventListener('click', (e) => el.tvClick?.(e));
     rowCache.set(it.id, { key, el });

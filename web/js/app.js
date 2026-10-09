@@ -23,6 +23,33 @@ import { openDetail } from './views/detail.js';
 import { handleAiEvent, renderChip } from './views/ai.js';
 
 const app = document.getElementById('app');
+
+// 在酒馆插件里打开时：底部安全区由藏馆自己留（底部栏铺到屏幕最下面），插件面板顶部跟着藏馆的风格配色
+async function fitHost() {
+    const root = document.documentElement;
+    if (bridge.has('insets')) {
+        try {
+            // 插件不再留边距、也不显示自己的标题栏，藏馆铺满全屏，自己给灵动岛 / 状态栏和底部 Home 条留位置
+            const r = await bridge.call('insets', {}, [], 5000);
+            const px = (v) => `${Math.max(0, Math.min(Number(v) || 0, 120))}px`;
+            for (const k of ['top', 'bottom', 'left', 'right']) root.style.setProperty(`--safe-${k}`, px(r?.[k]));
+            root.classList.add('embed-edge');
+        } catch { /* 旧版插件 */ }
+    }
+    if (!bridge.has('theme')) return;
+    let last = '';
+    const send = () => {
+        const cs = getComputedStyle(root);
+        const colors = { bg: getComputedStyle(document.body).backgroundColor, fg: cs.getPropertyValue('--text').trim(), line: cs.getPropertyValue('--line').trim() };
+        const key = JSON.stringify(colors);
+        if (key === last) return;
+        last = key;
+        bridge.call('theme', colors, [], 5000).catch(() => {});
+    };
+    send();
+    let t = 0;
+    new MutationObserver(() => { clearTimeout(t); t = setTimeout(send, 60); }).observe(root, { attributes: true, attributeFilter: ['data-skin', 'data-mode', 'style'] });
+}
 if (bridge.embedded) document.documentElement.classList.add('embed');
 
 const ROUTES = {
@@ -139,7 +166,7 @@ async function start() {
         if (health.auth) { showLogin(health.title); return; }
         throw new Error('加载失败');
     }
-    if (bridge.embedded) await bridge.connect();
+    if (bridge.embedded) { await bridge.connect(); fitHost(); }
     buildShell();
     if (!started) {
         started = true;

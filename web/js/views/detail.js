@@ -141,15 +141,68 @@ function fieldDisplay(f, v) {
     }
 }
 
-export function openDetail(id) {
+/**
+ * 条目详情。opts.seq：从仓库打开时传入当前筛选结果的 id 顺序，可以左右滑动 / 方向键 / 顶部箭头切到上一项、下一项；
+ * opts.onLeave(id)：关闭时告诉仓库最后看的是哪一项
+ */
+export function openDetail(id, { seq = null, onLeave = null } = {}) {
     let tab = state.prefs.detailTab === 'content' ? 'content' : 'overview';
     let content = null;
     let contentSha = '';
     let loading = false;
     let greetIdx = 0;
+    const order = Array.isArray(seq) && seq.length > 1 && seq.includes(id) ? seq : null;
     const headMore = h('div', { class: 'head-extra' });
-    const s = sheet({ title: '', body: h('div'), full: true, headExtra: headMore, onClose: () => unsub() });
+    const s = sheet({ title: '', body: h('div'), full: true, headExtra: headMore, onClose: () => { unsub(); document.removeEventListener('keydown', onNavKey); onLeave?.(id); } });
     s.el.classList.add('detail-sheet');
+
+    // ---- 上一项 / 下一项 ----
+    function browse(dir) {
+        if (!order) return;
+        for (let k = order.indexOf(id) + dir; k >= 0 && k < order.length; k += dir) {
+            const it = state.byId.get(order[k]);
+            if (it && !it.deletedAt) { goTo(order[k], dir); return; }
+        }
+        toast(dir > 0 ? '已经是最后一项' : '已经是第一项');
+    }
+    function goTo(nid, dir) {
+        id = nid;
+        content = null;
+        contentSha = '';
+        loading = false;
+        greetIdx = 0;
+        tabCache = null;
+        lastSig = '';
+        render();
+        s.body.scrollTop = 0;
+        s.body.animate?.([{ opacity: 0.2, transform: `translateX(${dir * 28}px)` }, { opacity: 1, transform: 'none' }], { duration: 200, easing: 'ease-out' });
+    }
+    const onNavKey = (e) => {
+        if (!order || e.altKey || e.ctrlKey || e.metaKey) return;
+        if (/^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName) || document.activeElement?.isContentEditable) return;
+        if ([...document.querySelectorAll('.overlay')].pop() !== s.el.parentElement) return;
+        if (e.key === 'ArrowLeft') { e.preventDefault(); browse(-1); }
+        if (e.key === 'ArrowRight') { e.preventDefault(); browse(1); }
+    };
+    if (order) {
+        document.addEventListener('keydown', onNavKey);
+        // 手机左右滑：避开屏幕左边缘（iOS 返回手势）和本身能横向操作的地方
+        let sw = null;
+        s.body.addEventListener('touchstart', (e) => {
+            const t = e.touches[0];
+            sw = e.touches.length === 1 && t.clientX > 24 && !e.target.closest('input, textarea, select, pre, .code, iframe, .cover-grid, .tabs, .opts, .chips-row, table, .entry-keys')
+                ? { x: t.clientX, y: t.clientY, at: Date.now() } : null;
+        }, { passive: true });
+        s.body.addEventListener('touchend', (e) => {
+            if (!sw) return;
+            const t = e.changedTouches[0];
+            const dx = t.clientX - sw.x;
+            const dy = t.clientY - sw.y;
+            const quick = Date.now() - sw.at < 700;
+            sw = null;
+            if (quick && Math.abs(dx) >= 60 && Math.abs(dx) > Math.abs(dy) * 1.6 && !window.getSelection()?.toString()) browse(dx < 0 ? 1 : -1);
+        }, { passive: true });
+    }
     const unsub = subscribe(() => {
         const it = state.byId.get(id);
         if (!it) { s.close(); return; }
@@ -204,8 +257,11 @@ export function openDetail(id) {
     async function loadContent(it) {
         if (loading) return;
         loading = true;
+        const forId = id;
         contentSha = primary(it)?.sha || '';
-        content = await api.get(`/api/items/${id}/content`).catch((e) => ({ kind: 'error', error: e.message }));
+        const c = await api.get(`/api/items/${forId}/content`).catch((e) => ({ kind: 'error', error: e.message }));
+        if (forId !== id) return; // 已经切到别的条目了，那边会自己加载
+        content = c;
         loading = false;
         render();
     }
@@ -217,7 +273,13 @@ export function openDetail(id) {
         lastSig = sigOf(it);
         s.title.textContent = typeMeta(it.type).label;
         const scroll = s.body.scrollTop;
-        clear(headMore, btn('', { icon: 'more', cls: 'ghost icon', title: '更多操作', onclick: () => moreMenu(it) }));
+        const pos = order ? order.indexOf(id) : -1;
+        clear(headMore,
+            order ? h('div', { class: 'detail-nav' },
+                btn('', { icon: 'chevronLeft', cls: 'ghost icon sm', title: '上一项（也可以左右滑动或按方向键）', disabled: pos <= 0, onclick: () => browse(-1) }),
+                h('span', { class: 'detail-pos' }, `${pos + 1} / ${order.length}`),
+                btn('', { icon: 'chevronRight', cls: 'ghost icon sm', title: '下一项', disabled: pos >= order.length - 1, onclick: () => browse(1) })) : null,
+            btn('', { icon: 'more', cls: 'ghost icon', title: '更多操作', onclick: () => moreMenu(it) }));
         clear(s.body, h('div', { class: 'detail-layout' },
             h('aside', { class: 'detail-aside' }, hero(it)),
             h('div', { class: 'detail-main' },
@@ -273,7 +335,7 @@ export function openDetail(id) {
     }
 
     function filterByTag(t) {
-        Object.assign(state.filter, { tag: t });
+        Object.assign(state.filter, { tagsIn: [t], tagsOut: [] });
         s.close();
         if (!location.hash.startsWith('#/library')) location.hash = '#/library'; else notify();
     }

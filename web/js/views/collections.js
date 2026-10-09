@@ -26,7 +26,7 @@ export function renderCollections(root, { go }) {
     clear(refs.content, h('div', { class: 'shelves' }, state.collections.map((c) => {
         const members = items.filter((i) => i.collections.includes(c.id));
         const covers = members.filter((i) => i.cover).slice(0, 3);
-        return h('article', { class: 'shelf', style: { '--cc': c.color || 'var(--accent)' }, onclick: () => { Object.assign(state.filter, { collection: c.id, type: 'all', tag: '', fav: false }); go('library'); } },
+        return h('article', { class: 'shelf', style: { '--cc': c.color || 'var(--accent)' }, onclick: () => { Object.assign(state.filter, { collection: c.id, type: 'all', tagsIn: [], tagsOut: [], quick: [], fav: false }); go('library'); } },
             h('div', { class: 'shelf-covers' }, covers.length ? covers.map((i) => coverImg(i)) : h('div', { class: 'shelf-ph' }, icon(c.icon, { size: 34, stroke: 1.3 }))),
             h('div', { class: 'shelf-body' },
                 h('div', { class: 'shelf-ic' }, icon(c.icon, { size: 16 })),

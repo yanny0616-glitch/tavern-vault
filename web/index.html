@@ -15,8 +15,9 @@
 <script>
   // 首屏前先确定风格与明暗，避免闪烁
   (function () {
-    var d = document.documentElement, mode = 'auto', skin = '';
-    try { mode = (JSON.parse(localStorage.getItem('tv_prefs') || '{}').mode) || 'auto'; skin = localStorage.getItem('tv_skin') || ''; } catch (e) {}
+    var d = document.documentElement, mode = 'auto', skin = '', p = {};
+    try { p = JSON.parse(localStorage.getItem('tv_prefs') || '{}') || {}; mode = p.mode || 'auto'; skin = localStorage.getItem('tv_skin') || ''; } catch (e) {}
+    d.dataset.ui = p.uiSize || (Math.min(screen.width, screen.height) < 600 ? 'sm' : 'md');
     if (mode === 'auto') mode = matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
     d.dataset.mode = mode;
     if (skin) d.dataset.skin = skin;

@@ -2,7 +2,7 @@
 import { h, clear, toast, confirmDialog, choiceDialog, sheet, downloadBlob, switchEl, icon, btn, fmtBytes, fmtDate } from '../ui.js';
 import { api } from '../api.js';
 import { bridge } from '../bridge.js';
-import { state, savePrefs, applyAccent, reload, TYPE_META, SKINS } from '../state.js';
+import { state, savePrefs, applyAccent, reload, TYPE_META, SKINS, uiSize } from '../state.js';
 import { CARD_PARTS, ENTRY_FLAGS } from '../sig.js';
 import { SORTS } from './library.js';
 import { topbar, ensureView } from './common.js';
@@ -112,6 +112,7 @@ function appearance() {
             setRow('仓库名称', '显示在浏览器标签和登录页上', title)),
         panel('这台设备', 'monitor', null,
             setRow('明暗', null, seg(state.prefs.mode || 'auto', [['auto', '跟随系统', 'monitor'], ['light', '浅色', 'sun'], ['dark', '深色', 'moon']], (v) => setPref({ mode: v }))),
+            setRow('界面字号', '列表、按钮、设置等界面文字的大小。没选过时手机默认用「小」', seg(uiSize(state.prefs), [['xs', '更小'], ['sm', '小'], ['md', '标准'], ['lg', '大']], (v) => setPref({ uiSize: v }))),
             setRow('阅读字号', '详情页里简介、开场白、角色卡内容的文字大小', seg(state.prefs.readSize || 'md', [['sm', '小'], ['md', '标准'], ['lg', '大'], ['xl', '特大']], (v) => setPref({ readSize: v }))),
             setRow('减少动画', '关闭弹出、切换时的过渡动画，旧手机上更跟手', switchEl(!!state.prefs.reduceMotion, (v) => setPref({ reduceMotion: v })))),
     ];

@@ -9,6 +9,7 @@ import { openImporter } from './importer.js';
 import { importItemsToTavern } from './tavern.js';
 import { startOrganize, aiReady } from './ai.js';
 import { findDuplicates, openDuplicates } from './dupes.js';
+import { openDiff } from './diff.js';
 
 export const SORTS = {
     updated: ['最近更新', (a, b) => b.updatedAt.localeCompare(a.updatedAt)],
@@ -36,6 +37,14 @@ export function parseQuery(q) {
 export const deep = { text: '', items: null, hits: null, pending: '' };
 const deepReady = (text) => deep.hits && deep.text === text && deep.items === state.items;
 
+// 快捷筛选
+const versionCount = (it) => it.files.filter((x) => x.primary || x.sig).length;
+export const QUICK = {
+    untagged: ['未打标签', (it) => !it.tags.length],
+    unsorted: ['未整理', (it) => !it.tags.length && !it.notes && !it.rating && !it.favorite && !it.collections.length],
+    multi: ['多个版本', (it) => versionCount(it) > 1],
+};
+
 export function filtered() {
     const f = state.filter;
     const pq = parseQuery(f.q);
@@ -43,7 +52,9 @@ export function filtered() {
     return live().filter((it) => {
         if (f.type !== 'all' && it.type !== f.type) return false;
         if (f.fav && !it.favorite) return false;
-        if (f.tag && !it.tags.includes(f.tag)) return false;
+        if (f.tagsIn.length && !f.tagsIn.every((t) => it.tags.includes(t))) return false;
+        if (f.tagsOut.length && f.tagsOut.some((t) => it.tags.includes(t))) return false;
+        if (f.quick.length && !f.quick.every((k) => QUICK[k]?.[1](it))) return false;
         if (f.collection && !it.collections.includes(f.collection)) return false;
         if (f.ai && (f.ai === 'no') === Boolean(it.ai?.at)) return false;
         const tags = it.tags.map((x) => x.toLowerCase());
@@ -83,7 +94,8 @@ function withTimeGroups(list, make, cls) {
     return out;
 }
 
-const activeFilterCount = () => [state.filter.tag, state.filter.collection, state.filter.fav, state.filter.ai].filter(Boolean).length;
+const activeFilterCount = () => state.filter.tagsIn.length + state.filter.tagsOut.length + state.filter.quick.length + [state.filter.collection, state.filter.fav, state.filter.ai].filter(Boolean).length;
+const CLEAR_FILTERS = () => ({ tagsIn: [], tagsOut: [], quick: [], collection: '', fav: false, ai: '' });
 
 export function renderLibrary(root) {
     const refs = ensureView(root, 'library', () => {
@@ -104,7 +116,9 @@ export function renderLibrary(root) {
         const health = h('div', { class: 'lib-notice warn', hidden: true });
         const selbar = h('div', { class: 'selbar', hidden: true });
         root.append(head, h('div', { class: 'page' }, health, notice, content), selbar);
-        return { seg, content, selbar, search, actions, sub, activeRow, notice, health };
+        const r = { seg, content, selbar, search, actions, sub, activeRow, notice, health };
+        bindSelectGestures(r, root);
+        return r;
     });
 
     const items = live();
@@ -123,6 +137,8 @@ export function renderLibrary(root) {
     const counts = {};
     for (const it of items) counts[it.type] = (counts[it.type] || 0) + 1;
     const list = filtered();
+    refs.list = list;
+    refs.content.classList.toggle('is-selecting', state.selecting);
     const fc = activeFilterCount();
 
     refs.sub.textContent = `共 ${items.length} 件藏品${list.length !== items.length ? ` · 显示 ${list.length}` : ''}`;
@@ -143,10 +159,12 @@ export function renderLibrary(root) {
     // 已生效的筛选
     const pills = [];
     if (state.filter.fav) pills.push(['收藏', () => setFilter(root, { fav: false })]);
-    if (state.filter.tag) pills.push([`标签：${state.filter.tag}`, () => setFilter(root, { tag: '' })]);
+    for (const k of state.filter.quick) pills.push([QUICK[k]?.[0] || k, () => setFilter(root, { quick: state.filter.quick.filter((x) => x !== k) })]);
+    for (const t of state.filter.tagsIn) pills.push([`#${t}`, () => setFilter(root, { tagsIn: state.filter.tagsIn.filter((x) => x !== t) })]);
+    for (const t of state.filter.tagsOut) pills.push([`不含 #${t}`, () => setFilter(root, { tagsOut: state.filter.tagsOut.filter((x) => x !== t) }), 'out']);
     if (state.filter.ai) pills.push([state.filter.ai === 'no' ? 'AI 未整理' : 'AI 已整理', () => setFilter(root, { ai: '' })]);
     if (state.filter.collection) pills.push([`合集：${collectionName(state.filter.collection)}`, () => setFilter(root, { collection: '' })]);
-    clear(refs.activeRow, pills.map(([label, off]) => h('button', { class: 'pill', onclick: off }, h('span', {}, label), icon('x', { size: 12 }))));
+    clear(refs.activeRow, pills.map(([label, off, cls]) => h('button', { class: `pill ${cls || ''}`, onclick: off }, h('span', {}, label), icon('x', { size: 12 }))));
     refs.activeRow.hidden = !pills.length;
 
     renderHealth(refs.health);
@@ -155,10 +173,20 @@ export function renderLibrary(root) {
     if (!items.length) {
         clear(refs.content, emptyState('archive', '仓库还是空的', '上传角色卡、世界书、预设、正则、脚本、主题等文件，类型会自动识别。', btn('添加第一件藏品', { icon: 'plus', cls: 'primary', onclick: () => openImporter() })));
     } else if (!list.length) {
-        clear(refs.content, emptyState('search', '没有符合条件的内容', '换个关键词，或清除筛选条件', btn('清除筛选', { icon: 'x', onclick: () => { refs.search.value = ''; setFilter(root, { q: '', type: 'all', tag: '', collection: '', fav: false, ai: '' }); } })));
+        clear(refs.content, emptyState('search', '没有符合条件的内容', '换个关键词，或清除筛选条件', btn('清除筛选', { icon: 'x', onclick: () => { refs.search.value = ''; setFilter(root, { q: '', type: 'all', ...CLEAR_FILTERS() }); } })));
     } else {
         const click = (it) => (e) => {
             if (state.selecting) {
+                // 电脑上按住 Shift：从上次点的那项到这一项全部选上
+                const from = refs.lastPick ? list.findIndex((x) => x.id === refs.lastPick) : -1;
+                if (e?.shiftKey && from >= 0) {
+                    const to = list.findIndex((x) => x.id === it.id);
+                    for (const x of list.slice(Math.min(from, to), Math.max(from, to) + 1)) state.selection.add(x.id);
+                    refs.lastPick = it.id;
+                    renderLibrary(root);
+                    return;
+                }
+                refs.lastPick = it.id;
                 state.selection.has(it.id) ? state.selection.delete(it.id) : state.selection.add(it.id);
                 // 多选时只改这一张的选中样式和底部操作栏，不重画整页
                 const el = e?.currentTarget;
@@ -167,7 +195,7 @@ export function renderLibrary(root) {
                 el.classList.toggle('selected', on);
                 el.querySelector('.row-check')?.classList.toggle('on', on);
                 renderSelbar(refs.selbar, list, root);
-            } else openDetail(it.id);
+            } else openDetail(it.id, { seq: list.map((x) => x.id), onLeave: (last) => reveal(refs, root, list, last) });
         };
         const LIMIT = 300;
         const shown = list.slice(0, refs.limit || LIMIT);
@@ -219,6 +247,19 @@ function renderDupNotice(el, busy) {
         btn('', { icon: 'x', cls: 'sm ghost', title: '不再提示这些', onclick: () => { state.prefs.dupSeen = sig; savePrefs(); el.hidden = true; } }));
 }
 
+// 从详情页切了好几项再关掉：把列表滚到最后看的那一项
+function reveal(refs, root, list, id) {
+    const find = () => refs.content.querySelector(`[data-id="${CSS.escape(id)}"]`);
+    let el = find();
+    const idx = list.findIndex((x) => x.id === id);
+    if (!el && idx >= 0 && idx >= (refs.limit || 300)) { refs.limit = Math.ceil((idx + 1) / 300) * 300; renderLibrary(root); el = find(); }
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    if (r.top < 80 || r.bottom > window.innerHeight - 90) el.scrollIntoView({ block: 'center' });
+    el.classList.add('just-viewed');
+    setTimeout(() => el.classList.remove('just-viewed'), 1200);
+}
+
 function setFilter(root, patch) {
     Object.assign(state.filter, patch);
     if (root._refs) root._refs.limit = 0;
@@ -227,6 +268,35 @@ function setFilter(root, patch) {
 
 function openFilters(root) {
     const s = sheet({ title: '筛选与排序', body: h('div') });
+    let tagQ = '';
+    // 标签：点一下「要有」，再点「不要」，再点取消；可以同时选多个
+    const tagSection = (tags) => {
+        const list = h('div', { class: 'opts tag-opts' });
+        const drawTags = () => {
+            const q = tagQ.trim().toLowerCase();
+            const f = state.filter;
+            const shown = tags.filter(([t]) => !q || t.toLowerCase().includes(q) || f.tagsIn.includes(t) || f.tagsOut.includes(t));
+            const limit = q ? 300 : 80;
+            clear(list, shown.slice(0, limit).map(([t, n]) => {
+                const st = f.tagsIn.includes(t) ? 'in' : f.tagsOut.includes(t) ? 'out' : '';
+                return h('button', { class: `opt tag-opt ${st ? `active ${st}` : ''}`, title: st === 'in' ? '再点一下改成「不要这个标签」' : st === 'out' ? '再点一下取消' : '点一下只看带这个标签的', onclick: () => {
+                    f.tagsIn = f.tagsIn.filter((x) => x !== t);
+                    f.tagsOut = f.tagsOut.filter((x) => x !== t);
+                    if (!st) f.tagsIn.push(t); else if (st === 'in') f.tagsOut.push(t);
+                    drawTags();
+                    renderLibrary(root);
+                } }, st === 'in' ? icon('check', { size: 13, stroke: 3 }) : st === 'out' ? icon('minus', { size: 13, stroke: 3 }) : null, h('span', {}, t), h('span', { class: 'opt-n' }, n));
+            }), shown.length > limit ? h('span', { class: 'muted small' }, `还有 ${shown.length - limit} 个，输入文字筛选`) : null,
+            !shown.length ? h('span', { class: 'muted small' }, '没有匹配的标签') : null);
+        };
+        drawTags();
+        return h('div', { class: 'form-group' },
+            h('div', { class: 'row-between' }, h('div', { class: 'form-label' }, `标签 · ${tags.length}`),
+                state.filter.tagsIn.length || state.filter.tagsOut.length ? btn('清除', { cls: 'sm ghost', onclick: () => { state.filter.tagsIn = []; state.filter.tagsOut = []; drawTags(); renderLibrary(root); } }) : null),
+            tags.length > 12 ? h('label', { class: 'search inline' }, icon('search', { size: 15 }), h('input', { class: 'input search-input', placeholder: '找标签', value: tagQ, oninput: (e) => { tagQ = e.target.value; drawTags(); } })) : null,
+            list,
+            h('div', { class: 'muted small' }, '点一次：只看带这个标签的；再点一次：排除这个标签；再点取消。选多个时要同时满足。'));
+    };
     const draw = () => {
         const opt = (active, label, onclick, ic) => h('button', { class: `opt ${active ? 'active' : ''}`, onclick: () => { onclick(); draw(); renderLibrary(root); } }, ic ? icon(ic, { size: 14 }) : null, label);
         const tags = allTags();
@@ -249,16 +319,81 @@ function openFilters(root) {
             state.collections.length ? h('div', { class: 'form-group' }, h('div', { class: 'form-label' }, '合集'),
                 h('div', { class: 'opts' }, opt(!state.filter.collection, '全部', () => { state.filter.collection = ''; }),
                     state.collections.map((c) => opt(state.filter.collection === c.id, c.name, () => { state.filter.collection = c.id; }, c.icon)))) : null,
-            tags.length ? h('div', { class: 'form-group' }, h('div', { class: 'form-label' }, '标签'),
-                h('div', { class: 'opts' }, opt(!state.filter.tag, '全部', () => { state.filter.tag = ''; }),
-                    tags.slice(0, 80).map(([t, n]) => opt(state.filter.tag === t, `${t}  ${n}`, () => { state.filter.tag = t; })))) : null,
+            h('div', { class: 'form-group' }, h('div', { class: 'form-label' }, '快捷筛选'),
+                h('div', { class: 'opts' }, Object.entries(QUICK).map(([k, [label]]) => opt(state.filter.quick.includes(k), label, () => {
+                    const q = state.filter.quick;
+                    state.filter.quick = q.includes(k) ? q.filter((x) => x !== k) : [...q, k];
+                })))),
+            tags.length ? tagSection(tags) : null,
             h('div', { class: 'muted small' }, '搜索会查到开场白、对话示例、世界书条目、预设提示词等全部文字。多个词用空格分开表示都要包含；「-词」表示不能出现；「#标签」只看带这个标签的，「-#标签」排除这个标签。'));
     };
     draw();
     s.foot = h('div', { class: 'sheet-foot' },
-        btn('重置', { onclick: () => { Object.assign(state.filter, { tag: '', collection: '', fav: false, ai: '' }); state.prefs.sort = 'updated'; state.prefs.groupTime = false; savePrefs(); draw(); renderLibrary(root); } }),
+        btn('重置', { onclick: () => { Object.assign(state.filter, CLEAR_FILTERS()); state.prefs.sort = 'updated'; state.prefs.groupTime = false; savePrefs(); draw(); renderLibrary(root); } }),
         btn('完成', { cls: 'primary', onclick: () => s.close() }));
     s.el.append(s.foot);
+}
+
+/**
+ * 手机：长按一张卡进入多选并选中它；多选时手指横向滑过的卡依次选上（起点是选中的就依次取消），竖着滑照常滚动
+ */
+function bindSelectGestures(refs, root) {
+    const box = refs.content;
+    const itemEl = (t) => t?.closest?.('.card[data-id], .row-item[data-id]');
+    let timer = 0;
+    let start = null;
+    let drag = null;
+    let suppress = false;
+    const mark = (el) => {
+        const id = el.dataset.id;
+        if (!id || drag.seen.has(id)) return;
+        drag.seen.add(id);
+        if (drag.on) state.selection.add(id); else state.selection.delete(id);
+        el.classList.toggle('selected', drag.on);
+        el.querySelector('.row-check')?.classList.toggle('on', drag.on);
+        renderSelbar(refs.selbar, refs.list || [], root);
+    };
+    const stop = () => { clearTimeout(timer); timer = 0; start = null; drag = null; };
+    box.addEventListener('pointerdown', (e) => {
+        if (e.button !== 0 || e.pointerType === 'mouse') return;
+        const el = itemEl(e.target);
+        if (!el) return;
+        start = { x: e.clientX, y: e.clientY, el, pid: e.pointerId };
+        if (!state.selecting) {
+            timer = setTimeout(() => {
+                timer = 0;
+                suppress = true;
+                state.selecting = true;
+                state.selection.clear();
+                state.selection.add(el.dataset.id);
+                refs.lastPick = el.dataset.id;
+                navigator.vibrate?.(12);
+                renderLibrary(root);
+            }, 450);
+        }
+    });
+    box.addEventListener('pointermove', (e) => {
+        if (!start || e.pointerId !== start.pid) return;
+        const dx = e.clientX - start.x;
+        const dy = e.clientY - start.y;
+        if (timer && Math.hypot(dx, dy) > 8) { clearTimeout(timer); timer = 0; }
+        if (!state.selecting) return;
+        if (!drag && Math.abs(dx) > 14 && Math.abs(dx) > Math.abs(dy) * 1.2) {
+            drag = { on: !state.selection.has(start.el.dataset.id), seen: new Set() };
+            suppress = true;
+            mark(start.el);
+        }
+        if (drag) {
+            const el = itemEl(document.elementFromPoint(e.clientX, e.clientY));
+            if (el && box.contains(el)) mark(el);
+        }
+    });
+    box.addEventListener('pointerup', stop);
+    box.addEventListener('pointercancel', stop);
+    // 长按或滑动选择之后松手，不要再当成一次点击
+    box.addEventListener('click', (e) => { if (suppress) { suppress = false; e.stopPropagation(); e.preventDefault(); } }, true);
+    box.addEventListener('pointerdown', () => { suppress = false; }, true);
+    box.addEventListener('contextmenu', (e) => { if (itemEl(e.target) && (timer || state.selecting)) e.preventDefault(); });
 }
 
 function renderSelbar(bar, list, root) {
@@ -272,23 +407,23 @@ function renderSelbar(bar, list, root) {
         toast(msg || '已完成', 'ok');
     };
     const act = (ic, label, onclick, cls = '') => h('button', { class: `sel-act ${cls}`, disabled: !n, onclick }, icon(ic, { size: 18 }), h('span', {}, label));
+    const items = ids.map((id) => state.byId.get(id)).filter(Boolean);
+    const allFav = n > 0 && items.every((it) => it.favorite);
     clear(bar,
         h('div', { class: 'sel-top' },
             h('span', { class: 'sel-count' }, `已选 ${n} 项`),
+            matchMedia('(pointer: coarse)').matches ? h('span', { class: 'sel-hint' }, '横向滑过可以连选') : h('span', { class: 'sel-hint' }, '按住 Shift 点击可以选一段'),
             h('button', { class: 'btn sm ghost', onclick: () => { if (n === list.length) state.selection.clear(); else list.forEach((i) => state.selection.add(i.id)); renderLibrary(root); } }, n === list.length ? '取消全选' : '全选')),
         h('div', { class: 'sel-acts' },
-            act('tag', '标签', async () => {
-                const v = await promptDialog('多个标签用逗号分隔', { title: '添加标签' });
-                if (v) await run('addTags', v.split(/[,，]/).map((s) => s.trim()).filter(Boolean), '已添加标签');
-            }),
-            act('layers', '合集', () => pickCollection(async (cid) => run('addCollection', cid, '已加入合集'))),
-            act('star', '收藏', () => run('favorite', true, '已收藏')),
+            act('tag', '标签', () => batchPick(items, 'tags')),
+            act('layers', '合集', () => batchPick(items, 'collections')),
+            act('star', allFav ? '取消收藏' : '收藏', () => run('favorite', !allFav, allFav ? '已取消收藏' : '已收藏')),
             aiReady() ? act('sparkles', 'AI 整理', () => startOrganize(ids)) : null,
-            act('download', '导出', async () => downloadBlob(await api.req('POST', '/api/export', { ids }, { blob: true }), `TavernVault-${n}项.zip`)),
-            bridge.host ? act('beer', '入酒馆', () => importItemsToTavern(ids.map((id) => state.byId.get(id)))) : null,
+            bridge.host ? act('beer', '入酒馆', () => importItemsToTavern(items)) : null,
             act('trash', '删除', async () => {
                 if (await confirmDialog(`将 ${n} 项移入回收站？`, { danger: true, ok: '删除' })) { await run('delete', null, '已移入回收站'); state.selection.clear(); }
-            }, 'danger')));
+            }, 'danger'),
+            act('more', '更多', () => batchMore(items, run))));
 }
 
 export function pickCollection(onPick) {
@@ -307,3 +442,116 @@ export function pickCollection(onPick) {
             } }, h('div', { class: 'row-thumb' }, icon('plus', { size: 20 })), h('div', { class: 'row-main' }, h('div', { class: 'row-title' }, '新建合集')))),
     });
 }
+
+// 多选的「更多」：对比两项、导出、改类型
+function batchMore(items, run) {
+    const n = items.length;
+    const item = (ic, label, fn, disabled = false, note = '') => h('button', { class: 'menu-item', disabled, onclick: async () => { m.close(); await fn(); } },
+        icon(ic, { size: 17 }), h('span', { class: 'grow' }, label), note ? h('span', { class: 'muted small' }, note) : null);
+    const pf = (it) => it.files.find((f) => f.primary) || it.files[0];
+    const canDiff = n === 2 && items.every((it) => pf(it));
+    const m = sheet({
+        title: `已选 ${n} 项`,
+        body: h('div', { class: 'menu' },
+            item('layers', '对比这两项', () => {
+                const [a, b] = [...items].sort((x, y) => String(x.createdAt).localeCompare(String(y.createdAt)));
+                openDiff({ sha: pf(a).sha, name: pf(a).name, label: a.name }, { sha: pf(b).sha, name: pf(b).name, label: b.name }, { title: '对比两个条目' });
+            }, !canDiff, n === 2 ? '' : '选中 2 项时可用'),
+            item('download', '导出为 ZIP', async () => {
+                toast(`正在打包 ${n} 项…`);
+                try { downloadBlob(await api.req('POST', '/api/export', { ids: items.map((i) => i.id) }, { blob: true }), `TavernVault-${n}项.zip`); } catch (e) { toast(e.message, 'err'); }
+            }),
+            item('blocks', '改类型', () => {
+                const s = sheet({
+                    title: '改成哪种类型',
+                    body: h('div', { class: 'menu' }, Object.entries(TYPE_META).map(([k, v]) => h('button', { class: 'menu-item', onclick: async () => {
+                        s.close();
+                        if (await confirmDialog(`把 ${n} 项都改成「${v.label}」？只改藏馆里的分类，不改文件。`, { ok: '修改' })) await run('setType', k, '已修改类型');
+                    } }, icon(v.icon, { size: 17 }), h('span', {}, v.label)))),
+                });
+            })),
+    });
+}
+
+/**
+ * 批量改标签 / 合集：每项显示「全部有 / 部分有 / 都没有」，点一下切换，确定时一次算出要加的和要去掉的
+ * kind: 'tags' | 'collections'
+ */
+function batchPick(items, kind) {
+    const n = items.length;
+    const isTag = kind === 'tags';
+    const label = (k) => (isTag ? k : collectionName(k));
+    const has = (k) => items.filter((it) => it[kind].includes(k)).length;
+    const keys = isTag
+        ? [...new Set([...items.flatMap((it) => it.tags), ...allTags().slice(0, 40).map(([t]) => t)])]
+        : state.collections.map((c) => c.id);
+    const orig = new Map(keys.map((k) => [k, has(k) === n ? 'all' : has(k) ? 'some' : 'none']));
+    const cur = new Map(orig);
+    let q = '';
+    const list = h('div', { class: 'opts tri-opts' });
+    const input = h('input', { class: 'input', placeholder: isTag ? '找标签，或输入新标签后回车' : '找合集', oninput: (e) => { q = e.target.value; draw(); },
+        onkeydown: (e) => {
+            if (e.key !== 'Enter' || !isTag) return;
+            const v = input.value.trim().replace(/^#/, '');
+            if (!v) return;
+            if (!cur.has(v)) { keys.unshift(v); orig.set(v, 'none'); }
+            cur.set(v, 'all');
+            input.value = ''; q = ''; draw();
+        } });
+    const next = (k) => {
+        const c = cur.get(k);
+        // 部分有的：→ 全部有 → 都没有 → 回到部分有；其它：全部有 ↔ 都没有
+        if (orig.get(k) === 'some') return c === 'some' ? 'all' : c === 'all' ? 'none' : 'some';
+        return c === 'all' ? 'none' : 'all';
+    };
+    const draw = () => {
+        const ql = q.trim().toLowerCase();
+        const shown = keys.filter((k) => !ql || label(k).toLowerCase().includes(ql) || cur.get(k) !== orig.get(k));
+        clear(list, shown.map((k) => {
+            const c = cur.get(k);
+            const changed = c !== orig.get(k);
+            return h('button', { class: `opt tri ${c} ${changed ? 'changed' : ''}`, onclick: () => { cur.set(k, next(k)); draw(); } },
+                c === 'all' ? icon('check', { size: 13, stroke: 3 }) : c === 'some' ? icon('minus', { size: 13, stroke: 3 }) : null,
+                h('span', {}, label(k)), c === 'some' ? h('span', { class: 'opt-n' }, `${has(k)}/${n}`) : null);
+        }), !shown.length ? h('span', { class: 'muted small' }, isTag ? '按回车添加为新标签' : '没有匹配的合集') : null);
+    };
+    draw();
+    const s = sheet({
+        title: isTag ? `${n} 项的标签` : `${n} 项的合集`,
+        body: h('div', { class: 'stack-s' },
+            h('div', { class: 'muted small' }, '打勾 = 全部都有，横线 = 只有一部分有。点一下切换，改过的会高亮，点「确定」后才生效。'),
+            input, list,
+            !isTag ? btn('新建合集', { icon: 'plus', cls: 'sm', onclick: async () => {
+                const name = await promptDialog('', { title: '新建合集', placeholder: '合集名称' });
+                if (!name) return;
+                const c = await api.post('/api/collections', { name });
+                await reload();
+                keys.push(c.id); orig.set(c.id, 'none'); cur.set(c.id, 'all'); draw();
+            } }) : null),
+        foot: [
+            btn('取消', { onclick: () => s.close() }),
+            btn('确定', { cls: 'primary', icon: 'check', onclick: async () => {
+                // 输入框里还有没按回车的新标签，也算上
+                const typed = isTag ? input.value.trim().replace(/^#/, '') : '';
+                if (typed && !keys.includes(typed)) { keys.unshift(typed); orig.set(typed, 'none'); cur.set(typed, 'all'); }
+                const add = keys.filter((k) => cur.get(k) === 'all' && orig.get(k) !== 'all');
+                const remove = keys.filter((k) => cur.get(k) === 'none' && orig.get(k) !== 'none');
+                s.close();
+                if (!add.length && !remove.length) return;
+                const ids = items.map((it) => it.id);
+                try {
+                    if (isTag) {
+                        if (add.length) await api.post('/api/batch', { ids, action: 'addTags', value: add });
+                        if (remove.length) await api.post('/api/batch', { ids, action: 'removeTags', value: remove });
+                    } else {
+                        for (const c of add) await api.post('/api/batch', { ids, action: 'addCollection', value: c });
+                        for (const c of remove) await api.post('/api/batch', { ids, action: 'removeCollection', value: c });
+                    }
+                    toast([add.length ? `加上 ${add.map(label).join('、')}` : '', remove.length ? `去掉 ${remove.map(label).join('、')}` : ''].filter(Boolean).join('，'), 'ok');
+                } catch (e) { toast(e.message, 'err'); }
+            } }),
+        ],
+    });
+    if (isTag && matchMedia('(pointer: fine)').matches) setTimeout(() => input.focus(), 150);
+}
+

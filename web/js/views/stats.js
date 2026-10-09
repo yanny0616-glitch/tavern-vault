@@ -40,7 +40,7 @@ export function renderStats(root, { go }) {
                 h('span', { class: 'bar' }, h('i', { style: { width: `${(n / max) * 100}%` } })),
                 h('span', { class: 'bar-n' }, n)))) : h('div', { class: 'muted' }, '暂无数据')),
         tags.length ? h('section', { class: 'panel' }, h('div', { class: 'panel-head' }, icon('tag', { size: 16 }), h('h3', {}, '标签')),
-            h('div', { class: 'tag-cloud' }, tags.map(([t, n]) => h('button', { class: 'tag', style: { fontSize: `${12 + Math.round((n / maxTag) * 5)}px` }, onclick: () => { Object.assign(state.filter, { tag: t, type: 'all' }); go('library'); } }, t, h('small', {}, n))))) : null,
+            h('div', { class: 'tag-cloud' }, tags.map(([t, n]) => h('button', { class: 'tag', style: { fontSize: `calc(${12 + Math.round((n / maxTag) * 5)}px * var(--fs))` }, onclick: () => { Object.assign(state.filter, { tagsIn: [t], tagsOut: [], quick: [], type: 'all' }); go('library'); } }, t, h('small', {}, n))))) : null,
         recent.length ? h('section', { class: 'panel' }, h('div', { class: 'panel-head' }, icon('clock', { size: 16 }), h('h3', {}, '最近收录')),
             h('div', { class: 'rows' }, recent.map((it) => itemRow(it, { onClick: () => openDetail(it.id), right: h('span', { class: 'muted small nowrap' }, timeAgo(it.createdAt)) })))) : null);
 }
