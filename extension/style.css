@@ -13,6 +13,17 @@
 #tv-panel.open { display: flex; }
 /* 全屏：藏馆自己处理安全区时（新版藏馆会调用 insets），面板不留边距，也不显示标题栏 */
 #tv-panel.tv-edge { padding: 0; }
+/*
+ * TauriTavern 会把铺满屏幕的浮层自动缩进安全区以内（带 !important），
+ * 结果上下露出酒馆背景、藏馆里又再留一遍位置。全屏模式下改回真正铺满，
+ * 只在键盘弹出时把底部抬到键盘上面。用 id 选择器压过它的属性选择器。
+ */
+body #tv-panel.tv-edge.open {
+    top: 0 !important;
+    left: 0 !important;
+    right: 0 !important;
+    bottom: max(calc(var(--tt-viewport-bottom-inset, var(--tt-inset-bottom, 0px)) - var(--tt-inset-bottom, 0px)), 0px) !important;
+}
 #tv-panel.tv-edge .tv-bar { display: none; }
 #tv-panel .tv-bar {
     display: flex;
