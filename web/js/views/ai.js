@@ -5,6 +5,7 @@ import { state, typeMeta, reload } from '../state.js';
 import { typeBadge } from './common.js';
 import { openDetail } from './detail.js';
 import { coverImg } from '../thumbs.js';
+import { openAiChat } from './aichat.js';
 
 const AI_KINDS = new Set(['text', 'textarea', 'select', 'checkbox', 'number', 'tags']);
 const SKIP_FIELDS = new Set(['source', 'author', 'version', 'rating', 'downloadedAt', 'status']);
@@ -48,6 +49,9 @@ export function renderChip() {
 let cfg = null;
 let rules = null;
 let rulesOpen = false;
+let tplOpen = false;
+let tplSel = ''; // 模板区正在看的模板
+let tplDraft = null; // 正在编辑、还没保存的模板
 export async function loadAiConfig() {
     cfg = await api.get('/api/ai/config');
     rules = structuredClone(cfg.organize);
@@ -79,8 +83,11 @@ export function aiSettings() {
                             draw();
                         } })));
             })) : h('div', { class: 'muted small' }, '还没有 AI 服务。支持 OpenAI 兼容接口（各类中转、DeepSeek、本地模型等）和 Claude 官方接口。'),
-            btn('添加 AI 服务', { icon: 'plus', cls: 'sm', onclick: () => editProfile(null, draw) }),
-            rulesForm(draw));
+            h('div', { class: 'row-actions' },
+                btn('添加 AI 服务', { icon: 'plus', cls: 'sm', onclick: () => editProfile(null, draw) }),
+                cfg.ready ? btn('打开 AI 对话', { icon: 'message', cls: 'sm', onclick: () => openAiChat() }) : null),
+            rulesForm(draw),
+            templatesForm(draw));
     };
     if (cfg) draw(); else box.append(h('div', { class: 'loading' }, h('span', { class: 'spinner' })));
     if (!cfg) loadAiConfig().then(draw).catch((e) => clear(box, h('div', { class: 'note warn' }, icon('alert', { size: 15 }), h('span', {}, `读取 AI 配置失败：${e.message}`))));
@@ -107,8 +114,25 @@ function editProfile(p, done) {
     const base = h('input', { class: 'input', value: np.baseUrl, placeholder: formats[np.format].base, autocapitalize: 'off', spellcheck: false });
     const key = h('input', { class: 'input', type: 'password', autocomplete: 'off', placeholder: p?.hasKey ? `已保存（${p.keyHint}），留空不修改` : '密钥' });
     const noKey = h('input', { type: 'checkbox', checked: Boolean(np.noKey) });
-    const modelList = h('datalist', { id: `models-${np.id}` });
-    const model = h('input', { class: 'input', value: np.model, placeholder: '模型名', list: modelList.id, autocapitalize: 'off', spellcheck: false });
+    const model = h('input', { class: 'input', value: np.model, placeholder: '模型名，可以直接填', autocapitalize: 'off', spellcheck: false });
+    // 拉取过的列表记在内存里，再点不用重新请求；改了地址或密钥就重新拉
+    let pulled = modelCache.get(np.id) || null;
+    const pullBtn = btn(pulled ? '选择模型' : '拉取列表', { cls: 'sm', onclick: async () => {
+        const v = collect();
+        const sig = `${v.format}|${v.baseUrl}|${v.apiKey || ''}`;
+        if (!pulled || pulled.sig !== sig) {
+            pullBtn.disabled = true;
+            try {
+                const { models } = await api.post('/api/ai/models', { profile: v });
+                pulled = { sig, models };
+                modelCache.set(np.id, pulled);
+                clear(pullBtn, '选择模型');
+            } catch (err) { toast(err.message, 'err'); pullBtn.disabled = false; return; }
+            pullBtn.disabled = false;
+        }
+        if (!pulled.models.length) { toast('这个服务没有返回模型列表，可以直接填写模型名'); return; }
+        pickModel(pulled.models, model.value.trim(), (m) => { model.value = m; result.textContent = `已选择 ${m}`; });
+    } });
     const temp = h('input', { class: 'input', type: 'number', step: '0.1', min: '0', max: '2', value: np.temperature ?? '', placeholder: '不发送' });
     const maxTok = h('input', { class: 'input', type: 'number', step: '256', min: '256', max: '32000', value: np.maxTokens || 2048 });
     const result = h('div', { class: 'muted small' });
@@ -124,17 +148,7 @@ function editProfile(p, done) {
             h('div', { class: 'field' }, h('label', {}, '名称'), name),
             h('div', { class: 'field wide' }, h('label', {}, 'API 地址'), base, h('div', { class: 'muted small' }, '填到 /v1 即可，也可以直接粘贴完整的 /chat/completions 地址。')),
             h('div', { class: 'field wide' }, h('label', {}, '密钥'), key, h('label', { class: 'check-line' }, noKey, h('span', {}, '这个服务不需要密钥（本地模型等）'))),
-            h('div', { class: 'field wide' }, h('label', {}, '模型'), h('div', { class: 'input-group' }, model, btn('拉取列表', { cls: 'sm', onclick: async (e) => {
-                const b = e.currentTarget;
-                b.disabled = true;
-                try {
-                    const { models } = await api.post('/api/ai/models', { profile: collect() });
-                    clear(modelList, models.map((m) => h('option', { value: m })));
-                    result.textContent = `共 ${models.length} 个模型，点模型输入框可以选择。`;
-                    if (!model.value && models[0]) model.value = models[0];
-                } catch (err) { toast(err.message, 'err'); }
-                b.disabled = false;
-            } })), modelList),
+            h('div', { class: 'field wide' }, h('label', {}, '模型'), h('div', { class: 'input-group' }, model, pullBtn)),
             h('div', { class: 'field' }, h('label', {}, '温度（留空 = 不发送）'), temp),
             h('div', { class: 'field' }, h('label', {}, '最大输出 tokens'), maxTok),
             h('div', { class: 'field wide' }, result)),
@@ -168,7 +182,6 @@ function rulesForm(redraw) {
         redraw();
     } });
     const mark = () => { saveBtn.disabled = false; };
-    const num = (key, min, max) => h('input', { class: 'input', type: 'number', min, max, value: r[key], oninput: (e) => { r[key] = Number(e.target.value); mark(); } });
     const fieldOpts = state.fields.filter((f) => !SKIP_FIELDS.has(f.id) && AI_KINDS.has(f.kind) && !f.hidden);
     const fieldBox = h('div', { class: 'opts' });
     const drawFields = () => clear(fieldBox, fieldOpts.map((f) => h('button', { class: `opt ${r.fields.includes(f.id) ? 'active' : ''}`, onclick: () => {
@@ -188,15 +201,140 @@ function rulesForm(redraw) {
         h('summary', {}, icon('chevronRight', { size: 14, cls: 'fold-chev' }), icon('sliders', { size: 15 }), h('span', { class: 'fold-title' }, '整理规则')),
         h('div', { class: 'fold-body' }, h('div', { class: 'fields' },
             h('div', { class: 'field wide' }, h('label', {}, '读取范围'), scopeBox, scopeHint),
-            h('div', { class: 'field' }, h('label', {}, '标签最多几个'), num('tagLimit', 1, 20)),
-            h('div', { class: 'field' }, h('label', {}, '简介最多几个字'), num('summaryChars', 10, 300)),
-            h('div', { class: 'field wide row-between' }, h('label', {}, '允许新建标签（关闭后只从已有标签里选）'), switchEl(r.allowNewTags, (v) => { r.allowNewTags = v; mark(); })),
             h('div', { class: 'field wide' }, h('label', {}, '让 AI 顺便填写的字段'), fieldOpts.length ? fieldBox : h('div', { class: 'muted small' }, '没有适合 AI 填写的字段，可以在「自定义字段」里添加。')),
-            h('div', { class: 'field wide' }, h('label', {}, '你的整理习惯（可选）'), h('textarea', { class: 'textarea', value: r.extra, placeholder: '例如：标签用简体中文；NSFW 内容加「R18」标签；简介不要用感叹号', oninput: (e) => { r.extra = e.target.value; mark(); } })),
+            h('div', { class: 'field wide muted small' }, '标签个数、简介字数、不要做的事这些在下面的「提示词模板」里改。'),
             h('div', { class: 'field' }, h('label', {}, '同时发几个请求'), h('select', { class: 'select', onchange: (e) => { r.concurrency = Number(e.target.value); mark(); } }, [1, 2, 3, 4].map((n) => h('option', { value: n, selected: r.concurrency === n }, `${n} 个`)))),
             h('div', { class: 'field' }, h('label', {}, '每个请求整理几项'), h('select', { class: 'select', onchange: (e) => { r.batch = Number(e.target.value); mark(); } }, [1, 3, 5, 8, 10].map((n) => h('option', { value: n, selected: (r.batch || 1) === n }, n === 1 ? '1 项（逐张请求）' : `最多 ${n} 项（合并请求）`)))),
             h('div', { class: 'field wide muted small' }, '按次计费的接口建议合并请求：规则和标签库只发一遍，请求次数少很多。按 token 计费的接口逐张请求更稳，一项出错不影响其它项。合并时一次最多发约 2.4 万字的内容，超过会自动分到下一个请求。')),
         h('div', { class: 'row-actions' }, saveBtn)));
+}
+
+// ---------------- 模型选择 ----------------
+const modelCache = new Map();
+/** 模型名的厂商前缀：openai/gpt-4o → openai；claude-sonnet-4 → claude；没有可分的归到「其他」 */
+const modelGroup = (m) => (m.includes('/') ? m.split('/')[0] : (m.match(/^[a-z]+/i)?.[0] || '其他').toLowerCase());
+
+function pickModel(models, current, onPick) {
+    const q = h('input', { class: 'input', type: 'search', placeholder: `搜索 ${models.length} 个模型，空格分隔多个词`, autocapitalize: 'off', spellcheck: false, oninput: () => draw() });
+    const list = h('div', { class: 'model-list' });
+    const count = h('span', { class: 'muted small' });
+    const choose = (m) => { s.close(); onPick(m); };
+    const draw = () => {
+        const words = q.value.trim().toLowerCase().split(/\s+/).filter(Boolean);
+        const hit = models.filter((m) => words.every((w) => m.toLowerCase().includes(w)));
+        count.textContent = words.length ? `找到 ${hit.length} / ${models.length} 个` : `共 ${models.length} 个`;
+        const groups = new Map();
+        for (const m of hit) { const g = modelGroup(m); if (!groups.has(g)) groups.set(g, []); groups.get(g).push(m); }
+        const many = groups.size > 1 && hit.length > 12;
+        clear(list, hit.length ? [...groups.entries()].sort((a, b) => b[1].length - a[1].length || a[0].localeCompare(b[0])).map(([g, ms]) => h('div', { class: 'model-group' },
+            many ? h('div', { class: 'model-group-head' }, h('span', {}, g), h('span', { class: 'muted' }, ms.length)) : null,
+            ms.map((m) => h('button', { class: `model-opt ${m === current ? 'on' : ''}`, onclick: () => choose(m) }, h('span', { class: 'model-name' }, m), m === current ? icon('check', { size: 15 }) : null))))
+            : h('div', { class: 'muted small model-empty' }, '没有匹配的模型。', q.value.trim() ? btn(`直接使用「${q.value.trim()}」`, { cls: 'sm', onclick: () => choose(q.value.trim()) }) : null));
+    };
+    draw();
+    const s = sheet({ title: '选择模型', body: h('div', { class: 'stack-s' }, h('div', { class: 'model-search' }, q, count), list), full: true });
+    if (!matchMedia('(pointer: coarse)').matches) q.focus();
+    requestAnimationFrame(() => list.querySelector('.model-opt.on')?.scrollIntoView({ block: 'center' }));
+}
+
+// ---------------- 提示词模板 ----------------
+const TPL_TEXT = [
+    ['role', '角色定位', '告诉 AI 它是谁、在做什么', 4],
+    ['tagRule', '标签要求', '标签写什么、多长、避开什么', 4],
+    ['summaryRule', '简介要求', '简介写什么、什么语气', 3],
+    ['forbidden', '不要做的事', '例如：不补设定、不用空泛的词', 3],
+    ['extra', '补充要求（可选）', '例如：标签用简体中文；NSFW 内容加「R18」标签；简介不要用感叹号', 3],
+];
+
+function templatesForm(redraw) {
+    const def = cfg.defaultTemplate;
+    const list = [def, ...cfg.templates];
+    const active = cfg.organize.template;
+    if (!list.some((t) => t.id === tplSel)) tplSel = active;
+    // 每次绘制都拿一份拷贝来编辑，没保存的修改不会改到 cfg 里
+    const t = { ...(tplDraft?.id === tplSel ? tplDraft : list.find((x) => x.id === tplSel)) };
+    const builtin = t.id === def.id;
+    // 打字时不重绘，所以每次用的时候再判断有没有改动
+    const isDirty = () => Boolean(tplDraft) && tplDraft.id === tplSel;
+    const dirty = isDirty();
+
+    const persist = async (templates, organize) => {
+        await api.put('/api/ai/config', { templates, ...(organize ? { organize } : {}) });
+        await loadAiConfig();
+    };
+    const saveIt = async () => {
+        const v = { ...tplDraft, name: tplDraft.name.trim() || '未命名模板' };
+        await persist(cfg.templates.map((x) => (x.id === v.id ? v : x)));
+        tplDraft = null;
+        toast('模板已保存', 'ok');
+        redraw();
+    };
+    const copyIt = async () => {
+        const name = await promptDialog('', { title: '复制一份来改', value: `${t.name} 副本` });
+        if (name == null) return;
+        const id = Math.random().toString(36).slice(2, 10);
+        const { id: _, ...rest } = t;
+        await persist([...cfg.templates, { ...rest, id, name: name.trim() || `${t.name} 副本` }]);
+        tplSel = id;
+        tplDraft = null;
+        redraw();
+    };
+    const useIt = async () => {
+        const changed = isDirty();
+        if (changed && !(await confirmDialog('这个模板还有没保存的修改，先保存再使用？', { ok: '保存并使用' }))) return;
+        if (changed) await saveIt();
+        await persist(cfg.templates, { template: t.id });
+        toast(`整理时会用「${t.name}」`, 'ok');
+        redraw();
+    };
+    const deleteIt = async () => {
+        if (!(await confirmDialog(`删除模板「${t.name}」？${t.id === active ? '\n它正在使用，删除后改用「默认」。' : ''}`, { danger: true, ok: '删除' }))) return;
+        await persist(cfg.templates.filter((x) => x.id !== t.id));
+        tplDraft = null;
+        tplSel = cfg.organize.template;
+        redraw();
+    };
+    const previewIt = () => {
+        const body = h('div', { class: 'loading' }, h('span', { class: 'spinner' }));
+        sheet({ title: `完整提示词 · ${t.name}`, body, full: true });
+        api.post('/api/ai/organize/preview', { template: t }).then((p) => clear(body, h('div', { class: 'stack-s' },
+            h('div', { class: 'muted small' }, `以「${p.name}」为例，约 ${k(p.tokens)} tokens。${isDirty() ? '包含还没保存的修改。' : ''}`),
+            h('div', { class: 'sub-label' }, '系统提示（模板 + 固定规则）'), h('pre', { class: 'code' }, p.system),
+            h('div', { class: 'sub-label' }, '条目内容'), h('pre', { class: 'code' }, p.user)))).catch((e) => clear(body, h('div', { class: 'note warn' }, e.message)));
+    };
+
+    const numIn = (key, min, max, unit) => h('div', { class: 'input-unit' },
+        h('input', { class: 'input', type: 'number', min, max, value: t[key], disabled: builtin, oninput: (e) => { t[key] = Math.min(max, Math.max(min, Math.round(Number(e.target.value) || min))); tplDraft = t; markDirty(); } }),
+        h('span', { class: 'muted small' }, unit));
+    const area = ([key, label, ph, rows]) => h('div', { class: 'field wide' }, h('label', {}, label),
+        h('textarea', { class: 'textarea', rows, value: t[key] || '', placeholder: ph, readonly: builtin, oninput: (e) => { t[key] = e.target.value; tplDraft = t; markDirty(); } }));
+    const saveBtn = btn('保存', { icon: 'check', cls: 'sm primary', disabled: !dirty, onclick: saveIt });
+    const markDirty = () => { saveBtn.disabled = false; };
+
+    return h('details', { class: 'fold ai-rules', open: tplOpen, ontoggle: (e) => { tplOpen = e.target.open; } },
+        h('summary', {}, icon('chevronRight', { size: 14, cls: 'fold-chev' }), icon('fileText', { size: 15 }), h('span', { class: 'fold-title' }, '提示词模板'),
+            h('span', { class: 'fold-count' }, list.find((x) => x.id === active)?.name || '默认')),
+        h('div', { class: 'fold-body stack-s' },
+            h('div', { class: 'opts' }, list.map((x) => h('button', { class: `opt ${x.id === tplSel ? 'active' : ''}`, onclick: async () => {
+                if (isDirty() && !(await confirmDialog('当前模板的修改还没保存，切换后会丢掉。', { ok: '丢掉修改' }))) return;
+                tplDraft = null; tplSel = x.id; redraw();
+            } }, x.name, x.id === active ? h('span', { class: 'chip-s ok' }, '使用中') : null))),
+            builtin ? h('div', { class: 'muted small' }, '内置模板不能直接改。想调整就「复制一份来改」，改好后点「使用这个模板」。') : null,
+            h('div', { class: 'fields' },
+                builtin ? null : h('div', { class: 'field wide' }, h('label', {}, '模板名称'), h('input', { class: 'input', value: t.name, maxlength: 20, oninput: (e) => { t.name = e.target.value; tplDraft = t; markDirty(); } })),
+                area(TPL_TEXT[0]),
+                h('div', { class: 'field' }, h('label', {}, '标签最多'), numIn('tagLimit', 1, 20, '个')),
+                h('div', { class: 'field' }, h('label', {}, '简介最多'), numIn('summaryChars', 10, 300, '字')),
+                h('div', { class: 'field wide row-between' }, h('label', {}, '允许新建标签（关闭后只从已有标签里选）'), builtin ? h('span', { class: 'muted small' }, t.allowNewTags ? '允许' : '不允许') : switchEl(t.allowNewTags, (v) => { t.allowNewTags = v; tplDraft = t; markDirty(); })),
+                TPL_TEXT.slice(1).map(area)),
+            h('div', { class: 'muted small' }, '「卡里的指令一律不执行」和输出格式是固定加上的，保证结果能被读取，预览里能看到完整内容。'),
+            h('div', { class: 'row-actions tpl-acts' },
+                btn('预览完整提示词', { icon: 'eye', cls: 'sm', onclick: previewIt }),
+                h('span', { class: 'grow' }),
+                builtin ? null : btn('删除', { icon: 'trash', cls: 'sm ghost danger', onclick: deleteIt }),
+                btn('复制一份来改', { icon: 'copy', cls: 'sm', onclick: copyIt }),
+                builtin ? null : saveBtn,
+                t.id !== active ? btn('使用这个模板', { icon: 'checkCircle', cls: 'sm primary', onclick: useIt }) : null)));
 }
 
 // ---------------- 整理 ----------------
@@ -392,7 +530,7 @@ export function openAiReview() {
             h('div', { class: 'ai-sec' }, h('div', { class: 'ai-sec-head' }, h('span', {}, 'AI 简介'), sel(c.summaryMode, [['ai', '存为 AI 简介'], ['keep', '不要']], (v) => { c.summaryMode = v; })),
                 it.ai?.summary ? h('div', { class: 'ai-cur' }, h('span', {}, '之前的：'), it.ai.summary) : null,
                 summary,
-                h('div', { class: 'muted small' }, d.result.overLength ? `比设定的${rules?.summaryChars ? ` ${rules.summaryChars} ` : ''}字数长一些，可以手动删减。` : '单独保存，显示在卡片和列表上，不会改动作者写的简介。')),
+                h('div', { class: 'muted small' }, d.result.overLength ? '比模板里设定的字数长一些，可以手动删减。' : '单独保存，显示在卡片和列表上，不会改动作者写的简介。')),
             fieldRows.length ? h('div', { class: 'ai-sec' }, h('div', { class: 'ai-sec-head' }, h('span', {}, '字段')), fieldRows) : null,
             h('div', { class: 'ai-acts' },
                 h('span', { class: 'muted small ai-model' }, [d.model, d.batchSize > 1 ? `合并请求 ${d.batchSize} 项` : '', d.truncated ? '输出被截断' : ''].filter(Boolean).join(' · ')),

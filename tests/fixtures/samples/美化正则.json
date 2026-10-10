@@ -1,0 +1,1 @@
+{"id":"x","scriptName":"状态栏美化","findRegex":"/<status>(.*?)<\\/status>/g","replaceString":"<div class=\"st\">$1</div>","placement":[2]}

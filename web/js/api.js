@@ -123,6 +123,7 @@ export const api = {
             es.addEventListener('change', (e) => onEvent('change', JSON.parse(e.data || '{}')));
             es.addEventListener('auth', () => onEvent('auth', {}));
             es.addEventListener('ai', (e) => onEvent('ai', JSON.parse(e.data || '{}')));
+            es.addEventListener('aichat', (e) => onEvent('aichat', JSON.parse(e.data || '{}')));
             es.onerror = () => {
                 dropped = true;
                 onStatus?.(false);

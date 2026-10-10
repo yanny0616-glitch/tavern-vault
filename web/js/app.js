@@ -21,6 +21,7 @@ window.addEventListener('orientationchange', () => setTimeout(setAppHeight, 300)
 window.visualViewport?.addEventListener('resize', setAppHeight);
 import { openDetail } from './views/detail.js';
 import { handleAiEvent, renderChip } from './views/ai.js';
+import { handleAiChatEvent } from './views/aichat.js';
 
 const app = document.getElementById('app');
 
@@ -177,6 +178,7 @@ async function start() {
         api.events((ev, data) => {
             if (ev === 'auth') { location.reload(); return; }
             if (ev === 'ai') { handleAiEvent(data); return; }
+            if (ev === 'aichat') { handleAiChatEvent(data); return; }
             clearTimeout(timer);
             timer = setTimeout(() => reload().catch(() => {}), 150);
         }, setStatus);

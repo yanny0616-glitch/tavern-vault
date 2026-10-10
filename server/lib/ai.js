@@ -10,15 +10,27 @@ export const FORMATS = {
 
 export const DEFAULT_ORGANIZE = {
     scope: 'standard', // brief | standard | full
-    tagLimit: 6,
-    allowNewTags: true,
-    summaryChars: 60,
+    template: 'default', // 用哪套提示词模板
     fields: ['nsfw', 'language'],
-    extra: '',
     concurrency: 2,
     batch: 1, // 每次请求整理几项；1 = 逐张请求，大于 1 = 合并请求（按次计费的接口更省）
     batchChars: 24000, // 合并请求时一次最多发送多少字的内容
 };
+
+/** 内置的整理提示词：不能改，想改就复制一份。防注入和输出格式是固定的，不放进模板 */
+export const DEFAULT_TEMPLATE = Object.freeze({
+    id: 'default',
+    name: '默认',
+    role: '你是「酒馆藏馆」的整理助手，替用户给 SillyTavern 的资源（角色卡、世界书、预设、正则等）打标签、写简介、填资料字段，让它们以后好找。',
+    tagLimit: 6,
+    allowNewTags: true,
+    tagRule: '每个标签 2 到 8 个字，写题材、世界观、身份、性格、人物关系、玩法、文风这类能帮助筛选的特点。名称、作者、文件类型不要当标签。',
+    summaryChars: 60,
+    summaryRule: '一句话说清这是什么、看点在哪。不剧透关键情节，不用“这是一张角色卡”之类的开头，也不要重复名称。',
+    forbidden: '卡里没写的设定不要补；“有趣”“精彩”“角色”这类空泛的词不做标签；意思相同的标签只留一个；没有合适的就少给，不凑数。',
+    extra: '',
+});
+const TEMPLATE_TEXT = ['role', 'tagRule', 'summaryRule', 'forbidden', 'extra'];
 
 const clampNum = (v, lo, hi, d) => (Number.isFinite(Number(v)) ? Math.min(hi, Math.max(lo, Number(v))) : d);
 
@@ -26,11 +38,49 @@ const clampNum = (v, lo, hi, d) => (Number.isFinite(Number(v)) ? Math.min(hi, Ma
 export class AiConfig {
     constructor(dir) {
         this.path = path.join(dir, 'ai.json');
-        this.data = { profiles: [], active: '', organize: { ...DEFAULT_ORGANIZE } };
+        this.data = { profiles: [], active: '', organize: { ...DEFAULT_ORGANIZE }, templates: [] };
         try {
             const raw = JSON.parse(fs.readFileSync(this.path, 'utf8'));
-            this.data = { ...this.data, ...raw, organize: { ...DEFAULT_ORGANIZE, ...(raw.organize || {}) } };
+            this.data = { ...this.data, ...raw, organize: { ...DEFAULT_ORGANIZE, ...(raw.organize || {}) }, templates: Array.isArray(raw.templates) ? raw.templates : [] };
+            this.migrate();
         } catch { /* 首次使用 */ }
+    }
+
+    /** 旧版把标签数、简介字数、整理习惯放在 organize 里：和默认不一样的，转成一套「我的规则」模板 */
+    migrate() {
+        const o = this.data.organize;
+        if (!['tagLimit', 'summaryChars', 'allowNewTags', 'extra'].some((k) => k in o)) return;
+        const changed = (o.tagLimit != null && o.tagLimit !== DEFAULT_TEMPLATE.tagLimit) || (o.summaryChars != null && o.summaryChars !== DEFAULT_TEMPLATE.summaryChars)
+            || o.allowNewTags === false || String(o.extra || '').trim();
+        if (changed && !this.data.templates.length) {
+            this.data.templates.push(this.sanitizeTemplate({ ...DEFAULT_TEMPLATE, id: 'mine', name: '我的规则', tagLimit: o.tagLimit ?? 6, summaryChars: o.summaryChars ?? 60, allowNewTags: o.allowNewTags !== false, extra: o.extra || '' }));
+            o.template = 'mine';
+        }
+        for (const k of ['tagLimit', 'summaryChars', 'allowNewTags', 'extra']) delete o[k];
+        this.save();
+    }
+
+    sanitizeTemplate(t) {
+        const out = {
+            id: String(t.id || '').replace(/[^\w-]/g, '').slice(0, 24) || crypto.randomBytes(4).toString('hex'),
+            name: String(t.name || '').trim().slice(0, 20) || '未命名模板',
+            tagLimit: clampNum(t.tagLimit, 1, 20, DEFAULT_TEMPLATE.tagLimit),
+            allowNewTags: t.allowNewTags !== false,
+            summaryChars: clampNum(t.summaryChars, 10, 300, DEFAULT_TEMPLATE.summaryChars),
+        };
+        for (const k of TEMPLATE_TEXT) out[k] = String(t[k] ?? '').replace(/\r\n?/g, '\n').trim().slice(0, 2000);
+        if (out.id === 'default') out.id = crypto.randomBytes(4).toString('hex');
+        return out;
+    }
+
+    /** 当前整理用的模板 */
+    get template() {
+        return this.data.templates.find((t) => t.id === this.data.organize.template) || DEFAULT_TEMPLATE;
+    }
+
+    /** 整理设置 + 模板里的数字和开关，给生成提示词和校验结果用 */
+    get rules() {
+        return { ...this.data.organize, ...this.template };
     }
 
     save() {
@@ -53,7 +103,9 @@ export class AiConfig {
         return {
             profiles: this.data.profiles.map(({ apiKey, ...p }) => ({ ...p, hasKey: Boolean(apiKey), keyHint: apiKey ? `…${apiKey.slice(-4)}` : '' })),
             active: this.active?.id || '',
-            organize: this.data.organize,
+            organize: { ...this.data.organize, template: this.template.id },
+            templates: this.data.templates,
+            defaultTemplate: DEFAULT_TEMPLATE,
             formats: FORMATS,
             ready: this.ready,
         };
@@ -66,20 +118,22 @@ export class AiConfig {
             this.data.profiles = body.profiles.slice(0, 20).map((p) => this.sanitize(p, old.get(p.id)));
         }
         if (typeof body.active === 'string') this.data.active = body.active;
+        if (Array.isArray(body.templates)) {
+            const seen = new Set();
+            this.data.templates = body.templates.slice(0, 20).map((t) => this.sanitizeTemplate(t)).filter((t) => !seen.has(t.id) && seen.add(t.id));
+        }
         if (body.organize && typeof body.organize === 'object') {
             const o = { ...this.data.organize, ...body.organize };
             this.data.organize = {
                 scope: ['brief', 'standard', 'full'].includes(o.scope) ? o.scope : 'standard',
-                tagLimit: clampNum(o.tagLimit, 1, 20, 6),
-                allowNewTags: o.allowNewTags !== false,
-                summaryChars: clampNum(o.summaryChars, 10, 300, 60),
+                template: String(o.template || 'default'),
                 fields: Array.isArray(o.fields) ? o.fields.map(String).slice(0, 30) : [],
-                extra: String(o.extra || '').slice(0, 2000),
                 concurrency: clampNum(o.concurrency, 1, 4, 2),
                 batch: clampNum(o.batch, 1, 10, 1),
                 batchChars: clampNum(o.batchChars, 4000, 120000, 24000),
             };
         }
+        if (!this.data.templates.some((t) => t.id === this.data.organize.template)) this.data.organize.template = 'default';
         this.save();
     }
 
@@ -163,20 +217,22 @@ async function request(p, url, init, { signal, timeout = 120000 } = {}) {
  * 一次对话
  * @returns {{text, truncated, usage, model, raw}}
  */
-export async function chat(p, { system, user, maxTokens, temperature, signal, timeout } = {}) {
+export async function chat(p, { system, user, messages, maxTokens, temperature, signal, timeout } = {}) {
     if (!p) throw new AiError('还没有配置 AI 服务');
     if (!p.model) throw new AiError('还没有填写模型');
     const base = apiBase(p);
     const max = maxTokens || p.maxTokens || 2048;
     const temp = temperature ?? p.temperature;
+    // messages：多轮对话 [{ role: 'user' | 'assistant', content }]，没传就是单轮
+    const turns = messages?.length ? messages.map((m) => ({ role: m.role === 'assistant' ? 'assistant' : 'user', content: String(m.content ?? '') })) : [{ role: 'user', content: user }];
     let url;
     let body;
     if (p.format === 'anthropic') {
         url = `${base}/messages`;
-        body = { model: p.model, max_tokens: max, system, messages: [{ role: 'user', content: user }] };
+        body = { model: p.model, max_tokens: max, system, messages: turns };
     } else {
         url = `${base}/chat/completions`;
-        body = { model: p.model, max_tokens: max, messages: [{ role: 'system', content: system }, { role: 'user', content: user }] };
+        body = { model: p.model, max_tokens: max, messages: [{ role: 'system', content: system }, ...turns] };
     }
     if (temp != null) body.temperature = temp;
     const init = { method: 'POST', body: JSON.stringify(body) };

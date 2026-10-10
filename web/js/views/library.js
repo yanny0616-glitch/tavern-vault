@@ -8,6 +8,7 @@ import { openDetail } from './detail.js';
 import { openImporter } from './importer.js';
 import { importItemsToTavern } from './tavern.js';
 import { startOrganize, aiReady } from './ai.js';
+import { openAiChat } from './aichat.js';
 import { findDuplicates, openDuplicates } from './dupes.js';
 import { openDiff } from './diff.js';
 
@@ -144,6 +145,7 @@ export function renderLibrary(root) {
 
     clear(refs.actions,
         btn('', { icon: state.prefs.view === 'grid' ? 'list' : 'grid', cls: 'ghost', title: '切换视图', onclick: () => { state.prefs.view = state.prefs.view === 'grid' ? 'list' : 'grid'; savePrefs(); renderLibrary(root); } }),
+        aiReady() ? btn('', { icon: 'message', cls: 'ghost', title: 'AI 对话', onclick: () => openAiChat() }) : null,
         h('button', { class: `btn ghost icon ${fc ? 'has-dot' : ''}`, title: '筛选与排序', onclick: () => openFilters(root) }, icon('filter', { size: 17 })),
         btn(state.selecting ? '完成' : '', { icon: state.selecting ? null : 'checkSquare', cls: state.selecting ? 'primary sm' : 'ghost', title: '多选', onclick: () => { state.selecting = !state.selecting; state.selection.clear(); renderLibrary(root); } }),
         btn('添加', { icon: 'plus', cls: 'primary desktop-only', onclick: () => openImporter() }));
@@ -441,6 +443,7 @@ function renderSelbar(bar, list, root) {
             act('layers', '合集', () => batchPick(items, 'collections')),
             act('star', allFav ? '取消收藏' : '收藏', () => run('favorite', !allFav, allFav ? '已取消收藏' : '已收藏')),
             aiReady() ? act('sparkles', 'AI 整理', () => startOrganize(ids)) : null,
+            aiReady() ? act('message', '问 AI', () => openAiChat({ refs: ids })) : null,
             bridge.host ? act('beer', '入酒馆', () => importItemsToTavern(items)) : null,
             act('trash', '删除', async () => {
                 if (await confirmDialog(`将 ${n} 项移入回收站？`, { danger: true, ok: '删除' })) { await run('delete', null, '已移入回收站'); state.selection.clear(); }

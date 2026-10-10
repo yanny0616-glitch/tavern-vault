@@ -1,0 +1,28 @@
+const { chromium } = require('playwright');
+const B = 'http://127.0.0.1:5199';
+const ok = (c, m) => { console.log(c ? 'PASS' : 'FAIL', m); if (!c) process.exitCode = 1; };
+(async () => {
+  const { token } = await (await fetch(B + '/api/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password: 'testpw' }) })).json();
+  const st = await (await fetch(B + '/api/state', { headers: { Authorization: 'Bearer ' + token } })).json();
+  const long = st.items.filter((i) => !i.deletedAt).sort((a, b) => (b.description || '').length - (a.description || '').length)[0];
+  console.log('longest intro:', long.name, (long.description || '').length, '字');
+  const b = await chromium.launch({ executablePath: process.env.CHROMIUM, args: ['--no-sandbox'] });
+  const c = await b.newContext({ viewport: { width: 402, height: 874 }, deviceScaleFactor: 2, isMobile: true });
+  await c.addInitScript((t) => localStorage.setItem('tv_token', t), token);
+  const p = await c.newPage(); const errs = []; p.on('pageerror', (e) => errs.push(e.message));
+  const open = async () => { await p.goto(B + `/#/library?item=${long.id}`); await p.waitForSelector('.detail-sheet .detail-body'); await p.waitForTimeout(500); };
+  await open();
+  const h1 = await p.$eval('.detail-body', (e) => e.scrollHeight);
+  ok(await p.locator('.detail-body .clamp-wrap .lead').count() === 1, 'truncated intro has 阅读全文');
+  await p.screenshot({ path: process.argv[2] + '/fold.png' });
+  await p.click('.detail-body .clamp-btn >> nth=0'); await p.waitForSelector('.read-sheet .rt');
+  console.log('read-full length', await p.$eval('.read-sheet .read-full', (e) => e.textContent.length));
+  await p.keyboard.press('Escape');
+  await p.evaluate(() => { const v = JSON.parse(localStorage.getItem('tv_prefs') || '{}'); v.foldAt = 0; localStorage.setItem('tv_prefs', JSON.stringify(v)); });
+  await p.reload(); await open();
+  ok(await p.locator('.detail-body .clamp-wrap .clamp').count() === 0, '不折叠 → nothing clamped');
+  const h2 = await p.$eval('.detail-body', (e) => e.scrollHeight);
+  console.log(`page height folded ${h1}px vs unfolded ${h2}px`);
+  ok(!errs.length, 'no errors ' + errs.join('|'));
+  await b.close();
+})();

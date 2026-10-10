@@ -16,6 +16,7 @@ import { stripSyncEntries, DEFAULT_SYNC_EXCLUDE, SYNC_OPTIONS, PARTS_VERSION, sa
 import { diffFiles, diffSummary } from './lib/diff.js';
 import { AiConfig, listModels, chat, AiError } from './lib/ai.js';
 import { createAiTasks } from './lib/ai-tasks.js';
+import { createAiChat } from './lib/ai-chat.js';
 const str = (v) => (v == null ? '' : typeof v === 'string' ? v : String(v));
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -705,8 +706,12 @@ route('POST', '/api/ai/organize/estimate', async ({ req }) => {
     return aiTasks.estimate(idList(ids), scope);
 });
 route('POST', '/api/ai/organize/preview', async ({ req }) => {
-    const { id, extra } = await readJson(req);
-    try { return aiTasks.preview(String(id), extra); } catch (e) { return aiFail(e); }
+    const { id, extra, template } = await readJson(req);
+    // 预览模板时没指定条目：拿一张角色卡当例子
+    const live = Object.values(store.db.items).filter((it) => !it.deletedAt);
+    const pick = id ? String(id) : (live.find((it) => it.type === 'character') || live[0])?.id;
+    if (!pick) throw new HttpError(400, '藏馆里还没有条目，没法生成示例');
+    try { return { ...aiTasks.preview(pick, extra, template && typeof template === 'object' ? template : null), id: pick, name: store.db.items[pick]?.name || '' }; } catch (e) { return aiFail(e); }
 });
 route('POST', '/api/ai/organize', async ({ req }) => {
     const { ids, extra } = await readJson(req);
@@ -731,6 +736,41 @@ route('POST', '/api/ai/explain', async ({ req }) => {
     const d = diffFiles({ buf: store.readBlob(a.sha), name: a.name || 'a' }, { buf: store.readBlob(b.sha), name: b.name || 'b' });
     try { return await aiTasks.explain(d, { aLabel: String(aLabel || 'A').slice(0, 80), bLabel: String(bLabel || 'B').slice(0, 80), key: `${a.sha}:${b.sha}`, force: Boolean(force) }); } catch (e) { return aiFail(e); }
 });
+
+// AI 对话
+const aiChat = createAiChat({ dataDir: DATA_DIR, store, config: aiConfig, loadContent, broadcast, saveCardVersion, removeVersion });
+const chatOr404 = (fn) => { try { return fn(); } catch (e) { throw new HttpError(e instanceof AiError ? 404 : 500, e.message); } };
+route('GET', '/api/ai/chats', () => ({ sessions: aiChat.list() }));
+route('POST', '/api/ai/chats', async ({ req }) => {
+    const body = await readJson(req);
+    const s = aiChat.create(body);
+    if (body.text) {
+        try { aiChat.send(s.id, { text: body.text }); } catch (e) { aiChat.remove([s.id]); return aiFail(e); }
+    }
+    return s;
+});
+route('POST', '/api/ai/chats/preview', async ({ req }) => {
+    const { id, ...o } = await readJson(req);
+    try { return aiChat.preview(id ? String(id) : '', o); } catch (e) { return aiFail(e); }
+});
+route('GET', '/api/ai/chats/:id', ({ p }) => chatOr404(() => aiChat.get(p.id)));
+route('PATCH', '/api/ai/chats/:id', async ({ req, p }) => {
+    const body = await readJson(req);
+    return chatOr404(() => aiChat.update(p.id, body));
+});
+route('DELETE', '/api/ai/chats/:id', ({ p }) => { aiChat.remove([p.id]); return { ok: true }; });
+route('POST', '/api/ai/chats/:id/send', async ({ req, p }) => {
+    const { text, retry } = await readJson(req);
+    chatOr404(() => aiChat.get(p.id));
+    try { return aiChat.send(p.id, { text, retry: Boolean(retry) }); } catch (e) { return aiFail(e); }
+});
+// 修改块：预览 / 应用（存成新版本）/ 撤销
+route('POST', '/api/ai/chats/:id/edit', async ({ req, p }) => {
+    const { msg, block, action } = await readJson(req);
+    chatOr404(() => aiChat.get(p.id));
+    try { return await aiChat.edit(p.id, String(msg || ''), Number(block) || 0, ['apply', 'undo'].includes(action) ? action : 'preview'); } catch (e) { return aiFail(e); }
+});
+route('POST', '/api/ai/chats/:id/stop', ({ p }) => { aiChat.stop(p.id); return { ok: true }; });
 
 route('POST', '/api/items/manual', async ({ req }) => {
     const body = await readJson(req);
@@ -880,25 +920,13 @@ route('PATCH', '/api/items/:id/files/:fid', async ({ req, p }) => {
 
 route('DELETE', '/api/items/:id/files/:fid', ({ p }) => {
     const it = getItem(p.id);
-    const idx = it.files.findIndex((x) => x.id === p.fid);
-    if (idx < 0) throw new HttpError(404, '文件不存在');
-    const [f] = it.files.splice(idx, 1);
-    if (f.primary && it.files.length) {
-        const last = it.files[it.files.length - 1];
-        last.primary = true;
-        applyDetection(it, detectFile(store.readBlob(last.sha), last.name), last.sha);
-    }
-    if (it.cover === f.sha && !it.files.some((x) => x.sha === f.sha)) it.cover = null;
-    store.save();
-    store.gcBlobs();
-    broadcast('change', { ids: [it.id] });
+    if (!removeVersion(it, p.fid)) throw new HttpError(404, '文件不存在');
     return slim(it);
 });
 
 // 编辑角色卡内容 → 生成新版本文件
-route('PUT', '/api/items/:id/card', async ({ req, p }) => {
-    const it = getItem(p.id);
-    const { card } = await readJson(req);
+/** 把改过的角色卡存成新版本（设为当前版本），PNG 沿用原图 */
+async function saveCardVersion(it, card, label) {
     const n = normalizeCard(card);
     if (!n?.data?.name) throw new HttpError(400, '角色卡数据无效');
     const full = { spec: 'chara_card_v3', spec_version: '3.0', data: n.data };
@@ -920,10 +948,36 @@ route('PUT', '/api/items/:id/card', async ({ req, p }) => {
     }
     const sha = store.putBlob(buf);
     const det = detectFile(buf, filename);
-    store.addFile(it.id, { sha, name: filename, size: buf.length, mime: mimeOf(filename), label: `网页编辑 ${new Date().toLocaleString('zh-CN', { hour12: false })}`, primary: true, sig: fileSig(buf, filename, det), parts: fileParts(buf, filename, det) });
+    const file = store.addFile(it.id, { sha, name: filename, size: buf.length, mime: mimeOf(filename), label: `${label} ${new Date().toLocaleString('zh-CN', { hour12: false })}`, primary: true, sig: fileSig(buf, filename, det), parts: fileParts(buf, filename, det) });
     applyDetection(it, det, sha);
     store.updateItem(it.id, { name: n.data.name });
     broadcast('change', { ids: [it.id] });
+    return file;
+}
+
+/** 删掉一个版本；它是当前版本时，换回 prefer（还在的话）或最后一个 */
+function removeVersion(it, fileId, prefer = '') {
+    const idx = it.files.findIndex((x) => x.id === fileId);
+    if (idx < 0) return false;
+    const [f] = it.files.splice(idx, 1);
+    if (f.primary && it.files.length) {
+        const next = it.files.find((x) => x.id === prefer) || it.files[it.files.length - 1];
+        it.files.forEach((x) => { x.primary = x === next; });
+        applyDetection(it, detectFile(store.readBlob(next.sha), next.name), next.sha);
+    }
+    if (it.cover === f.sha && !it.files.some((x) => x.sha === f.sha)) it.cover = null;
+    it.updatedAt = new Date().toISOString();
+    store.save();
+    store.gcBlobs();
+    broadcast('change', { ids: [it.id] });
+    return true;
+}
+
+// 编辑角色卡内容 → 生成新版本文件
+route('PUT', '/api/items/:id/card', async ({ req, p }) => {
+    const it = getItem(p.id);
+    const { card } = await readJson(req);
+    await saveCardVersion(it, card, '网页编辑');
     return slim(store.db.items[it.id]);
 });
 

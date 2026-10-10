@@ -56,3 +56,54 @@ export function dialogView(text, names) {
     if (!any) return richText(text, n);
     return h('div', { class: 'dlg-list' }, views);
 }
+
+// AI 回复：常见的 Markdown（标题、列表、引用、代码块、**加粗**、`代码`），同样只生成 DOM 节点
+const MD_INLINE = /(\*\*[^*\n]+?\*\*|`[^`\n]+?`)/g;
+function mdInline(line) {
+    const out = [];
+    let last = 0;
+    for (const m of line.matchAll(MD_INLINE)) {
+        if (m.index > last) out.push(line.slice(last, m.index));
+        out.push(m[0].startsWith('**') ? h('strong', {}, m[0].slice(2, -2)) : h('code', {}, m[0].slice(1, -1)));
+        last = m.index + m[0].length;
+    }
+    if (last < line.length) out.push(line.slice(last));
+    return out;
+}
+
+export function mdLite(text, { cls = '' } = {}) {
+    const lines = norm(text).split('\n');
+    const out = [];
+    let para = [];
+    let list = null;
+    const flushPara = () => { if (para.length) out.push(h('p', {}, para.flatMap((ln, i) => (i ? [h('br'), ...mdInline(ln)] : mdInline(ln))))); para = []; };
+    const flushList = () => { if (list) out.push(h(list.tag, {}, list.items.map((x) => h('li', {}, mdInline(x))))); list = null; };
+    for (let i = 0; i < lines.length; i++) {
+        const ln = lines[i];
+        const fence = ln.match(/^\s*```/);
+        if (fence) {
+            flushPara(); flushList();
+            const body = [];
+            for (i++; i < lines.length && !/^\s*```/.test(lines[i]); i++) body.push(lines[i]);
+            out.push(h('pre', { class: 'code' }, body.join('\n')));
+            continue;
+        }
+        const head = ln.match(/^\s*#{1,6}\s+(.*)$/);
+        const ul = ln.match(/^\s*[-*•]\s+(.*)$/);
+        const ol = ln.match(/^\s*\d+[.)、]\s*(.*)$/);
+        const quote = ln.match(/^\s*>\s?(.*)$/);
+        if (!ln.trim()) { flushPara(); flushList(); }
+        else if (head) { flushPara(); flushList(); out.push(h('h4', {}, mdInline(head[1]))); }
+        else if (/^\s*(-{3,}|\*{3,})\s*$/.test(ln)) { flushPara(); flushList(); out.push(h('hr')); }
+        else if (ul || ol) {
+            flushPara();
+            const tag = ul ? 'ul' : 'ol';
+            if (list?.tag !== tag) { flushList(); list = { tag, items: [] }; }
+            list.items.push((ul || ol)[1]);
+        } else if (quote) { flushPara(); flushList(); out.push(h('blockquote', {}, mdInline(quote[1]))); }
+        else if (list && /^\s{2,}\S/.test(ln)) list.items[list.items.length - 1] += ` ${ln.trim()}`;
+        else { flushList(); para.push(ln); }
+    }
+    flushPara(); flushList();
+    return h('div', { class: `md ${cls}` }, out);
+}

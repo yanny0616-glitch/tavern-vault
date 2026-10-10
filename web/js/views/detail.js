@@ -8,6 +8,7 @@ import { pickCollection } from './library.js';
 import { importItemsToTavern, TAVERN_IMPORTABLE } from './tavern.js';
 import { openDiff } from './diff.js';
 import { startOrganize, aiReady, aiStamp } from './ai.js';
+import { openAiChat } from './aichat.js';
 import { richText, dialogView } from '../richtext.js';
 import { coverImg, coverSrc } from '../thumbs.js';
 import { runRegex, applyScripts, displayScripts, looksHtml, stView, hasHtmlFence, hasScript, PLACEMENT } from '../stview.js';
@@ -322,6 +323,7 @@ export function openDetail(id, { seq = null, onLeave = null } = {}) {
             body: h('div', { class: 'menu' },
                 !it.deletedAt ? item('pencil', '编辑资料', () => editItem(it)) : null,
                 aiReady() && !it.deletedAt ? item('sparkles', 'AI 整理（标签、简介、字段）', () => startOrganize([it.id])) : null,
+                aiReady() && !it.deletedAt ? item('message', '问 AI（把这一项发给 AI 一起看）', () => openAiChat({ refs: [it.id] })) : null,
                 it.type === 'character' && p && !it.deletedAt ? item('user', '编辑角色卡内容（保存为新版本）', () => withCard((c) => editCard(it, c))) : null,
                 it.type === 'character' && p && it.cover ? item('image', '导出 PNG 角色卡（用当前封面）', () => exportPng(it)) : null,
                 it.type === 'character' && p ? item('braces', '导出角色卡 JSON', () => withCard((c) => downloadBlob(new Blob([JSON.stringify(c.card, null, 2)], { type: 'application/json' }), `${c.data?.name || it.name}.json`))) : null,
