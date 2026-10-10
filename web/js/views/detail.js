@@ -13,6 +13,7 @@ import { richText, dialogView } from '../richtext.js';
 import { coverImg, coverSrc } from '../thumbs.js';
 import { runRegex, applyScripts, displayScripts, looksHtml, stView, hasHtmlFence, hasScript, PLACEMENT } from '../stview.js';
 import { cardPng } from '../pngcard.js';
+import { discordAppUrl, sourceLinkProps } from '../source-links.js';
 import { entriesOf, entryKeys, entryKeys2, effectivePrompts, presetRegex } from '../cardfmt.js';
 
 const TOP_LEVEL_FIELDS = new Set(['source', 'author', 'version', 'rating']);
@@ -130,7 +131,10 @@ function fieldDisplay(f, v) {
         case 'url': {
             let label = v;
             try { const u = new URL(v); label = `${u.hostname}${u.pathname.length > 1 ? u.pathname : ''}`; } catch { /* 不是合法链接 */ }
-            return h('a', { class: 'info-link', href: v, target: '_blank', rel: 'noopener noreferrer' }, h('span', {}, label), icon('external', { size: 12 }));
+            const link = h('a', { class: 'info-link', ...sourceLinkProps(v) }, h('span', {}, label), icon('external', { size: 12 }));
+            if (!discordAppUrl(v)) return link;
+            return h('span', { style: { display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '8px' } }, link,
+                h('a', { class: 'info-link', href: v, target: '_blank', rel: 'noopener noreferrer', title: '不唤起 App，在浏览器中打开' }, '网页打开'));
         }
         case 'checkbox': return h('span', { class: `chip-s ${v && f.id === 'nsfw' ? 'danger' : v ? 'ok' : ''}` }, v ? '是' : '否');
         case 'tags': return h('span', { class: 'info-tags' }, (Array.isArray(v) ? v : String(v).split(/[,，]/)).map((t) => h('span', { class: 'chip-s' }, t)));
@@ -1012,8 +1016,17 @@ export function fieldInput(f, val, set) {
         case 'textarea': { const el = h('textarea', { class: 'textarea', value: val || '', oninput: () => set(el.value) }); return el; }
         case 'number': { const el = h('input', { class: 'input', type: 'number', value: val ?? '', oninput: () => set(el.value === '' ? null : Number(el.value)) }); return el; }
         case 'url': {
-            const el = h('input', { class: 'input', type: 'url', value: val || '', placeholder: 'https://', oninput: () => set(el.value) });
-            return h('div', { class: 'input-group' }, el, val ? btn('', { icon: 'external', cls: 'sm', href: val, title: '打开链接' }) : null);
+            const actions = h('span', { style: { display: 'flex', gap: '4px' } });
+            const el = h('input', { class: 'input', type: 'url', value: val || '', placeholder: 'https://', oninput: () => { set(el.value); updateLinks(); } });
+            function updateLinks() {
+                const value = el.value.trim();
+                clear(actions);
+                if (!value) return;
+                actions.append(h('a', { class: 'btn sm', ...sourceLinkProps(value), 'aria-label': discordAppUrl(value) ? '在 Discord 中打开' : '打开链接' }, icon('external', { size: 16 })));
+                if (discordAppUrl(value)) actions.append(h('a', { class: 'btn sm', href: value, target: '_blank', rel: 'noopener noreferrer' }, '网页打开'));
+            }
+            updateLinks();
+            return h('div', { class: 'input-group' }, el, actions);
         }
         case 'date': { const el = h('input', { class: 'input', type: 'date', value: val || '', onchange: () => set(el.value, true) }); return el; }
         case 'color': { const el = h('input', { class: 'input color', type: 'color', value: val || '#888888', onchange: () => set(el.value, true) }); return el; }
