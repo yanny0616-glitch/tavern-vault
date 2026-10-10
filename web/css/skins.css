@@ -178,6 +178,7 @@ html[data-skin="minimal"] .btn { border: 0; background: var(--surface-2); font-w
 html[data-skin="minimal"] .btn.primary { background: var(--accent); }
 html[data-skin="minimal"] .btn.ghost { background: transparent; }
 html[data-skin="minimal"] .opt { border: 0; background: var(--surface-2); border-radius: 8px; }
+html[data-skin="minimal"] .opt.active { background: var(--accent); color: var(--on-accent); }
 html[data-skin="minimal"] .input, html[data-skin="minimal"] .select, html[data-skin="minimal"] .textarea { border: 0; background: var(--surface-2); }
 html[data-skin="minimal"] .tag { border-radius: 999px; }
 html[data-skin="minimal"] .sidebar { background: color-mix(in srgb, var(--surface) 70%, var(--bg)); border-right: .5px solid var(--line); }
@@ -334,6 +335,8 @@ html[data-skin="tavern"] .login-title { letter-spacing: .2em; }
   --text: #3d2932; --text-2: #7b5c69; --text-3: #b496a3;
   --line: rgba(224, 96, 126, .13); --line-2: rgba(224, 96, 126, .26);
   --accent: #ec6a8b; --accent-2: #8aa8f5; --on-accent: #fff;
+  /* 选中状态里垫在白字下面的渐变：比装饰用的渐变深一些，保证看得清 */
+  --grad-on: linear-gradient(90deg, color-mix(in srgb, var(--accent) 78%, #000), color-mix(in srgb, var(--accent-2) 66%, #000));
   --danger: #e2475f; --ok: #3fb37f; --warn: #f2a33a;
   --radius: 22px; --radius-sm: 14px; --radius-lg: 28px;
   --shadow: 0 8px 22px -10px rgba(224, 96, 126, .45);
@@ -362,7 +365,7 @@ html[data-skin="sakura"] .tb-title { background: linear-gradient(90deg, var(--ac
 html[data-skin="sakura"] .search .search-input { border-radius: 999px; background: var(--surface-2); }
 html[data-skin="sakura"] .seg-item { height: 34px; border: 0; background: var(--surface); box-shadow: 0 3px 10px -5px rgba(224, 96, 126, .5); color: var(--text-2); font-weight: 600; }
 html[data-skin="sakura"] .seg-item .ic { color: var(--accent); opacity: 1; }
-html[data-skin="sakura"] .seg-item.active { background: linear-gradient(90deg, var(--accent), var(--accent-2)); color: #fff; }
+html[data-skin="sakura"] .seg-item.active { background: var(--grad-on); color: #fff; }
 html[data-skin="sakura"] .seg-item.active .ic { color: #fff; }
 html[data-skin="sakura"] .pill { border: 0; background: var(--surface); box-shadow: var(--shadow); }
 /* 卡片：白色描边 + 稀有度角标 */
@@ -396,10 +399,10 @@ html[data-skin="sakura"] .row-tag { padding: 0 7px; border-radius: 999px; backgr
 html[data-skin="sakura"] .row-tag::before { content: none; }
 /* 按钮与面板 */
 html[data-skin="sakura"] .btn { border-radius: 999px; border: 0; background: var(--surface); box-shadow: 0 3px 10px -5px rgba(224, 96, 126, .55); font-weight: 700; }
-html[data-skin="sakura"] .btn.primary { background: linear-gradient(90deg, var(--accent), var(--accent-2)); box-shadow: 0 8px 20px -8px var(--accent); }
+html[data-skin="sakura"] .btn.primary { background: var(--grad-on); box-shadow: 0 8px 20px -8px var(--accent); }
 html[data-skin="sakura"] .btn.ghost { box-shadow: none; background: transparent; }
 html[data-skin="sakura"] .opt { border-radius: 999px; border: 0; background: var(--surface-2); }
-html[data-skin="sakura"] .opt.active { background: linear-gradient(90deg, var(--accent), var(--accent-2)); }
+html[data-skin="sakura"] .opt.active { background: var(--grad-on); }
 html[data-skin="sakura"] .input, html[data-skin="sakura"] .select, html[data-skin="sakura"] .textarea { border-radius: 16px; border-color: var(--line); }
 html[data-skin="sakura"] .panel { border: 0; border-radius: 24px; box-shadow: var(--shadow); }
 html[data-skin="sakura"] .panel-head .ic { width: 28px; height: 28px; padding: 6px; border-radius: 50%; background: var(--surface-2); color: var(--accent); }
@@ -408,7 +411,7 @@ html[data-skin="sakura"] .fact { border-radius: 16px; background: linear-gradien
 html[data-skin="sakura"] .fact b { color: var(--accent); }
 html[data-skin="sakura"] .tabs { border-radius: 999px; padding: 4px; }
 html[data-skin="sakura"] .tabs button { border-radius: 999px; font-weight: 700; }
-html[data-skin="sakura"] .tabs button.active { background: linear-gradient(90deg, var(--accent), var(--accent-2)); color: #fff; }
+html[data-skin="sakura"] .tabs button.active { background: var(--grad-on); color: #fff; }
 html[data-skin="sakura"] .tag { border-radius: 999px; background: var(--surface-2); color: var(--accent); font-weight: 600; }
 html[data-skin="sakura"] .fold { border: 0; border-radius: 18px; box-shadow: 0 4px 14px -8px rgba(224, 96, 126, .4); }
 html[data-skin="sakura"] .prose { border-radius: 14px; }
@@ -416,7 +419,7 @@ html[data-skin="sakura"] .prose { border-radius: 14px; }
 html[data-skin="sakura"] .sidebar { background: color-mix(in srgb, var(--surface) 85%, transparent); border-right: 0; box-shadow: 6px 0 30px -18px rgba(224, 96, 126, .5); }
 html[data-skin="sakura"] .brand-mark { border-radius: 14px; background: linear-gradient(135deg, var(--accent), var(--accent-2)); }
 html[data-skin="sakura"] .nav-item { border-radius: 999px; font-weight: 600; }
-html[data-skin="sakura"] .nav-item.active { background: linear-gradient(90deg, var(--accent), var(--accent-2)); color: #fff; }
+html[data-skin="sakura"] .nav-item.active { background: var(--grad-on); color: #fff; }
 html[data-skin="sakura"] .nav-item.active .ic, html[data-skin="sakura"] .nav-item.active .nav-count { color: #fff; }
 @media (max-width: 899px) {
   html[data-skin="sakura"] .tabbar { left: 12px; right: 12px; bottom: calc(var(--sb) + 10px); height: 64px; padding: 0 8px; border-radius: 26px; border: 0; background: color-mix(in srgb, var(--surface) 90%, transparent); box-shadow: 0 12px 30px -10px rgba(224, 96, 126, .5); }
@@ -813,3 +816,7 @@ html[data-skin="minimal"] { --sheet-r: 14px; }
 html[data-skin="tavern"] { --sheet-r: 6px; }
 html[data-skin="sakura"] { --sheet-r: 28px; }
 html[data-skin="ink"], html[data-skin="neon"] { --sheet-r: 0px; }
+
+/* 选中的选项里再放小标签、排除状态的标签：所有风格统一，不被各自的 .opt 背景覆盖 */
+html[data-skin] .opt.active .chip-s { background: color-mix(in srgb, currentColor 20%, transparent); color: inherit; }
+html[data-skin] .opt.tag-opt.active.out { background: transparent; color: var(--danger, #b4483c); border: 1px solid currentColor; box-shadow: none; }
