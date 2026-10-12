@@ -458,7 +458,7 @@ export function openDetail(id, { seq = null, onLeave = null } = {}) {
         const shown = stats.filter(([, v]) => v !== undefined && v !== null && v !== '');
         if (!shown.length) return null;
         return h('section', { class: 'panel facts-panel' },
-            h('div', { class: 'facts' }, shown.map(([k, v]) => h('div', { class: 'fact' }, h('b', {}, String(v)), h('span', {}, k)))),
+            h('div', { class: 'facts' }, shown.map(([k, v]) => h('div', { class: 'fact' }, h('b', { class: String(v).length > 5 ? 'long' : '' }, String(v)), h('span', {}, k)))),
             tokenLine(m.card?.tokens),
             m.card?.bookName ? h('div', { class: 'muted small' }, '内嵌世界书：', m.card.bookName) : null,
             m.card?.world && m.card.world !== m.card.bookName ? h('div', { class: 'muted small' }, '酒馆里绑定的世界书：', m.card.world) : null);

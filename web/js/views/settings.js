@@ -6,7 +6,7 @@ import { state, savePrefs, applyAccent, reload, TYPE_META, SKINS, uiFont, readZo
 import { CARD_PARTS, ENTRY_FLAGS } from '../sig.js';
 import { SORTS } from './library.js';
 import { topbar, ensureView } from './common.js';
-import { aiSettings } from './ai.js';
+import { aiSettings, aiReady } from './ai.js';
 import { findDuplicates, openDuplicates } from './dupes.js';
 
 const KINDS = { text: '单行文本', textarea: '多行文本', number: '数字', url: '链接', date: '日期', select: '下拉选择', tags: '标签列表', checkbox: '开关', rating: '星级评分', color: '颜色' };
@@ -265,6 +265,8 @@ const TAG_SPLIT = /[，、,;；]/;
 const CARD_TAG_MODES = [['all', '全部收下'], ['known', '只收已有的'], ['none', '不收']];
 let tagQuery = '';
 let tagSort = 'count';
+let tagSelecting = false;
+const tagSel = new Set();
 
 /** 标签 → 使用次数（不含回收站） */
 function tagCounts() {
@@ -273,12 +275,99 @@ function tagCounts() {
     return m;
 }
 
-async function replaceTags(ops, done) {
+/** remember：把合并掉的写法记成同义词，以后自动换成合并后的标签 */
+async function replaceTags(ops, done, remember = false) {
     try {
-        const r = await api.post('/api/tags/replace', { ops });
+        const r = await api.post('/api/tags/replace', { ops, remember });
         toast(done(r.count), 'ok');
         await reload();
-    } catch (e) { toast(e.message, 'err'); }
+        return true;
+    } catch (e) { toast(e.message, 'err'); return false; }
+}
+
+const REMEMBER_HELP = '以后导入的卡、AI 整理、手动打标签时，遇到合并掉的写法会自动换成保留的标签。记下的写法在下面的「同义词」里，可以删掉。';
+
+/** 合并几个标签：选一个保留（或者起个新名字）。返回 { ops, remember, to }，取消时返回 null */
+async function mergeTagsDialog(tags, counts) {
+    let target = [...tags].sort((a, b) => (counts.get(b) || 0) - (counts.get(a) || 0))[0];
+    let remember = true;
+    const custom = h('input', { class: 'input', placeholder: '或者合并成一个新名字', maxlength: 60, oninput: () => draw() });
+    const list = h('div', { class: 'opts' });
+    const draw = () => clear(list, tags.map((t) => h('button', { class: `opt ${!custom.value.trim() && t === target ? 'active' : ''}`, onclick: () => { target = t; custom.value = ''; draw(); } },
+        t, h('span', { class: 'opt-n' }, counts.get(t) || 0))));
+    draw();
+    const body = h('div', { class: 'stack' },
+        h('div', { class: 'muted small' }, `把这 ${tags.length} 个标签合成一个，保留哪个写法？`),
+        list, custom,
+        setRow('记住合并掉的写法', REMEMBER_HELP, switchEl(remember, (v) => { remember = v; })));
+    const choice = await choiceDialog(body, [{ key: 'ok', label: '合并', cls: 'primary' }], { title: '合并标签' });
+    if (choice !== 'ok') return null;
+    const to = custom.value.trim() || target;
+    return { ops: [{ from: tags.filter((t) => t !== to), to: [to] }], remember, to };
+}
+
+/** AI 看全部标签，建议哪些可以合并；勾选后一次合并 */
+function aiTagSuggest(total) {
+    const body = h('div', {}, h('div', { class: 'loading' }, h('span', { class: 'spinner' }), h('span', {}, `AI 正在看 ${total} 个标签…`)));
+    const foot = h('div', { class: 'sheet-foot' });
+    foot.hidden = true;
+    const s = sheet({ title: 'AI 合并建议', body, full: true });
+    s.el.append(foot);
+    api.post('/api/ai/tags/suggest').then((r) => {
+        if (!r.groups.length) {
+            clear(body, h('div', { class: 'stack-s' }, h('div', { class: 'muted' }, `AI 看了 ${r.total} 个标签，没有找到需要合并的。`)));
+            return;
+        }
+        let remember = true;
+        const picks = r.groups.map((g) => ({ on: true, to: g.to, all: [...(g.toCount || !g.from.some((f) => f.tag === g.to) ? [{ tag: g.to, count: g.toCount }] : []), ...g.from], g }));
+        const okBtn = btn('', { icon: 'merge', cls: 'primary', onclick: async () => {
+            const ops = picks.filter((p) => p.on).map((p) => ({ from: p.all.map((x) => x.tag).filter((t) => t !== p.to), to: [p.to] }));
+            okBtn.disabled = true;
+            if (await replaceTags(ops, (n) => `已合并 ${ops.length} 组，涉及 ${n} 项`, remember)) s.close(); else okBtn.disabled = false;
+        } });
+        const count = () => { const n = picks.filter((p) => p.on).length; clear(okBtn, icon('merge', { size: 16 }), `合并选中的 ${n} 组`); okBtn.disabled = !n; };
+        const card = (p) => {
+            const el = h('section', { class: `tag-sug ${p.on ? '' : 'off'}` });
+            const draw = () => clear(el,
+                h('div', { class: 'tag-sug-head' },
+                    h('button', { class: `row-check ${p.on ? 'on' : ''}`, title: p.on ? '不合并这组' : '合并这组', onclick: () => { p.on = !p.on; el.classList.toggle('off', !p.on); draw(); count(); } }, p.on ? icon('check', { size: 13, stroke: 3 }) : null),
+                    h('div', { class: 'grow tag-sug-to' }, '合并成 ', h('b', {}, p.to), p.g.toCount ? null : h('span', { class: 'chip-s info' }, '新标签'))),
+                h('div', { class: 'opts' }, p.all.map((x) => h('button', { class: `opt ${x.tag === p.to ? 'active' : ''}`, title: '保留这个写法', onclick: () => { p.to = x.tag; draw(); } }, x.tag, h('span', { class: 'opt-n' }, x.count || 0)))),
+                p.g.reason ? h('div', { class: 'muted small' }, p.g.reason) : null);
+            draw();
+            return el;
+        };
+        clear(body, h('div', { class: 'stack-s' },
+            h('div', { class: 'muted small' }, `AI 看了 ${r.total} 个标签，建议合并下面 ${r.groups.length} 组。点标签可以换成保留那个写法；不想合并的取消勾选。`),
+            picks.map(card),
+            setRow('记住合并掉的写法', REMEMBER_HELP, switchEl(remember, (v) => { remember = v; }))));
+        foot.hidden = false;
+        clear(foot, btn('取消', { onclick: () => s.close() }), okBtn);
+        count();
+    }).catch((e) => clear(body, h('div', { class: 'note warn' }, icon('alert', { size: 15 }), h('span', {}, e.message))));
+}
+
+/** 同义词：旧写法 → 现在用的标签 */
+function aliasPanel() {
+    const aliases = { ...(state.settings.tagAliases || {}) };
+    const entries = Object.entries(aliases).sort((a, b) => a[1].localeCompare(b[1], 'zh') || a[0].localeCompare(b[0], 'zh'));
+    const save = async (next, msg) => {
+        try { await api.put('/api/tags/aliases', { aliases: next }); toast(msg, 'ok'); await reload(); } catch (e) { toast(e.message, 'err'); }
+    };
+    const from = h('input', { class: 'input', placeholder: '旧写法，例如 都市', maxlength: 60 });
+    const to = h('input', { class: 'input', placeholder: '换成，例如 现代', maxlength: 60 });
+    const add = () => {
+        const a = from.value.trim();
+        const b = to.value.trim();
+        if (!a || !b || a === b) { toast('两边都要填，而且不能一样', 'err'); return; }
+        save({ ...aliases, [a]: b }, `以后「${a}」会自动换成「${b}」`);
+    };
+    return panel(`同义词${entries.length ? ` · ${entries.length}` : ''}`, 'merge', null,
+        help('左边的写法以后会自动换成右边的标签：导入卡片、AI 整理、手动打标签都算。合并标签时勾选「记住合并掉的写法」会自动加到这里。已经打上的标签不受影响，要改用上面的合并。'),
+        entries.length ? h('div', { class: 'rule-list' }, entries.map(([a, b]) => h('span', { class: 'rule-chip' }, h('span', {}, `${a} → ${b}`),
+            h('button', { title: '删除', onclick: () => { const next = { ...aliases }; delete next[a]; save(next, `已删除「${a}」`); } }, icon('x', { size: 12 })))))
+            : h('div', { class: 'muted small' }, '还没有同义词'),
+        h('div', { class: 'input-group' }, from, to, btn('添加', { icon: 'plus', onclick: add })));
 }
 
 function tagsSection() {
@@ -295,7 +384,7 @@ function tagsSection() {
         const to = String(v ?? '').trim();
         if (!to || to === t) return;
         if (counts.has(to) && !(await confirmDialog(`已经有「${to}」这个标签（${counts.get(to)} 项）。改名后两个标签会合并成「${to}」。`, { ok: '合并', title: '合并标签' }))) return;
-        replaceTags([{ from: [t], to: [to] }], (n) => `已改名，涉及 ${n} 项`);
+        replaceTags([{ from: [t], to: [to] }], (n) => `已改名，涉及 ${n} 项`, true);
     };
     const split = (t) => {
         const parts = t.split(TAG_SPLIT).map((x) => x.trim()).filter(Boolean);
@@ -315,13 +404,30 @@ function tagsSection() {
         const q = tagQuery.toLowerCase();
         const rows = all.filter(([t]) => !q || t.toLowerCase().includes(q))
             .sort(tagSort === 'name' ? (a, b) => a[0].localeCompare(b[0], 'zh') : (a, b) => b[1] - a[1] || a[0].localeCompare(b[0], 'zh'));
+        const toggle = (t) => { if (tagSel.has(t)) tagSel.delete(t); else tagSel.add(t); draw(); };
         clear(list, rows.length ? rows.map(([t, n]) => h('div', { class: 'row-item tag-admin-row' },
-            h('button', { class: 'tag-admin-name', title: '在仓库里查看带这个标签的条目', onclick: () => show(t) }, h('span', { class: 'min0' }, t), h('span', { class: 'fold-count' }, n)),
-            TAG_SPLIT.test(t) ? btn('拆开', { cls: 'sm ghost', title: '按逗号拆成几个标签', onclick: () => split(t) }) : null,
-            btn('', { icon: 'pencil', cls: 'sm ghost icon', title: '改名 / 合并', onclick: () => rename(t) }),
-            btn('', { icon: 'trash', cls: 'sm ghost icon', title: '删除', onclick: () => remove(t) })))
+            tagSelecting ? h('button', { class: `row-check ${tagSel.has(t) ? 'on' : ''}`, title: '选择', onclick: () => toggle(t) }, tagSel.has(t) ? icon('check', { size: 13, stroke: 3 }) : null) : null,
+            h('button', { class: 'tag-admin-name', title: tagSelecting ? '选择' : '在仓库里查看带这个标签的条目', onclick: () => (tagSelecting ? toggle(t) : show(t)) }, h('span', { class: 'min0' }, t), h('span', { class: 'fold-count' }, n)),
+            tagSelecting ? null : [
+                TAG_SPLIT.test(t) ? btn('拆开', { cls: 'sm ghost', title: '按逗号拆成几个标签', onclick: () => split(t) }) : null,
+                btn('', { icon: 'pencil', cls: 'sm ghost icon', title: '改名 / 合并', onclick: () => rename(t) }),
+                btn('', { icon: 'trash', cls: 'sm ghost icon', title: '删除', onclick: () => remove(t) })]))
             : h('div', { class: 'muted small' }, all.length ? '没有匹配的标签' : '还没有标签'));
+        for (const t of [...tagSel]) if (!counts.has(t)) tagSel.delete(t);
+        clear(selBar, tagSelecting ? [
+            h('span', { class: 'grow muted small' }, tagSel.size ? `已选 ${tagSel.size} 个` : '点标签选择要合并的几个'),
+            btn('取消', { cls: 'sm ghost', onclick: () => { tagSelecting = false; tagSel.clear(); draw(); } }),
+            btn(`合并${tagSel.size > 1 ? ` ${tagSel.size} 个` : ''}`, { icon: 'merge', cls: 'sm primary', disabled: tagSel.size < 2, onclick: async () => {
+                const m = await mergeTagsDialog([...tagSel], counts);
+                if (!m) return;
+                // 先退出多选：合并后页面会按新数据重画
+                tagSelecting = false;
+                tagSel.clear();
+                replaceTags(m.ops, (n) => `已合并成「${m.to}」，涉及 ${n} 项`, m.remember);
+            } })] : null);
+        selBar.hidden = !tagSelecting;
     };
+    const selBar = h('div', { class: 'tag-sel-bar' });
     draw();
 
     return [
@@ -329,12 +435,17 @@ function tagsSection() {
             setRow('卡里自带的标签', '作者常在卡里塞很多标签。「只收已有的」：只收你仓库里已经有的标签；「不收」：一个都不要，自己打。用逗号连在一起的会自动拆开',
                 seg(mode, CARD_TAG_MODES, async (v) => { state.settings.cardTags = v; rerender(); await api.put('/api/settings', { cardTags: v }); toast('已保存', 'ok'); }))),
         panel(`所有标签 · ${all.length}`, 'tag', null,
-            help('点标签名在仓库里查看。改名成已有的标签就是合并。回收站里的条目会一起改。'),
+            help('点标签名在仓库里查看。改名成已有的标签就是合并；要一次合并好几个，用「多选合并」。回收站里的条目会一起改。'),
+            all.length > 1 ? h('div', { class: 'row-actions tag-admin-acts' },
+                btn('多选合并', { icon: 'checkSquare', cls: 'sm', onclick: () => { tagSelecting = !tagSelecting; tagSel.clear(); draw(); } }),
+                aiReady() ? btn('AI 找可合并的', { icon: 'sparkles', cls: 'sm', onclick: () => aiTagSuggest(all.length) }) : null) : null,
             splittable.length ? h('div', { class: 'note' }, icon('info', { size: 15 }),
                 h('span', { class: 'grow' }, `有 ${splittable.length} 个标签是几个词用逗号连在一起的，比如「${splittable[0][0].slice(0, 16)}${splittable[0][0].length > 16 ? '…' : ''}」`),
                 btn('全部拆开', { cls: 'sm', onclick: () => replaceTags(splittable.map(([t]) => ({ from: [t], to: t.split(TAG_SPLIT).map((x) => x.trim()).filter(Boolean) })), (n) => `已拆开，涉及 ${n} 项`) })) : null,
             all.length > 8 ? h('div', { class: 'tag-admin-tools' }, h('label', { class: 'search inline grow' }, icon('search', { size: 15 }), search), sortSeg) : null,
+            selBar,
             list),
+        aliasPanel(),
     ];
 }
 
@@ -552,6 +663,7 @@ function autoBackupPanel() {
                     load();
                 } })))))
             : h('div', { class: 'muted small' }, '还没有备份，开启后一分钟内会存第一份。'),
+        cfg.list.length > 1 && cfg.disk ? h('div', { class: 'muted small' }, `${cfg.list.length} 份备份合计 ${fmtBytes(cfg.list.reduce((n, b) => n + b.size, 0))}，没变过的文件各份共用，实际只多占 ${fmtBytes(cfg.disk.extra)}。`) : null,
         help( '备份放在服务器数据目录的 backups 文件夹里。服务器整个出问题时这些备份也会一起丢，建议偶尔用上面的「下载完整备份」存一份到自己的设备。'));
     const load = () => api.get('/api/backups').then(draw).catch((e) => clear(body, h('span', { class: 'muted small' }, e.message)));
     load();

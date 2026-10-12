@@ -241,7 +241,7 @@ export class Store {
             subtype: data.subtype || '',
             name: data.name || '未命名',
             description: data.description || '',
-            tags: [...new Set((data.tags || []).map((t) => String(t).trim()).filter(Boolean))],
+            tags: this.canonTags(data.tags || []),
             collections: data.collections || [],
             favorite: Boolean(data.favorite),
             rating: Math.max(0, Math.min(5, Number(data.rating) || 0)),
@@ -264,6 +264,12 @@ export class Store {
         return item;
     }
 
+    /** 标签去空格、去重，并把记住的旧写法换成现在用的标签（settings.tagAliases：{ 旧写法: 标签 }） */
+    canonTags(tags) {
+        const alias = this.db.settings?.tagAliases || {};
+        return [...new Set((tags || []).map((t) => String(t).trim()).filter(Boolean).map((t) => alias[t] || t))];
+    }
+
     updateItem(id, patch) {
         const it = this.db.items[id];
         if (!it) return null;
@@ -271,7 +277,7 @@ export class Store {
         for (const k of allowed) {
             if (k in patch) it[k] = patch[k];
         }
-        if (patch.tags) it.tags = [...new Set(patch.tags.map((t) => String(t).trim()).filter(Boolean))];
+        if (patch.tags) it.tags = this.canonTags(patch.tags);
         it.updatedAt = now();
         this.save();
         return it;

@@ -68,7 +68,8 @@ export function metaLine(it) {
     const m = it.meta || {};
     const parts = [];
     if (it.type === 'character' && m.card) {
-        if (m.card.creator) parts.push(m.card.creator);
+        // 藏馆里改过的作者优先，没填才用卡里自带的
+        if (it.author || m.card.creator) parts.push(it.author || m.card.creator);
         if (m.card.greetings > 1) parts.push(`${m.card.greetings} 开场`);
         if (m.card.bookEntries) parts.push(`${m.card.bookEntries} 词条`);
     } else if (it.type === 'worldbook' && m.entries != null) parts.push(`${m.entries} 条目`);

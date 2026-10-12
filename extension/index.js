@@ -2,7 +2,7 @@
 // 作用：1) 全屏内嵌藏馆网页；2) 作为桥，替藏馆页面读写酒馆本地数据（角色卡、世界书、预设、正则、快速回复、主题、背景）
 
 const EXT_KEY = 'tavernVault';
-const VERSION = '1.2.0';
+const VERSION = '1.2.2';
 const DEFAULTS = { url: '', token: '', fab: true, fabPos: null };
 const isTT = () => Boolean(window.__TAURITAVERN__);
 
@@ -16,6 +16,22 @@ function settings() {
 }
 const save = () => ctx().saveSettingsDebounced();
 const baseUrl = () => String(settings().url || '').trim().replace(/\/+$/, '');
+
+// 上次打开时藏馆的样子（是否全屏、什么颜色）。下次打开直接照这个显示，不用等藏馆加载完才变全屏
+const LOOK_KEY = 'tavernVault.look';
+function look() {
+    try { return JSON.parse(localStorage.getItem(LOOK_KEY) || '{}') || {}; } catch { return {}; }
+}
+function saveLook(patch) {
+    try { localStorage.setItem(LOOK_KEY, JSON.stringify({ ...look(), ...patch })); } catch { /* 存不了就下次再等 */ }
+}
+const safeColor = (v) => (typeof v === 'string' && v.length < 80 && /^[#a-z0-9(),.%\s/-]+$/i.test(v) ? v : '');
+function paint({ bg, fg, line } = {}) {
+    const set = (k, v) => { if (safeColor(v)) panel.style.setProperty(k, v); else panel.style.removeProperty(k); };
+    set('--tv-bg', bg);
+    set('--tv-fg', fg);
+    set('--tv-line', line);
+}
 
 function toast(msg, kind = 'info') {
     const t = window.toastr;
@@ -96,11 +112,8 @@ const handlers = {
     /** 藏馆告诉插件当前风格的颜色：面板顶部（状态栏那一条）和标题栏跟着变，不再是固定的深色 */
     async theme({ bg, fg, line } = {}) {
         if (!panel) return { ok: false };
-        const color = (v) => (typeof v === 'string' && v.length < 80 && /^[#a-z0-9(),.%\s/-]+$/i.test(v) ? v : '');
-        const set = (k, v) => { if (color(v)) panel.style.setProperty(k, v); else panel.style.removeProperty(k); };
-        set('--tv-bg', bg);
-        set('--tv-fg', fg);
-        set('--tv-line', line);
+        paint({ bg, fg, line });
+        saveLook({ bg: safeColor(bg), fg: safeColor(fg), line: safeColor(line) });
         return { ok: true };
     },
 
@@ -119,6 +132,9 @@ const handlers = {
             return v;
         };
         panel.classList.add('tv-edge');
+        edgeOk = true;
+        clearTimeout(edgeTimer);
+        saveLook({ edge: true });
         return { top: measure('top'), bottom: measure('bottom'), left: measure('left'), right: measure('right') };
     },
 
@@ -353,6 +369,8 @@ const handlers = {
 let panel;
 let iframe;
 let loadedSrc = '';
+let edgeOk = false;
+let edgeTimer = 0;
 
 const SVG = (d, size = 18) => `<svg class="tv-ic" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`;
 const IC = {
@@ -384,7 +402,14 @@ function buildPanel() {
     panel.addEventListener('click', (e) => {
         const act = e.target.closest('[data-act]')?.dataset.act;
         if (act === 'close') closePanel();
-        if (act === 'reload') { loadedSrc = ''; openPanel(); }
+        if (act === 'reload') {
+            // 地址没变时改 src 只是页内跳转、不会重新加载，换一个新的 iframe
+            const fresh = iframe.cloneNode();
+            iframe.replaceWith(fresh);
+            iframe = fresh;
+            loadedSrc = '';
+            openPanel();
+        }
         if (act === 'retry') openPanel();
     });
     if (isTT()) {
@@ -401,6 +426,10 @@ async function openPanel() {
         return;
     }
     if (!panel) buildPanel();
+    // 藏馆以前用过全屏：一打开就全屏、用上次的颜色，加载过程中不再先显示插件自己的标题栏
+    const l = look();
+    paint(l);
+    if (l.edge) panel.classList.add('tv-edge');
     panel.classList.add('open');
     panel.classList.remove('error');
     try {
@@ -419,6 +448,10 @@ async function openPanel() {
     if (loadedSrc !== src) {
         loadedSrc = src;
         iframe.src = src;
+        // 藏馆一直没接手全屏（加载卡住、旧版藏馆）：退回显示标题栏，保证能关掉
+        edgeOk = false;
+        clearTimeout(edgeTimer);
+        if (panel.classList.contains('tv-edge')) edgeTimer = setTimeout(() => { if (!edgeOk) panel.classList.remove('tv-edge'); }, 15000);
     }
 }
 

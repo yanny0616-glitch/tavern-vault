@@ -213,11 +213,104 @@ async function request(p, url, init, { signal, timeout = 120000 } = {}) {
     return { json, raw: redact(text, p), status: res.status, retryAfter: Number(res.headers.get('retry-after')) || 0 };
 }
 
+/** 读 SSE 流：每个事件回调 (event, data)；data 是解析好的 JSON，解析不了的跳过 */
+async function readSse(res, onEvent) {
+    const dec = new TextDecoder();
+    let buf = '';
+    let event = '';
+    const line = (l) => {
+        if (l === '') { event = ''; return; }
+        if (l.startsWith('event:')) { event = l.slice(6).trim(); return; }
+        if (!l.startsWith('data:')) return;
+        const d = l.slice(5).trim();
+        if (d === '[DONE]') return;
+        let j;
+        try { j = JSON.parse(d); } catch { return; }
+        onEvent(event || j.type || '', j);
+    };
+    for await (const chunk of res.body) {
+        buf += dec.decode(chunk, { stream: true });
+        let i;
+        while ((i = buf.indexOf('\n')) >= 0) {
+            line(buf.slice(0, i).replace(/\r$/, ''));
+            buf = buf.slice(i + 1);
+        }
+    }
+    if (buf) line(buf.replace(/\r$/, ''));
+}
+
 /**
- * 一次对话
+ * 流式请求：边收边回调 onDelta(到目前为止的全文)。服务端不支持流式、直接回了 JSON 时照常解析
+ * @returns {{ json?, text, truncated, usage, model, raw }}
+ */
+async function requestStream(p, url, init, { signal, timeout = 120000, onDelta } = {}) {
+    const signals = [AbortSignal.timeout(timeout), signal].filter(Boolean);
+    let res;
+    const fail = (e) => {
+        if (signal?.aborted) return new AiError('已取消');
+        if (e.name === 'TimeoutError') return new AiError(`请求超时（${Math.round(timeout / 1000)} 秒没有返回）`);
+        if (e instanceof AiError) return e;
+        return new AiError(`无法连接 AI 服务：${e.cause?.code || e.cause?.message || e.message}`);
+    };
+    try {
+        res = await fetch(url, { ...init, headers: headers(p), signal: AbortSignal.any(signals) });
+    } catch (e) { throw fail(e); }
+    if (!res.ok || !/text\/event-stream/i.test(res.headers.get('content-type') || '')) {
+        // 出错，或者没按流式返回：按普通请求处理
+        let text;
+        try { text = await res.text(); } catch (e) { throw fail(e); }
+        let json = null;
+        try { json = JSON.parse(text); } catch { /* 不是 JSON */ }
+        if (!res.ok) {
+            const msg = json?.error?.message || json?.error || json?.message || text.slice(0, 300);
+            const hint = res.status === 401 || res.status === 403 ? '（密钥不对或没有权限）' : res.status === 404 ? '（地址或模型名不对）' : res.status === 429 ? '（请求太频繁或额度用完）' : '';
+            throw new AiError(`AI 服务返回 ${res.status}${hint}：${redact(typeof msg === 'string' ? msg : JSON.stringify(msg), p).slice(0, 300)}`, { status: res.status, raw: redact(text, p), retryAfter: Number(res.headers.get('retry-after')) || 0 });
+        }
+        if (!json) throw new AiError('AI 服务返回的不是 JSON，地址可能填错了', { status: res.status, raw: redact(text, p) });
+        return { json, raw: redact(text, p) };
+    }
+    let text = '';
+    let reasoning = false;
+    let truncated = false;
+    let model = '';
+    let usage = null;
+    let streamError = '';
+    try {
+        await readSse(res, (ev, j) => {
+            let add = '';
+            if (p.format === 'anthropic') {
+                if (ev === 'message_start') { model = j.message?.model || model; usage = { ...(j.message?.usage || {}) }; }
+                else if (ev === 'content_block_delta' && j.delta?.type === 'text_delta') add = j.delta.text || '';
+                else if (ev === 'message_delta') { truncated = j.delta?.stop_reason === 'max_tokens'; usage = { ...(usage || {}), ...(j.usage || {}) }; }
+                else if (ev === 'error') streamError = j.error?.message || 'AI 服务中途出错';
+            } else {
+                if (j.error) streamError = j.error.message || JSON.stringify(j.error);
+                model = j.model || model;
+                if (j.usage) usage = j.usage;
+                const c = j.choices?.[0];
+                if (c) {
+                    add = typeof c.delta?.content === 'string' ? c.delta.content : Array.isArray(c.delta?.content) ? c.delta.content.map((x) => x.text || '').join('') : c.text || '';
+                    if (c.delta?.reasoning_content) reasoning = true;
+                    if (c.finish_reason) truncated = /length/.test(c.finish_reason);
+                }
+            }
+            if (add) { text += add; onDelta?.(text); }
+        });
+    } catch (e) {
+        const err = fail(e);
+        err.partial = text;
+        throw err;
+    }
+    if (streamError) throw Object.assign(new AiError(`AI 服务中途出错：${redact(streamError, p).slice(0, 300)}`), { partial: text });
+    if (!text && reasoning) throw new AiError('模型只返回了思考过程，没有正文。可以调高「最大输出」或换一个模型');
+    return { text, truncated, usage, model, raw: '' };
+}
+
+/**
+ * 一次对话。传了 onDelta 就用流式请求，边生成边回调
  * @returns {{text, truncated, usage, model, raw}}
  */
-export async function chat(p, { system, user, messages, maxTokens, temperature, signal, timeout } = {}) {
+export async function chat(p, { system, user, messages, maxTokens, temperature, signal, timeout, onDelta } = {}) {
     if (!p) throw new AiError('还没有配置 AI 服务');
     if (!p.model) throw new AiError('还没有填写模型');
     const base = apiBase(p);
@@ -235,11 +328,16 @@ export async function chat(p, { system, user, messages, maxTokens, temperature, 
         body = { model: p.model, max_tokens: max, messages: [{ role: 'system', content: system }, ...turns] };
     }
     if (temp != null) body.temperature = temp;
+    if (onDelta) body.stream = true;
     const init = { method: 'POST', body: JSON.stringify(body) };
     let r;
     for (let attempt = 0; ; attempt++) {
         try {
-            r = await request(p, url, init, { signal, timeout });
+            r = onDelta ? await requestStream(p, url, init, { signal, timeout, onDelta }) : await request(p, url, init, { signal, timeout });
+            if (!r.json) {
+                if (!r.text.trim()) throw new AiError(r.truncated ? '输出被截断且为空，请调高「最大输出」' : 'AI 返回了空内容');
+                return { text: r.text, truncated: r.truncated, usage: r.usage, model: r.model || p.model, raw: '' };
+            }
             break;
         } catch (e) {
             const retryable = [429, 500, 502, 503, 504, 529].includes(e.status);

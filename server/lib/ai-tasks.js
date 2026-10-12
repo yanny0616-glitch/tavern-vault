@@ -15,6 +15,16 @@ const BUDGET = {
 const SKIP_FIELDS = new Set(['source', 'author', 'version', 'rating', 'downloadedAt', 'status']);
 export const AI_FIELD_KINDS = new Set(['text', 'textarea', 'select', 'checkbox', 'number', 'tags']);
 const OUTPUT_PER_ITEM = 350;
+const TAG_MERGE_SYSTEM = [
+    '你在帮用户整理收藏库的标签。用户会给出全部标签和各自的使用次数，请找出意思相同、只是写法不同的标签，建议合并成一个。',
+    '1. 只合并真正同义的：繁体和简体、大小写、全角半角、多了空格或符号、同一个意思的不同说法、明显的错别字。',
+    '2. 有关联但意思不同的不要合并，例如「古风」和「仙侠」、「恋爱」和「后宫」、「猫娘」和「兽人」。拿不准就不合并。',
+    '3. 保留哪个写法：优先用得多、更通用、更规范的那个，尽量从列表里选。',
+    '4. 每个标签最多出现在一组里。',
+    '只输出一个 JSON 对象，不要任何解释，不要代码块。格式：',
+    '{"groups":[{"to":"保留的标签","from":["要并进去的标签"],"reason":"一句话说明为什么是同一个意思"}]}',
+    '没有可以合并的就输出 {"groups":[]}。',
+].join('\n');
 
 const str = (v) => (v == null ? '' : typeof v === 'string' ? v : JSON.stringify(v)).replace(/\r\n?/g, '\n').trim();
 const clip = (s, n) => (s.length > n ? `${s.slice(0, n)}…（后略 ${s.length - n} 字）` : s);
@@ -31,7 +41,9 @@ function bookLines(book, B) {
         const title = str(e.comment || e.name) || '(无标题)';
         const keys = arr(e.key ?? e.keys).slice(0, 8).join('、');
         let line = `${i + 1}. ${title}${keys ? `［${keys}］` : ''}${e.constant ? '［常驻］' : ''}`;
-        if (B.entry) line += `：${clip(str(e.content).replace(/\n+/g, ' '), B.entry)}`;
+        // 完整读取时保留换行，AI 改写条目时才不会把分段弄丢
+        if (B.entry >= 1000) line += `：\n${clip(str(e.content), B.entry)}`;
+        else if (B.entry) line += `：${clip(str(e.content).replace(/\n+/g, ' '), B.entry)}`;
         used += line.length;
         if (used > B.field * 2) { lines.push(`…另有 ${entries.length - lines.length} 条`); break; }
         lines.push(line);
@@ -78,11 +90,15 @@ export function itemText(it, content, scope = 'standard') {
             const o = data || {};
             const keys = ['temperature', 'top_p', 'openai_max_context', 'openai_max_tokens', 'temp', 'rep_pen'].filter((k) => k in o).map((k) => `${k}=${o[k]}`);
             if (keys.length) parts.push(`参数：${keys.join('，')}`);
-            const prompts = arr(o.prompts).filter((p) => p.content);
+            // 编号按提示词在文件里的顺序（没有内容的不列出，但占编号），AI 对话里改提示词时按这个编号定位
+            const prompts = arr(o.prompts).map((p, i) => [i + 1, p]).filter(([, p]) => p?.content);
             if (prompts.length) {
                 parts.push(`【提示词】共 ${prompts.length} 段`);
                 const per = scope === 'brief' ? 80 : scope === 'standard' ? 400 : 4000;
-                for (const p of prompts.slice(0, 60)) parts.push(`- ${str(p.name || p.identifier)}${p.enabled === false ? '（关闭）' : ''}：${clip(str(p.content).replace(/\n+/g, ' '), per)}`);
+                for (const [n, p] of prompts.slice(0, 60)) {
+                    const head = `${n}. ${str(p.name || p.identifier)}${p.enabled === false ? '（关闭）' : ''}`;
+                    parts.push(scope === 'full' ? `${head}：\n${clip(str(p.content), per)}` : `${head}：${clip(str(p.content).replace(/\n+/g, ' '), per)}`);
+                }
             }
             for (const k of ['story_string', 'system_prompt', 'content']) add(k, o[k]);
             break;
@@ -170,7 +186,7 @@ export function organizeBatchPrompt(list, { opts, tagLib, extra = '' }) {
 }
 
 /** 校验并规范化 AI 的整理结果 */
-export function normalizeOrganize(obj, { opts, fields, tagLib }) {
+export function normalizeOrganize(obj, { opts, fields, tagLib, aliases = {} }) {
     if (!obj || typeof obj !== 'object' || Array.isArray(obj)) throw new AiError('AI 返回的不是对象');
     const lib = new Map(tagLib.map((t) => [t.toLowerCase(), t]));
     const seen = new Set();
@@ -178,6 +194,7 @@ export function normalizeOrganize(obj, { opts, fields, tagLib }) {
     for (const raw of arr(obj.tags)) {
         let t = String(raw ?? '').replace(/^#/, '').trim().slice(0, 20);
         if (!t) continue;
+        t = aliases[t] || t; // 记下的旧写法换成现在用的标签
         const hit = lib.get(t.toLowerCase());
         if (hit) t = hit;
         if (seen.has(t.toLowerCase())) continue;
@@ -278,7 +295,7 @@ export function createAiTasks({ dataDir, store, config, loadContent, broadcast }
         try { content = loadContent(it); } catch { /* 文件缺失 */ }
         const text = itemText(it, content, scope || opts.scope);
         const fields = aiFields(store.db.fields, it.type, opts.fields);
-        const ctx = { opts, fields, tagLib: tagLibrary() };
+        const ctx = { opts, fields, tagLib: tagLibrary(), aliases: store.db.settings.tagAliases || {} };
         return { ...organizePrompt(it, text, { ...ctx, extra }), ctx, chars: text.length };
     }
 
@@ -329,7 +346,7 @@ export function createAiTasks({ dataDir, store, config, loadContent, broadcast }
                 const base = { raw: r.text.slice(0, 8000), truncated: r.truncated, usage: r.usage, model: r.model, profile: profile.name, chars: x.text.length, at, batchSize: list.length };
                 if (!e) { Object.assign(x.d, base, { status: 'error', error: r.truncated ? TRUNCATED : '合并回复里没有这一项的结果，可以重试' }); return; }
                 try {
-                    Object.assign(x.d, base, { status: 'done', result: normalizeOrganize(e, { opts, fields: x.fields, tagLib }) });
+                    Object.assign(x.d, base, { status: 'done', result: normalizeOrganize(e, { opts, fields: x.fields, tagLib, aliases: store.db.settings.tagAliases || {} }) });
                 } catch (err) {
                     Object.assign(x.d, base, { status: 'error', error: err.message });
                 }
@@ -513,6 +530,28 @@ export function createAiTasks({ dataDir, store, config, loadContent, broadcast }
             save();
             ping();
             return ids;
+        },
+
+        /** 让 AI 看全部标签，找出同义、写法不同的，建议合并成一个。只返回建议，不改数据 */
+        async suggestTagMerges() {
+            const profile = config.active;
+            if (!profile) throw new AiError('还没有配置 AI 服务');
+            const m = new Map();
+            for (const it of Object.values(store.db.items)) if (!it.deletedAt) for (const t of it.tags) m.set(t, (m.get(t) || 0) + 1);
+            const tags = [...m.entries()].sort((a, b) => b[1] - a[1]).slice(0, 2000);
+            if (tags.length < 2) return { groups: [], total: tags.length };
+            const r = await chat(profile, { system: TAG_MERGE_SYSTEM, user: `标签共 ${tags.length} 个（括号里是用了几次）：\n${tags.map(([t, n]) => `${t}（${n}）`).join('、')}`, maxTokens: Math.max(profile.maxTokens || 2048, 4096), timeout: 180000 });
+            const obj = parseJsonReply(r.text);
+            const used = new Set();
+            const groups = [];
+            for (const g of arr(obj.groups)) {
+                const to = str(g?.to).slice(0, 60);
+                const from = [...new Set(arr(g?.from).map((x) => str(x).slice(0, 60)))].filter((x) => x && x !== to && m.has(x) && !used.has(x));
+                if (!to || !from.length || used.has(to)) continue;
+                for (const x of [to, ...from]) used.add(x);
+                groups.push({ to, toCount: m.get(to) || 0, from: from.map((x) => ({ tag: x, count: m.get(x) })), reason: str(g?.reason).slice(0, 200) });
+            }
+            return { groups, total: tags.length, model: r.model };
         },
 
         async explain(d, { aLabel, bLabel, key, force = false }) {

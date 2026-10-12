@@ -28,6 +28,8 @@ export const api = {
             try { msg = (await res.json()).error || msg; } catch { /* ignore */ }
             throw new Error(msg);
         }
+        // 自己的改动成功后马上通知页面重新读取，不只靠服务器推送（推送可能慢或断了）
+        if (method !== 'GET' && path !== '/api/login' && !path.startsWith('/api/thumbs/')) window.dispatchEvent(new CustomEvent('tv:mutated'));
         if (blob) return res.blob();
         const ct = res.headers.get('content-type') || '';
         return ct.includes('json') ? res.json() : res.text();
@@ -50,7 +52,7 @@ export const api = {
                 let data = null;
                 try { data = JSON.parse(xhr.responseText); } catch { /* ignore */ }
                 if (xhr.status === 401) window.dispatchEvent(new CustomEvent('tv:unauthorized'));
-                if (xhr.status >= 200 && xhr.status < 300) resolve(data);
+                if (xhr.status >= 200 && xhr.status < 300) { window.dispatchEvent(new CustomEvent('tv:mutated')); resolve(data); }
                 else reject(Object.assign(new Error(data?.error || `HTTP ${xhr.status}`), { status: xhr.status }));
             };
             xhr.onerror = () => reject(new Error('网络错误，上传中断'));

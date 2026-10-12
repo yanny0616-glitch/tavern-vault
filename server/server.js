@@ -17,6 +17,7 @@ import { diffFiles, diffSummary } from './lib/diff.js';
 import { AiConfig, listModels, chat, AiError } from './lib/ai.js';
 import { createAiTasks } from './lib/ai-tasks.js';
 import { createAiChat } from './lib/ai-chat.js';
+import { createBackups, recoverDb } from './lib/backups.js';
 const str = (v) => (v == null ? '' : typeof v === 'string' ? v : String(v));
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -29,21 +30,7 @@ const MAX_UPLOAD = Number(process.env.TV_MAX_UPLOAD_MB || 200) * 1024 * 1024;
 const MAX_RESTORE = Number(process.env.TV_MAX_RESTORE_MB || 2048) * 1024 * 1024;
 
 // db.json 损坏或丢失时，从最近一份备份（自动或手动）里取回索引
-const store = new Store(DATA_DIR, {
-    recover() {
-        const dir = path.join(DATA_DIR, 'backups');
-        let names = [];
-        try { names = fs.readdirSync(dir).filter((f) => /^TavernVault-(auto|manual)-\d{8}-\d{6}\.zip$/.test(f)).sort((a, b) => b.slice(-19).localeCompare(a.slice(-19))); } catch { return null; }
-        for (const name of names) {
-            try {
-                const e = readZip(fs.readFileSync(path.join(dir, name)), { maxTotal: 4 * 1024 ** 3, maxEntries: 500000 }).find((x) => x.name === 'db.json');
-                const db = e && JSON.parse(e.read().toString('utf8'));
-                if (db?.items && typeof db.items === 'object') return { db, from: `备份 ${name}` };
-            } catch { /* 这份也坏了，试下一份 */ }
-        }
-        return null;
-    },
-});
+const store = new Store(DATA_DIR, { recover: () => recoverDb(path.join(DATA_DIR, 'backups')) });
 const aiConfig = new AiConfig(DATA_DIR);
 
 // ---------------- 认证 ----------------
@@ -156,7 +143,7 @@ const TAG_MODES = ['all', 'known', 'none'];
 function cardTagsToKeep(tags) {
     const mode = TAG_MODES.includes(store.db.settings.cardTags) ? store.db.settings.cardTags : 'all';
     if (mode === 'none') return [];
-    const list = [...new Set((tags || []).flatMap(splitTag))];
+    const list = store.canonTags((tags || []).flatMap(splitTag));
     if (mode === 'all') return list;
     const known = new Set(Object.values(store.db.items).flatMap((it) => it.tags));
     return list.filter((t) => known.has(t));
@@ -738,7 +725,7 @@ route('POST', '/api/ai/explain', async ({ req }) => {
 });
 
 // AI 对话
-const aiChat = createAiChat({ dataDir: DATA_DIR, store, config: aiConfig, loadContent, broadcast, saveCardVersion, removeVersion });
+const aiChat = createAiChat({ dataDir: DATA_DIR, store, config: aiConfig, loadContent, broadcast, saveVersion, removeVersion });
 const chatOr404 = (fn) => { try { return fn(); } catch (e) { throw new HttpError(e instanceof AiError ? 404 : 500, e.message); } };
 route('GET', '/api/ai/chats', () => ({ sessions: aiChat.list() }));
 route('POST', '/api/ai/chats', async ({ req }) => {
@@ -753,7 +740,7 @@ route('POST', '/api/ai/chats/preview', async ({ req }) => {
     const { id, ...o } = await readJson(req);
     try { return aiChat.preview(id ? String(id) : '', o); } catch (e) { return aiFail(e); }
 });
-route('GET', '/api/ai/chats/:id', ({ p }) => chatOr404(() => aiChat.get(p.id)));
+route('GET', '/api/ai/chats/:id', ({ p }) => chatOr404(() => aiChat.view(p.id)));
 route('PATCH', '/api/ai/chats/:id', async ({ req, p }) => {
     const body = await readJson(req);
     return chatOr404(() => aiChat.update(p.id, body));
@@ -854,7 +841,7 @@ route('POST', '/api/items/merge', async ({ req }) => {
             target.files.push({ ...f, id: crypto.randomBytes(6).toString('hex'), primary: false, label: f.label || `来自「${src.name}」` });
             moved++;
         }
-        target.tags = uniq([...target.tags, ...src.tags]);
+        target.tags = store.canonTags([...target.tags, ...src.tags]);
         target.collections = uniq([...(target.collections || []), ...(src.collections || [])]);
         target.favorite = target.favorite || src.favorite;
         target.rating = Math.max(target.rating || 0, src.rating || 0) || target.rating;
@@ -955,6 +942,25 @@ async function saveCardVersion(it, card, label) {
     return file;
 }
 
+/** 把改过的世界书、预设等 JSON 存成新版本（设为当前版本），文件名沿用当前版本 */
+function saveJsonVersion(it, data, label) {
+    const prev = store.primaryFile(it);
+    const filename = prev?.name?.endsWith('.json') ? prev.name : `${safeFilename(it.name)}.json`;
+    // 沿用原文件的缩进方式
+    const prevText = prev ? store.readBlob(prev.sha).toString('utf8') : '';
+    const indent = (prevText.match(/^\{\s*\n([ \t]+)"/) || [])[1] ?? '    ';
+    const buf = Buffer.from(JSON.stringify(data, null, indent));
+    const sha = store.putBlob(buf);
+    const det = detectFile(buf, filename);
+    const file = store.addFile(it.id, { sha, name: filename, size: buf.length, mime: mimeOf(filename), label: `${label} ${new Date().toLocaleString('zh-CN', { hour12: false })}`, primary: true, sig: fileSig(buf, filename, det), parts: fileParts(buf, filename, det) });
+    applyDetection(it, det, sha);
+    broadcast('change', { ids: [it.id] });
+    return file;
+}
+function saveVersion(it, data, label) {
+    return it.type === 'character' ? saveCardVersion(it, data, label) : saveJsonVersion(it, data, label);
+}
+
 /** 删掉一个版本；它是当前版本时，换回 prefer（还在的话）或最后一个 */
 function removeVersion(it, fileId, prefer = '') {
     const idx = it.files.findIndex((x) => x.id === fileId);
@@ -981,9 +987,50 @@ route('PUT', '/api/items/:id/card', async ({ req, p }) => {
     return slim(store.db.items[it.id]);
 });
 
+// 同义词：合并标签时记住旧写法，以后导入、AI 整理、手动打标签遇到旧写法都换成现在的标签
+const MAX_ALIASES = 2000;
+function cleanAliases(o) {
+    const out = {};
+    for (const [k, v] of Object.entries(o && typeof o === 'object' ? o : {}).slice(0, MAX_ALIASES)) {
+        const from = String(k).trim().slice(0, 60);
+        const to = String(v ?? '').trim().slice(0, 60);
+        if (from && to && from !== to) out[from] = to;
+    }
+    // 链式的直接指到最后（甲→乙→丙 变成 甲→丙），成环的丢掉
+    const res = {};
+    for (const k of Object.keys(out)) {
+        let v = out[k];
+        const seen = new Set([k]);
+        while (out[v] && !seen.has(v)) { seen.add(v); v = out[v]; }
+        if (!seen.has(v)) res[k] = v;
+    }
+    return res;
+}
+/** 标签改名、合并、删除后更新同义词：指向被改掉的标签的跟着改；remember 时把合并掉的写法记下来 */
+function updateAliases(ops, remember) {
+    const al = { ...(store.db.settings.tagAliases || {}) };
+    for (const { from, to } of ops) {
+        for (const [k, v] of Object.entries(al)) if (from.includes(v)) { if (to.length === 1) al[k] = to[0]; else delete al[k]; }
+        if (to.length === 1) delete al[to[0]]; // 现在用的标签不能再是别人的旧写法
+        if (remember && to.length === 1) for (const f of from) if (f !== to[0]) al[f] = to[0];
+    }
+    store.db.settings.tagAliases = cleanAliases(al);
+}
+route('PUT', '/api/tags/aliases', async ({ req }) => {
+    const { aliases } = await readJson(req);
+    store.db.settings.tagAliases = cleanAliases(aliases);
+    store.save();
+    broadcast('change', {});
+    return { aliases: store.db.settings.tagAliases };
+});
+// AI 找出可以合并的标签（只给建议，确认后由网页调用 /api/tags/replace）
+route('POST', '/api/ai/tags/suggest', async () => {
+    try { return await aiTasks.suggestTagMerges(); } catch (e) { return aiFail(e); }
+});
+
 // 标签管理：改名、合并、拆开、删除都是「把 from 里的标签换成 to」，回收站里的条目一起改
 route('POST', '/api/tags/replace', async ({ req }) => {
-    const { ops = [] } = await readJson(req);
+    const { ops = [], remember = false } = await readJson(req);
     const clean = (v) => [...new Set((Array.isArray(v) ? v : []).map((t) => String(t).trim().slice(0, 60)).filter(Boolean))];
     const list = (Array.isArray(ops) ? ops : []).slice(0, 500).map((o) => ({ from: clean(o?.from), to: clean(o?.to) })).filter((o) => o.from.length);
     if (!list.length) throw new HttpError(400, '没有要改的标签');
@@ -1000,6 +1047,7 @@ route('POST', '/api/tags/replace', async ({ req }) => {
         }
         if (tags !== it.tags) { it.tags = tags; it.updatedAt = stamp; ids.push(it.id); }
     }
+    updateAliases(list, Boolean(remember));
     store.save();
     broadcast('change', { ids });
     return { ok: true, count: ids.length };
@@ -1012,7 +1060,7 @@ route('POST', '/api/batch', async ({ req }) => {
     const stamp = new Date().toISOString();
     for (const it of items) {
         switch (action) {
-            case 'addTags': it.tags = [...new Set([...it.tags, ...value])]; break;
+            case 'addTags': it.tags = store.canonTags([...it.tags, ...value]); break;
             case 'removeTags': it.tags = it.tags.filter((t) => !value.includes(t)); break;
             case 'addCollection': if (!it.collections.includes(value)) it.collections.push(value); break;
             case 'removeCollection': it.collections = it.collections.filter((c) => c !== value); break;
@@ -1071,9 +1119,12 @@ route('GET', '/api/backup', ({ res }) => {
 // 从备份还原
 route('POST', '/api/restore', async ({ req, url }) => restoreFrom(await readBody(req, MAX_RESTORE), url.searchParams.get('mode') === 'replace' ? 'replace' : 'merge'));
 
-async function restoreFrom(buf, mode) {
-    let entries;
-    try { entries = readZip(buf, { maxTotal: MAX_RESTORE * 4, maxEntries: 500000 }); } catch (e) { throw new HttpError(400, `无法读取备份：${e.message}`); }
+/** 从备份还原：src 是上传的 ZIP，或服务器上一份备份的内容列表 [{ name, read() }] */
+async function restoreFrom(src, mode) {
+    let entries = src;
+    if (Buffer.isBuffer(src)) {
+        try { entries = readZip(src, { maxTotal: MAX_RESTORE * 4, maxEntries: 500000 }); } catch (e) { throw new HttpError(400, `无法读取备份：${e.message}`); }
+    }
     const dbEntry = entries.find((e) => e.name === 'db.json');
     if (!dbEntry) throw new HttpError(400, '这不是藏馆备份（缺少 db.json）');
     let backup;
@@ -1103,17 +1154,11 @@ async function restoreFrom(buf, mode) {
 
 // ---------------- 自动备份 ----------------
 // 每天在数据目录的 backups 文件夹里存一份完整备份，保留最近几份；内容没变就不重复备份
+// 没变过的文件在各份备份之间共用（硬链接），见 lib/backups.js
 const BACKUP_DIR = path.join(DATA_DIR, 'backups');
-const BACKUP_NAME = /^TavernVault-(auto|manual)-\d{8}-\d{6}\.zip$/;
+const backups = createBackups({ dir: BACKUP_DIR, store, log: (m) => console.log(m) });
 const autoBackupCfg = () => ({ on: true, keep: 7, ...(store.db.settings.autoBackup || {}) });
-
-function listBackups() {
-    try {
-        return fs.readdirSync(BACKUP_DIR).filter((f) => BACKUP_NAME.test(f))
-            .map((name) => { const st = fs.statSync(path.join(BACKUP_DIR, name)); return { name, size: st.size, at: st.mtime.toISOString(), auto: name.includes('-auto-') }; })
-            .sort((a, b) => b.name.slice(-19).localeCompare(a.name.slice(-19)));
-    } catch { return []; }
-}
+const listBackups = () => backups.list();
 // 每份备份里有多少条目（含回收站），用来发现「库突然变空 / 少了一大半」
 const COUNTS_FILE = () => path.join(BACKUP_DIR, '.counts.json');
 const itemCount = () => Object.keys(store.db.items).length;
@@ -1125,10 +1170,7 @@ function backupCounts() {
     for (const b of list) {
         if (typeof c[b.name] === 'number') continue;
         // 旧备份没记过数量，读一次它的 db.json
-        try {
-            const e = readZip(fs.readFileSync(path.join(BACKUP_DIR, b.name)), { maxTotal: 4 * 1024 ** 3, maxEntries: 500000 }).find((x) => x.name === 'db.json');
-            c[b.name] = Object.keys(JSON.parse(e.read().toString('utf8')).items || {}).length;
-        } catch { c[b.name] = -1; }
+        try { c[b.name] = Object.keys(backups.readDb(b.name).items || {}).length; } catch { c[b.name] = -1; }
         changed = true;
     }
     for (const k of Object.keys(c)) if (!list.some((b) => b.name === k)) { delete c[k]; changed = true; }
@@ -1147,12 +1189,7 @@ function backupGuard() {
 }
 
 function makeBackup(kind = 'manual') {
-    fs.mkdirSync(BACKUP_DIR, { recursive: true });
-    const stamp = new Date().toISOString().replace(/\D/g, '').slice(0, 14);
-    const name = `TavernVault-${kind}-${stamp.slice(0, 8)}-${stamp.slice(8)}.zip`;
-    const file = path.join(BACKUP_DIR, name);
-    fs.writeFileSync(`${file}.tmp`, buildBackup());
-    fs.renameSync(`${file}.tmp`, file);
+    const name = backups.make(kind);
     fs.writeFileSync(path.join(BACKUP_DIR, '.last-db'), dbFingerprint());
     try { fs.writeFileSync(COUNTS_FILE(), JSON.stringify({ ...backupCounts(), [name]: itemCount() })); } catch { /* ignore */ }
     pruneBackups();
@@ -1161,7 +1198,7 @@ function makeBackup(kind = 'manual') {
 }
 function pruneBackups() {
     const { keep } = autoBackupCfg();
-    for (const b of listBackups().filter((x) => x.auto).slice(keep)) fs.unlinkSync(path.join(BACKUP_DIR, b.name));
+    for (const b of listBackups().filter((x) => x.auto).slice(keep)) backups.remove(b.name);
 }
 function dbFingerprint() {
     store.flush();
@@ -1180,25 +1217,27 @@ function autoBackupTick() {
         makeBackup('auto');
     } catch (e) { console.log(`  [自动备份] 失败：${e.message}`); }
 }
+// 以前存的 ZIP 备份转成共用文件的格式（转换核对无误才删 ZIP），再开始每天的自动备份
+setTimeout(() => { try { if (backups.migrate()) backupCounts(); } catch (e) { console.log(`  [备份] 转换失败：${e.message}`); } }, 20e3).unref();
 setTimeout(autoBackupTick, 60e3).unref();
 setInterval(autoBackupTick, 3600e3).unref();
 
-const backupFile = (name) => {
-    if (!BACKUP_NAME.test(name || '') || !fs.existsSync(path.join(BACKUP_DIR, name))) throw new HttpError(404, '备份不存在');
-    return path.join(BACKUP_DIR, name);
+const backupName = (name) => {
+    if (!backups.locate(name)) throw new HttpError(404, '备份不存在');
+    return name;
 };
-route('GET', '/api/backups', () => ({ ...autoBackupCfg(), list: listBackups(), counts: backupCounts(), guard: backupGuard() }));
+route('GET', '/api/backups', () => ({ ...autoBackupCfg(), list: listBackups(), counts: backupCounts(), guard: backupGuard(), disk: backups.disk() }));
 // 「条目确实是我自己删的」：立刻按现在的数据存一份自动备份，之后照常
 route('POST', '/api/backups/ack', () => { const b = makeBackup('auto'); broadcast('change', {}); return b; });
 route('POST', '/api/health/ack', () => { delete store.db.settings.recoveredNote; store.save(); broadcast('change', {}); return { ok: true }; });
 route('POST', '/api/backups', () => makeBackup('manual'));
 route('GET', '/api/backups/:name', ({ res, p }) => {
-    const file = backupFile(p.name);
-    send(res, 200, fs.readFileSync(file), { 'Content-Type': 'application/zip', 'Content-Disposition': contentDisposition(p.name, true) });
+    const buf = backups.zip(backupName(p.name));
+    send(res, 200, buf, { 'Content-Type': 'application/zip', 'Content-Disposition': contentDisposition(p.name, true) });
     return null;
 });
-route('DELETE', '/api/backups/:name', ({ p }) => { fs.unlinkSync(backupFile(p.name)); return { ok: true }; });
-route('POST', '/api/backups/:name/restore', async ({ p, url }) => restoreFrom(fs.readFileSync(backupFile(p.name)), url.searchParams.get('mode') === 'replace' ? 'replace' : 'merge'));
+route('DELETE', '/api/backups/:name', ({ p }) => { backups.remove(backupName(p.name)); return { ok: true }; });
+route('POST', '/api/backups/:name/restore', async ({ p, url }) => restoreFrom(backups.entries(backupName(p.name)), url.searchParams.get('mode') === 'replace' ? 'replace' : 'merge'));
 
 // 文件下载
 route('GET', '/api/files/:sha', async ({ req, res, p, url }) => {

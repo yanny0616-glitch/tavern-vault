@@ -5,7 +5,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { chat, estimateTokens, AiError } from './ai.js';
 import { itemText } from './ai-tasks.js';
-import { EDIT_GUIDE, parseEdits, applyEdits, changeLabel } from './ai-edit.js';
+import { EDIT_GUIDE, EDIT_TYPES, parseEdits, applyEdits, changeLabel } from './ai-edit.js';
 
 const MAX_SESSIONS = 300;
 const MAX_MESSAGES = 400;
@@ -36,7 +36,7 @@ const autoTitle = (text) => {
     return t ? (t.length > 24 ? `${t.slice(0, 24)}…` : t) : '新对话';
 };
 
-export function createAiChat({ dataDir, store, config, loadContent, broadcast, saveCardVersion, removeVersion }) {
+export function createAiChat({ dataDir, store, config, loadContent, broadcast, saveVersion, removeVersion }) {
     const file = path.join(dataDir, 'ai-chats.json');
     let db = { sessions: {} };
     try { db = { sessions: {}, ...JSON.parse(fs.readFileSync(file, 'utf8')) }; } catch { /* 首次 */ }
@@ -54,6 +54,7 @@ export function createAiChat({ dataDir, store, config, loadContent, broadcast, s
         }, 200);
     };
     const running = new Map(); // 会话 id → AbortController
+    const partials = new Map(); // 正在生成的回复：会话 id → { text }
     const notify = (s) => broadcast('aichat', { id: s.id, pending: Boolean(s.pending), updatedAt: s.updatedAt });
 
     const get = (id) => {
@@ -146,7 +147,7 @@ export function createAiChat({ dataDir, store, config, loadContent, broadcast, s
     function summarizeEdits(text, refIds) {
         return parseEdits(text).map((e, block) => {
             const it = store.db.items[refIds[e.item - 1]];
-            const error = e.error || (!it ? `修改块指向第 ${e.item} 项，但这一轮没有这一项` : it.type !== 'character' ? '只有角色卡可以一键修改' : '');
+            const error = e.error || (!it ? `修改块指向第 ${e.item} 项，但这一轮没有这一项` : !EDIT_TYPES[it.type] ? `${TYPE_LABEL[it.type] || '这类条目'}不能一键修改，只有角色卡、世界书、预设可以` : '');
             return { block, itemId: it?.id || '', name: it?.name || '', labels: e.changes.map(changeLabel), error };
         });
     }
@@ -173,14 +174,14 @@ export function createAiChat({ dataDir, store, config, loadContent, broadcast, s
         const { changes } = parseEdits(m.text)[block] || {};
         let content = null;
         try { content = loadContent(it); } catch { /* 文件缺失 */ }
-        if (content?.kind !== 'card') throw new AiError('读不到这张卡的内容');
-        const r = applyEdits(content.data, changes || []);
+        if (it.type === 'character' ? content?.kind !== 'card' : content?.kind !== 'json') throw new AiError('读不到这一项的内容');
+        const r = applyEdits(it.type, content.data, changes || []);
         const out = { itemId: it.id, name: it.name, diffs: r.diffs, errors: r.errors, applied: done && !done.undoneAt ? done : null };
         if (action === 'preview') return out;
         if (done && !done.undoneAt) throw new AiError('已经应用过了');
-        if (!r.card || !r.diffs.some((x) => x.changed)) throw new AiError(r.errors[0] || '没有可以应用的改动');
+        if (!r.data || !r.diffs.some((x) => x.changed)) throw new AiError(r.errors[0] || '没有可以应用的改动');
         const prevPrimary = store.primaryFile(it)?.id || '';
-        const file = await saveCardVersion(it, r.card, 'AI 修改');
+        const file = await saveVersion(it, r.data, 'AI 修改');
         m.applied[block] = { fileId: file.id, prevPrimary, at: now() };
         save();
         return { ...out, applied: m.applied[block] };
@@ -190,18 +191,35 @@ export function createAiChat({ dataDir, store, config, loadContent, broadcast, s
         const profile = profileOf(s);
         const ac = new AbortController();
         running.set(s.id, ac);
+        // 边生成边推给网页：只推新增的部分（at 是这段之前的长度，对不上时网页会重新取全文）
+        const live = { text: '', sent: 0, timer: null };
+        partials.set(s.id, live);
+        const flush = () => {
+            live.timer = null;
+            if (live.text.length <= live.sent) return;
+            broadcast('aichat', { id: s.id, stream: { at: live.sent, add: live.text.slice(live.sent) } });
+            live.sent = live.text.length;
+        };
+        const onDelta = (t) => { live.text = t; live.timer ||= setTimeout(flush, 120); };
+        let refIds = [];
         try {
             if (!profile) throw new AiError('还没有配置 AI 服务');
-            const { system, messages, refIds } = buildRequest(s);
-            const r = await chat(profile, { system, messages, maxTokens: Math.max(profile.maxTokens || 2048, 1024), signal: ac.signal, timeout: 240000 });
+            const req = buildRequest(s);
+            refIds = req.refIds;
+            const r = await chat(profile, { system: req.system, messages: req.messages, maxTokens: Math.max(profile.maxTokens || 2048, 1024), signal: ac.signal, timeout: 240000, onDelta });
             if (!db.sessions[s.id]) return;
             const text = r.text.slice(0, 60000);
             // 记下这轮的参考条目：修改块里的 item 编号按这个顺序对应
             s.messages.push({ id: newId(), role: 'assistant', text, at: now(), model: r.model, profile: profile.name, truncated: r.truncated, usage: r.usage, refs: refIds, edits: summarizeEdits(text, refIds) });
         } catch (e) {
             if (!db.sessions[s.id]) return;
-            s.messages.push({ id: newId(), role: 'assistant', error: ac.signal.aborted ? '已停止' : e.message, at: now() });
+            const partial = (e.partial || live.text || '').slice(0, 60000);
+            // 停止或中途断开时，已经生成的部分留下来
+            if (partial.trim()) s.messages.push({ id: newId(), role: 'assistant', text: partial, at: now(), profile: profile?.name, model: profile?.model, stopped: ac.signal.aborted ? '已停止' : `回复中断：${e.message}`, refs: refIds, edits: summarizeEdits(partial, refIds) });
+            else s.messages.push({ id: newId(), role: 'assistant', error: ac.signal.aborted ? '已停止' : e.message, at: now() });
         } finally {
+            clearTimeout(live.timer);
+            partials.delete(s.id);
             running.delete(s.id);
             if (db.sessions[s.id]) {
                 s.pending = false;
@@ -219,6 +237,12 @@ export function createAiChat({ dataDir, store, config, loadContent, broadcast, s
         },
         get(id) {
             return get(id);
+        },
+        /** 给网页看的：带上正在生成的那部分 */
+        view(id) {
+            const s = get(id);
+            const live = partials.get(id);
+            return live ? { ...s, partial: live.text } : s;
         },
         create(o = {}) {
             const s = { id: newId(), title: '新对话', createdAt: now(), updatedAt: now(), refs: [], scope: 'full', rounds: 12, profile: '', fav: false, pending: false, messages: [] };

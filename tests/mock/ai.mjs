@@ -6,11 +6,23 @@ function chatReply(system, turns) {
     const refs = [...system.matchAll(/<item id="\d+" type="[^"]*" name="([^"]*)">/g)].map((m) => m[1]);
     const last = turns[turns.length - 1]?.content || '';
     if (last.includes('EDITME')) return '把开场白改得更有悬念，第一条备选开场白也顺了一下，再加一条新的。\n\n```tv-edit\n{"item": 1, "changes": [{"field": "first_mes", "value": "*门被推开，带进一阵冷雨*\n她没有抬头：「你迟到了三年。」"}, {"field": "alternate_greetings", "index": 1, "value": "新的备选开场一"}, {"field": "alternate_greetings", "add": true, "value": "新增的开场"}, {"field": "book", "index": 1, "value": "月影城是一座漂浮在云上的城市，每到月圆会下沉一尺。"}, {"field": "alternate_greetings", "index": 9, "value": "不存在"},]}\n```';
+    if (last.includes('EDITWB')) return '学院概况补了地点，院长改了标题，加了一条图书馆。\n\n```tv-edit\n{"item": 1, "changes": [{"field": "entry", "index": 1, "value": "艾尔德魔法学院建于千年前，\n坐落在浮空岛上。", "keys": ["学院", "艾尔德"]}, {"field": "entry", "index": 2, "title": "古龙院长"}, {"field": "entry", "add": true, "title": "图书馆", "keys": ["图书馆", "禁书区"], "value": "图书馆的禁书区只在午夜开放。"}, {"field": "entry", "index": 7, "value": "x"}]}\n```';
+    if (last.includes('EDITPRESET')) return '文风那段写具体了。\n\n```tv-edit\n{"item": 1, "changes": [{"field": "prompt", "index": 2, "value": "文风：克制、细腻，\n多写动作少写心理。"}, {"field": "first_mes", "value": "x"}]}\n```';
     if (last.includes('BADEDIT')) return '给你改好了。\n\n```tv-edit\n{"item": 1, "changes": [ 这不是 JSON\n```';
     return `收到第 ${turns.filter((t) => t.role === 'user').length} 轮：${last.slice(0, 40)}\n参考：${refs.join('、') || '无'}\n\n**结论**：没有发现矛盾。\n- 第一点\n- 第二点`;
 }
 const isOrganize = (system) => system.includes('"summary":"简介"');
 function reply(system, user) {
+    // 标签合并建议：现代+都市（正常）、重复出现的标签（应被去掉）、不存在的标签（应被去掉）、合并成新名字
+    if (system.includes('整理收藏库的标签')) {
+        log.push({ tagMerge: user });
+        return JSON.stringify({ groups: [
+            { to: '现代', from: ['都市', '不存在的标签'], reason: '都是现代都市背景' },
+            { to: '奇幻', from: ['现代'], reason: '重复使用了「现代」' },
+            { to: '温婉', from: ['温柔'], reason: '同一个意思' },
+            { to: '校园', from: [], reason: '空的' },
+        ] });
+    }
     if (isOrganize(system) && system.includes('"items":[')) {
         const items = [...user.matchAll(/<item id="(\d+)"[^>]*>\n([\s\S]*?)\n<\/item>/g)];
         log.push({ batch: items.length });
@@ -34,6 +46,28 @@ http.createServer((req, res) => {
     req.on('end', () => {
         const u = req.url.split('?')[0];
         const send = (st, o) => { res.writeHead(st, { 'content-type': 'application/json' }); res.end(JSON.stringify(o)); };
+        // 流式返回：每次几个字。SLOWME 慢慢吐（用来测停止），CUTME 吐一半断开连接
+        const stream = (text, { anthropic = false, model = 'mock', gap = 40, cut = false } = {}) => {
+            res.writeHead(200, { 'content-type': 'text/event-stream' });
+            const ev = (type, o) => res.write(anthropic ? `event: ${type}\ndata: ${JSON.stringify({ type, ...o })}\n\n` : `data: ${JSON.stringify(o)}\n\n`);
+            if (anthropic) ev('message_start', { message: { model, usage: { input_tokens: 100 } } });
+            const parts = text.match(/[\s\S]{1,6}/g) || [];
+            let i = 0;
+            const tick = () => {
+                if (cut && i >= parts.length / 2) { res.destroy(); return; }
+                if (i >= parts.length) {
+                    if (anthropic) { ev('message_delta', { delta: { stop_reason: 'end_turn' }, usage: { output_tokens: 50 } }); ev('message_stop', {}); }
+                    else { ev('', { model, choices: [{ delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 100, completion_tokens: 50 } }); res.write('data: [DONE]\n\n'); }
+                    res.end();
+                    return;
+                }
+                const t = parts[i++];
+                if (anthropic) ev('content_block_delta', { index: 0, delta: { type: 'text_delta', text: t } });
+                else ev('', { model, choices: [{ delta: { content: t }, finish_reason: null }] });
+                setTimeout(tick, gap);
+            };
+            tick();
+        };
         if (u === '/__last') return send(200, log.slice(-5));
         const anth = u.startsWith('/v1/messages') || (u === '/v1/models' && req.headers['x-api-key']);
         const key = anth ? req.headers['x-api-key'] : (req.headers.authorization || '').replace('Bearer ', '');
@@ -51,6 +85,7 @@ http.createServer((req, res) => {
                 if (usr.includes('QUOTEME')) return send(200, { model: j.model, choices: [{ message: { content: '{"tags":["奇幻",],"summary":"他读完了“雨夜”这本书",}' }, finish_reason: 'stop' }], usage: {} });
                 const turns = j.messages.filter((m) => m.role !== 'system');
                 if (sys.includes('酒馆藏馆」里的 AI 助手')) {
+                    if (j.stream && !usr.includes('NOSTREAM')) return stream(usr.includes('SLOWME') ? `慢慢说：${'这是很长的一段回复。'.repeat(40)}` : chatReply(sys, turns), { model: j.model, gap: usr.includes('SLOWME') ? 150 : 30, cut: usr.includes('CUTME') });
                     if (usr.includes('SLOWME')) return setTimeout(() => send(200, { model: j.model, choices: [{ message: { content: chatReply(sys, turns) }, finish_reason: 'stop' }], usage: {} }), 4000);
                     return send(200, { model: j.model, choices: [{ message: { content: chatReply(sys, turns) }, finish_reason: 'stop' }], usage: { prompt_tokens: 100, completion_tokens: 50 } });
                 }
@@ -59,6 +94,7 @@ http.createServer((req, res) => {
             if (u === '/v1/messages') {
                 if (JSON.stringify(j.messages).includes('FAILME')) return send(500, { error: { message: 'upstream exploded' } });
                 const text = (j.system || '').includes('酒馆藏馆」里的 AI 助手') ? chatReply(j.system, j.messages) : reply(j.system || '', j.messages[0].content);
+                if (j.stream) return stream(text, { anthropic: true, model: j.model });
                 return send(200, { model: j.model, content: [{ type: 'text', text }], stop_reason: 'end_turn', usage: { input_tokens: 100, output_tokens: 50 } });
             }
             send(404, { error: 'nope' });

@@ -17,6 +17,11 @@ for (let i = 0; i < 50; i++) await login('wrong', `10.1.0.${i}`);
 r = await login('testpw', '10.2.0.1'); ok(r.status === 429 && /暂停新登录/.test(r.body.error), `global lock after 50 fails: ${r.body.error}`);
 ok((await fetch(B + '/api/state', { headers: H })).status === 200, 'already logged-in device unaffected');
 // --- 自动备份 ---
+// 把现有的自动备份都改成 25 小时前存的（文件夹格式的时间记在 backup.json 里）
+const ageBackups = () => { for (const b of fs.readdirSync(D + '/backups').filter((f) => f.includes('-auto-'))) {
+  const p = `${D}/backups/${b}`; const t = new Date(Date.now() - 25 * 3600e3);
+  if (fs.statSync(p).isDirectory()) { const m = JSON.parse(fs.readFileSync(`${p}/backup.json`, 'utf8')); fs.writeFileSync(`${p}/backup.json`, JSON.stringify({ ...m, at: t.toISOString() })); } else fs.utimesSync(p, t, t);
+} };
 const put = (b) => fetch(B + '/api/settings', { method: 'PUT', headers: { ...H, 'Content-Type': 'application/json' }, body: JSON.stringify(b) });
 await put({ autoBackup: { on: true, keep: 3 } });
 let bl = await (await fetch(B + '/api/backups', { headers: H })).json();
@@ -26,14 +31,14 @@ bl = await (await fetch(B + '/api/backups', { headers: H })).json();
 ok(bl.list.filter((b) => b.auto).length === 1, 'no second backup within 23h');
 const st = await (await fetch(B + '/api/state', { headers: H })).json(); const it = st.items[0];
 for (let i = 0; i < 4; i++) {
-  for (const b of fs.readdirSync(D + '/backups').filter((f) => f.includes('-auto-'))) { const t = new Date(Date.now() - 25 * 3600e3); fs.utimesSync(`${D}/backups/${b}`, t, t); }
+  ageBackups();
   await fetch(B + `/api/items/${it.id}`, { method: 'PATCH', headers: { ...H, 'Content-Type': 'application/json' }, body: JSON.stringify({ notes: `n${i}` }) });
   await new Promise((r) => setTimeout(r, 1100));
   await put({ autoBackup: { on: true } });
 }
 bl = await (await fetch(B + '/api/backups', { headers: H })).json();
 ok(bl.list.filter((b) => b.auto).length === 3, `pruned to keep 3 auto (${bl.list.filter((b) => b.auto).length})`);
-for (const b of fs.readdirSync(D + '/backups').filter((f) => f.includes('-auto-'))) { const t = new Date(Date.now() - 25 * 3600e3); fs.utimesSync(`${D}/backups/${b}`, t, t); }
+ageBackups();
 const before = bl.list.length; await put({ autoBackup: { on: true } });
 ok((await (await fetch(B + '/api/backups', { headers: H })).json()).list.length === before, 'unchanged data → no duplicate backup');
 const m = await (await fetch(B + '/api/backups', { method: 'POST', headers: H })).json();
@@ -46,5 +51,5 @@ await fetch(B + `/api/items/${it.id}`, { method: 'DELETE', headers: H, }); await
 const rs = await (await fetch(B + `/api/backups/${m.name}/restore?mode=merge`, { method: 'POST', headers: H })).json();
 const st2 = await (await fetch(B + '/api/state', { headers: H })).json();
 ok(rs.ok && st2.items.some((x) => x.id === it.id), `restore from server backup brought item back (added ${rs.added})`);
-ok((await fetch(B + `/api/backups/${m.name}`, { method: 'DELETE', headers: H })).status === 200 && !fs.existsSync(`${D}/backups/${m.name}`), 'delete backup');
+ok((await fetch(B + `/api/backups/${m.name}`, { method: 'DELETE', headers: H })).status === 200 && !fs.existsSync(`${D}/backups/${m.name}`) && !fs.existsSync(`${D}/backups/${m.name.replace('.zip', '')}`), 'delete backup');
 const zipNames = zip.toString('latin1'); ok(!zipNames.includes('login-log') && !zipNames.includes('ai.json') && !zipNames.includes('thumbs/'), 'backup excludes login log / ai keys / thumbs');

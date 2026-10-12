@@ -60,8 +60,11 @@ export function openAiChat({ refs = [], id = null } = {}) {
     function grow() { input.style.height = 'auto'; input.style.height = `${Math.min(input.scrollHeight, 180)}px`; }
 
     const onEvent = (d) => {
-        if (d.id === cur.id) refresh();
-        else if (view === 'history') draw();
+        if (d.id === cur.id && d.stream) {
+            // 正在生成：接上新增的部分；中间漏了就重新取全文
+            if (cur.pending && (cur.partial || '').length === d.stream.at) { cur.partial = (cur.partial || '') + d.stream.add; drawLive(); } else refresh();
+        } else if (d.id === cur.id) refresh();
+        else if (view === 'history' && !d.stream) draw();
     };
     listeners.add(onEvent);
 
@@ -141,10 +144,31 @@ export function openAiChat({ refs = [], id = null } = {}) {
                 h('div', { class: 'chat-ideas' }, ideas.map((t) => h('button', { class: 'chat-idea', onclick: () => send(t) }, t)))));
         } else {
             const lastIdx = list.length - 1;
-            clear(msgs, list.map((m, i) => bubble(m, i === lastIdx)), cur.pending ? h('div', { class: 'chat-msg ai pending' },
-                h('div', { class: 'chat-bubble' }, h('span', { class: 'spinner sm' }), h('span', { class: 'muted' }, '正在回复，可以先关掉，回复好了会保存在这里'))) : null);
+            liveBox = cur.pending ? h('div', { class: 'chat-bubble' }) : null;
+            clear(msgs, list.map((m, i) => bubble(m, i === lastIdx)), liveBox ? h('div', { class: 'chat-msg ai pending' }, liveBox) : null);
+            if (liveBox) drawLive(false);
         }
         if (scrollEnd) requestAnimationFrame(() => { s.body.scrollTop = s.body.scrollHeight; });
+    }
+
+    // 正在生成的回复：边收边显示；修改块要等写完才显示成卡片，写的过程中先藏起来
+    let liveBox = null;
+    function drawLive(follow = true) {
+        if (!liveBox) return;
+        const sc = s.body;
+        const atBottom = sc.scrollHeight - sc.scrollTop - sc.clientHeight < 80;
+        const text = (cur.partial || '').replace(EDIT_BLOCK, '').replace(/```[ \t]*tv-edit[\s\S]*$/, '').trim();
+        const writingEdit = /```[ \t]*tv-edit/.test(cur.partial || '');
+        if (!text) clear(liveBox, h('span', { class: 'spinner sm' }), h('span', { class: 'muted' }, writingEdit ? '正在写修改建议…' : '正在回复，可以先关掉，回复好了会保存在这里'));
+        else {
+            // 光标接在最后一个字后面：放进最后一段（列表、引用往里找到最后一项）
+            const md = mdLite(text);
+            let last = md.lastElementChild;
+            while (last?.lastElementChild && /^(UL|OL|BLOCKQUOTE)$/.test(last.tagName)) last = last.lastElementChild;
+            (last && last.tagName !== 'PRE' ? last : md).append(h('span', { class: 'chat-caret' }));
+            clear(liveBox, md, writingEdit ? h('div', { class: 'muted small' }, '正在写修改建议…') : null);
+        }
+        if (follow && atBottom) sc.scrollTop = sc.scrollHeight;
     }
 
     function bubble(m, isLast) {
@@ -158,6 +182,7 @@ export function openAiChat({ refs = [], id = null } = {}) {
         return h('div', { class: 'chat-msg ai' },
             shown ? h('div', { class: 'chat-bubble' }, mdLite(shown)) : null,
             (m.edits || []).map((e) => editCard(m, e)),
+            m.stopped ? h('div', { class: 'muted small chat-note' }, `${m.stopped}，上面是已经生成的部分。`) : null,
             m.truncated ? h('div', { class: 'muted small chat-note' }, '回复写到一半被截断了。可以让它「继续」，或者在 AI 服务设置里调大「最大输出 tokens」。') : null,
             h('div', { class: 'chat-meta' },
                 h('span', {}, [m.model, m.at ? timeAgo(m.at) : ''].filter(Boolean).join(' · ')),

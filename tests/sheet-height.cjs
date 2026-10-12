@@ -22,5 +22,22 @@ const B = 'http://127.0.0.1:5199';
     await p.click('.panel:has(h3:has-text("重复条目")) .btn'); await check('dupes (no foot)'); await p.keyboard.press('Escape');
     await c.close();
   }
+  // 关掉弹窗后马上跳页面：关弹窗时退回的那一步不能把刚跳的页面退回去
+  {
+    const c = await b.newContext({ viewport: { width: 402, height: 874 }, isMobile: true, hasTouch: true });
+    await c.addInitScript((t) => localStorage.setItem('tv_token', t), token);
+    const p = await c.newPage();
+    let lost = 0;
+    for (let i = 0; i < 12; i++) {
+      await p.goto(B + '/#/library'); await p.waitForSelector('.card');
+      await p.click('.tb-actions-inner .btn[title="筛选与排序"]'); await p.waitForTimeout(300);
+      await p.keyboard.press('Escape'); if (i % 3) await p.waitForTimeout(i % 5);
+      await p.goto(B + '/#/settings/data'); await p.waitForTimeout(600);
+      if (await p.evaluate(() => location.hash) !== '#/settings/data') lost++;
+    }
+    console.log(lost ? 'FAIL' : 'PASS', `navigation right after closing a sheet kept (${lost}/12 lost)`);
+    if (lost) bad++;
+    await c.close();
+  }
   await b.close(); process.exit(bad ? 1 : 0);
 })();

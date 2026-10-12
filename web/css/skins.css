@@ -250,7 +250,7 @@ html[data-skin="tavern"] .tb-title { letter-spacing: .14em; color: var(--text); 
 html[data-skin="tavern"] .tb-title::before, html[data-skin="tavern"] .tb-title::after { content: ""; flex: 0 0 26px; height: 1px; background: linear-gradient(90deg, transparent, var(--accent)); }
 html[data-skin="tavern"] .tb-title::after { background: linear-gradient(90deg, var(--accent), transparent); }
 html[data-skin="tavern"] .tb-sub { font-family: var(--serif); font-style: italic; }
-@media (max-width: 480px) { html[data-skin="tavern"] .tb-titles { padding: 0 0 0 0; text-align: left; } html[data-skin="tavern"] .tb-row { justify-content: flex-start; } html[data-skin="tavern"] .tb-actions { position: static; transform: none; } html[data-skin="tavern"] .tb-kicker, html[data-skin="tavern"] .tb-title { justify-content: flex-start; } html[data-skin="tavern"] .tb-title::before { display: none; } }
+@media (max-width: 480px) { html[data-skin="tavern"] .tb-titles { flex: 1 1 auto; padding: 0 0 0 0; text-align: left; } html[data-skin="tavern"] .tb-row { justify-content: flex-start; } html[data-skin="tavern"] .tb-actions { position: static; transform: none; } html[data-skin="tavern"] .tb-kicker, html[data-skin="tavern"] .tb-title { justify-content: flex-start; } html[data-skin="tavern"] .tb-title::before { display: none; } }
 html[data-skin="tavern"] .search .search-input { background: var(--surface); border: 1px solid var(--line-2); }
 html[data-skin="tavern"] .seg-item { border-radius: 2px; border: 1px solid var(--line-2); background: color-mix(in srgb, var(--surface) 70%, transparent); font-family: var(--serif); letter-spacing: .1em; color: var(--text-2); }
 html[data-skin="tavern"] .seg-item.active { background: linear-gradient(180deg, var(--gold-1), var(--gold-2)); color: var(--on-accent); border-color: var(--gold-2); box-shadow: 0 0 14px -2px color-mix(in srgb, var(--accent) 60%, transparent); }
@@ -290,7 +290,7 @@ html[data-skin="tavern"] .panel::before { top: 4px; left: 4px; border-right: 0; 
 html[data-skin="tavern"] .panel::after { bottom: 4px; right: 4px; border-left: 0; border-top: 0; }
 html[data-skin="tavern"] .panel-head h3 { letter-spacing: .16em; }
 html[data-skin="tavern"] .panel-head .ic { color: var(--accent); }
-html[data-skin="tavern"] .fact { background: none; border: 1px solid var(--line); border-radius: 2px; text-align: center; }
+html[data-skin="tavern"] .fact { background: none; border: 1px solid var(--line); border-radius: 2px; text-align: center; padding: 10px 6px; }
 html[data-skin="tavern"] .fact b { color: var(--accent); }
 html[data-skin="tavern"] .tabs { background: none; border: 1px solid var(--line-2); border-radius: 2px; padding: 3px; }
 html[data-skin="tavern"] .tabs button { border-radius: 1px; font-family: var(--serif); letter-spacing: .12em; }

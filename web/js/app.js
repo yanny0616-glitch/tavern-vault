@@ -19,6 +19,25 @@ setAppHeight();
 window.addEventListener('resize', setAppHeight);
 window.addEventListener('orientationchange', () => setTimeout(setAppHeight, 300));
 window.visualViewport?.addEventListener('resize', setAppHeight);
+
+// 往下滚时：带搜索框的顶栏把标题那一行推出屏幕（只留搜索和分类），右下角「+」藏起来；往上滑就恢复。
+// 用位移而不是改高度，下面的内容不会跟着跳
+let lastY = 0;
+let collapsed = false;
+function setCollapsed(on) {
+    const bar = document.querySelector('.main > .topbar');
+    const row = bar?.querySelector('.tb-row');
+    on = on && Boolean(bar?.querySelector('.search'));
+    document.documentElement.classList.toggle('scrolling-down', on);
+    if (bar) bar.style.transform = on && row ? `translateY(-${row.offsetHeight + parseFloat(getComputedStyle(bar).rowGap || 0)}px)` : '';
+    collapsed = on;
+}
+window.addEventListener('scroll', () => {
+    const y = Math.max(0, window.scrollY);
+    const bar = document.querySelector('.main > .topbar');
+    if (y < (bar?.offsetHeight || 120)) { if (collapsed) setCollapsed(false); lastY = y; return; }
+    if (y > lastY + 12) { if (!collapsed) setCollapsed(true); lastY = y; } else if (y < lastY - 12) { if (collapsed) setCollapsed(false); lastY = y; }
+}, { passive: true });
 import { openDetail } from './views/detail.js';
 import { handleAiEvent, renderChip } from './views/ai.js';
 import { handleAiChatEvent } from './views/aichat.js';
@@ -118,6 +137,8 @@ function render() {
     const r = routeName();
     if (r !== current) {
         current = r;
+        setCollapsed(false);
+        lastY = 0;
         state.selecting = false;
         state.selection.clear();
         window.scrollTo(0, 0);
@@ -141,7 +162,7 @@ function showLogin(title) {
             go2.disabled = false;
         }
     }
-    clear(app, h('div', { class: 'login' }, h('div', { class: 'login-box' },
+    clear(app, h('div', { class: 'login' }, embedClose(), h('div', { class: 'login-box' },
         h('div', { class: 'login-mark' }, icon('lock', { size: 26, stroke: 1.6 })),
         h('div', { class: 'login-kicker' }, 'Tavern Vault'),
         h('h2', { class: 'login-title' }, title || '酒馆藏馆'),
@@ -150,13 +171,20 @@ function showLogin(title) {
     setTimeout(() => pw.focus(), 50);
 }
 
+// 在酒馆里打开时：登录页、连不上的页面也要能关掉（全屏时没有插件的标题栏）
+const embedClose = () => (bridge.embedded ? h('button', { class: 'btn ghost icon login-close', title: '关闭，回到酒馆', 'aria-label': '关闭', onclick: () => bridge.close() }, icon('x', { size: 19 })) : null);
+
 let started = false;
+let hostReady = null;
 async function start() {
+    // 先和酒馆插件接上、拿到安全区，不用等数据加载完才变成全屏
+    if (bridge.embedded && !hostReady) hostReady = bridge.connect().then(fitHost).catch(() => {});
     let health;
     try {
         health = await api.get('/api/health');
     } catch (e) {
-        clear(app, h('div', { class: 'login' }, emptyState('wifiOff', '无法连接到藏馆服务', e.message, btn('重试', { icon: 'refresh', onclick: start }))));
+        await hostReady;
+        clear(app, h('div', { class: 'login' }, embedClose(), emptyState('wifiOff', '无法连接到藏馆服务', e.message, btn('重试', { icon: 'refresh', onclick: start }))));
         return;
     }
     document.title = health.title || '酒馆藏馆';
@@ -164,10 +192,11 @@ async function start() {
     try {
         await reload();
     } catch {
+        await hostReady;
         if (health.auth) { showLogin(health.title); return; }
         throw new Error('加载失败');
     }
-    if (bridge.embedded) { await bridge.connect(); fitHost(); }
+    await hostReady;
     buildShell();
     if (!started) {
         started = true;
@@ -175,13 +204,14 @@ async function start() {
         subscribe(render);
         subscribe(renderChip);
         let timer;
+        const reloadSoon = () => { clearTimeout(timer); timer = setTimeout(() => reload().catch(() => {}), 150); };
         api.events((ev, data) => {
             if (ev === 'auth') { location.reload(); return; }
             if (ev === 'ai') { handleAiEvent(data); return; }
             if (ev === 'aichat') { handleAiChatEvent(data); return; }
-            clearTimeout(timer);
-            timer = setTimeout(() => reload().catch(() => {}), 150);
+            reloadSoon();
         }, setStatus);
+        window.addEventListener('tv:mutated', reloadSoon);
         window.addEventListener('tv:unauthorized', () => showLogin(health.title));
         document.addEventListener('visibilitychange', () => { if (!document.hidden) reload().catch(() => {}); });
         document.addEventListener('dragover', (e) => { if (e.dataTransfer?.types?.includes('Files')) e.preventDefault(); });

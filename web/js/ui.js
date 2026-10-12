@@ -49,9 +49,20 @@ export function toast(msg, kind = '') {
 // 打开弹窗时往浏览历史里压一步；按返回时关弹窗。用按钮关掉的，把那一步退回去
 const sheetStack = [];
 let sheetSeq = 0;
-let skipPops = 0;
+// 关弹窗时「退一步」是异步的。等它真正退回来（回到发起时的页面）才算数；
+// 如果在这之前页面已经跳走了，退回来就等于撤销了这次跳转，要再跳回去
+let pendingBack = null;
+const noteNav = () => { if (pendingBack && location.hash !== pendingBack.hash) pendingBack.to = location.hash; };
+window.addEventListener('hashchange', noteNav);
 window.addEventListener('popstate', () => {
-    if (skipPops > 0) { skipPops--; return; }
+    if (pendingBack) {
+        if (location.hash !== pendingBack.hash) noteNav(); else {
+            const { to } = pendingBack;
+            pendingBack = null;
+            if (to) location.replace(to);
+            return;
+        }
+    }
     const top = sheetStack[sheetStack.length - 1];
     if (!top) return;
     top.pushed = false; // 这一步已经被退掉了
@@ -79,7 +90,12 @@ function untrackSheet(entry) {
     entry.pushed = false;
     // 稍后再退：关弹窗后紧接着跳转页面的，历史已经变了，就不要再退（否则会把刚跳的页面退回去）
     setTimeout(() => {
-        if (history.state?.tvSheet === entry.id) { skipPops++; history.back(); }
+        if (history.state?.tvSheet !== entry.id) return;
+        const mine = { hash: location.hash, to: '' };
+        pendingBack = mine;
+        // 浏览器没执行这一步（比如被新的跳转取消）时，过一会儿就不再等
+        setTimeout(() => { if (pendingBack === mine) pendingBack = null; }, 1500);
+        history.back();
     }, 0);
 }
 

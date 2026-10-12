@@ -31,7 +31,20 @@ let fails = 0; const ok = (c, m) => { console.log(c ? 'PASS' : 'FAIL', m); if (!
   await page.addStyleTag({ content: ':root{--tt-viewport-bottom-inset:300px!important}' }); await page.waitForTimeout(100);
   const kb = await page.$eval('#tv-panel', (e) => e.getBoundingClientRect().bottom);
   ok(kb === 852 - 266, 'keyboard lifts panel bottom: ' + kb);
-  await frame.click('.tb-close'); await page.waitForTimeout(300);
+  // 重新加载藏馆（数据很慢）：面板一打开就是全屏，不先显示插件标题栏；藏馆在数据到之前就拿到安全区
+  await page.addStyleTag({ content: ':root{--tt-viewport-bottom-inset:34px!important}' });
+  await page.route('**/api/state', async (r) => { await new Promise((ok2) => setTimeout(ok2, 2500)); r.continue(); });
+  await page.evaluate(() => { const el = document.querySelector('#tv-panel'); el.classList.remove('tv-edge'); el.querySelector('[data-act="reload"]').click(); });
+  await page.waitForTimeout(150);
+  ok(await page.$eval('#tv-panel', (e) => e.classList.contains('tv-edge')), 'fullscreen right away on reopen');
+  ok(await page.$eval('#tv-panel .tv-bar', (e) => getComputedStyle(e).display) === 'none', 'no extension bar while loading');
+  const f2 = await (await page.$('#tv-panel iframe')).contentFrame();
+  await f2.waitForFunction(() => document.documentElement.classList.contains('embed-edge'), null, { timeout: 2000 });
+  ok(!(await f2.$('.tabbar')), 'vault got insets before data arrived');
+  await page.screenshot({ path: OUT + '/embed-loading.png' });
+  await f2.waitForSelector('.tb-close', { timeout: 8000 });
+  await page.unroute('**/api/state');
+  await f2.click('.tb-close'); await page.waitForTimeout(300);
   ok(!(await page.$eval('#tv-panel', (e) => e.classList.contains('open'))), 'close button closes panel');
   console.log(errs.length ? 'ERR ' + errs.join(' | ') : 'no page errors');
   await b.close(); process.exit(fails ? 1 : 0);

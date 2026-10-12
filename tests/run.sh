@@ -33,7 +33,7 @@ run() {
   rm -rf "$WORK/run"; cp -a "$WORK/data/$data" "$WORK/run"
   local out="$WORK/shots/$name" log="$WORK/logs/$name.log"; mkdir -p "$out"
   # 安全测试要读写数据目录本身，其它测试拿截图目录
-  [ "$name" = security ] && out="$WORK/run"
+  case $name in security|backups) out="$WORK/run" ;; esac
   TV_HOST=127.0.0.1 TV_PORT=5199 TV_DATA="$WORK/run" node "$ROOT/server/server.js" > "$WORK/logs/$name-server.log" 2>&1 & local sp=$!
   local mp=""
   if [ "$tavern" = 1 ]; then node "$T/mock/tavern.mjs" > "$WORK/logs/$name-tavern.log" 2>&1 & mp=$!; wait_port 5198; fi
@@ -72,6 +72,11 @@ run ai-ui          seed 0 ai-ui.cjs
 run ai-chat-api    seed 0 ai-chat-api.mjs
 run ai-chat-ui     seed 0 ai-chat-ui.cjs
 run security       sec  0 security.mjs
+run backups        seed 0 backups.mjs
+run tags           seed 0 tags.mjs
+run tags-ui        seed 0 tags-ui.cjs
+run live-refresh   seed 0 live-refresh.cjs
+run scroll-chrome  perf 0 scroll-chrome.cjs
 run tavern-ignore  seed 1 tavern-ignore.cjs
 run tavern-bridge  seed 1 tavern-bridge.cjs
 run embed          seed 1 embed.cjs

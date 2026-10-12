@@ -21,8 +21,8 @@ const j = async (m, u, b) => (await fetch(B + u, { method: m, headers: { 'Conten
     ok(await p.locator('.ai-chat .chat-idea').count() >= 3, `${label}: suggestions shown`);
     await p.screenshot({ path: `${OUT}/${label}-empty.png` });
     await p.locator('.ai-chat .chat-idea').first().click();
-    await p.waitForSelector('.ai-chat .chat-msg.ai .md', { timeout: 8000 });
-    const reply = await p.textContent('.ai-chat .chat-msg.ai .md');
+    await p.waitForSelector('.ai-chat .chat-msg.ai:not(.pending) .md', { timeout: 8000 });
+    const reply = await p.textContent('.ai-chat .chat-msg.ai:not(.pending) .md');
     ok(/第 1 轮/.test(reply) && /参考：星澜/.test(reply), `${label}: reply received via SSE`);
     ok(await p.locator('.ai-chat .md li').count() === 2 && await p.locator('.ai-chat .md strong').count() >= 1, `${label}: markdown rendered (list, bold)`);
     ok(/设定有没有前后矛盾/.test(await p.textContent('.ai-chat .sheet-head h2')), `${label}: auto title`);
@@ -31,9 +31,17 @@ const j = async (m, u, b) => (await fetch(B + u, { method: m, headers: { 'Conten
     await p.click('.ai-chat .chat-send');
     await p.waitForSelector('.ai-chat .chat-msg.pending');
     ok(await p.locator('.ai-chat .chat-send.stop').count() === 1, `${label}: send button turns into stop while pending`);
+    // 边生成边显示，点停止留下已生成的部分
+    await p.waitForSelector('.ai-chat .chat-msg.pending .chat-caret', { timeout: 8000 });
+    const t1 = (await p.textContent('.ai-chat .chat-msg.pending')).length;
+    await p.waitForTimeout(700);
+    const t2 = (await p.textContent('.ai-chat .chat-msg.pending')).length;
+    ok(/慢慢说/.test(await p.textContent('.ai-chat .chat-msg.pending')) && t2 > t1, `${label}: reply streams in (${t1} → ${t2})`);
     await p.screenshot({ path: `${OUT}/${label}-pending.png` });
+    await p.click('.ai-chat .chat-send.stop');
     await p.waitForSelector('.ai-chat .chat-msg.pending', { state: 'detached', timeout: 10000 });
-    ok(/第 2 轮/.test(await p.locator('.ai-chat .chat-msg.ai .md').last().textContent()), `${label}: second turn`);
+    ok(/慢慢说/.test(await p.locator('.ai-chat .chat-msg.ai .md').last().textContent()) && /已停止，上面是已经生成的部分/.test(await p.textContent('.ai-chat .chat-msgs')), `${label}: stopped reply kept with note`);
+    await p.screenshot({ path: `${OUT}/${label}-stopped.png` });
     // 设置：范围、轮数、服务、预览
     await p.click('.ai-chat .chat-chip:has-text("设置")');
     await p.waitForSelector('.ai-chat .chat-opts:not([hidden])');
@@ -55,7 +63,7 @@ const j = async (m, u, b) => (await fetch(B + u, { method: m, headers: { 'Conten
     ok((await p.locator('.ai-chat .chat-ref-name').allTextContents()).join() === '星澜,白夜', `${label}: second ref added`);
     await p.fill('.ai-chat .chat-input', '比较一下');
     await p.click('.ai-chat .chat-send');
-    await p.waitForFunction(() => /第 1 轮/.test([...document.querySelectorAll('.ai-chat .chat-msg.ai .md')].pop()?.textContent || '') && /星澜、白夜/.test([...document.querySelectorAll('.ai-chat .chat-msg.ai .md')].pop()?.textContent || ''), null, { timeout: 8000 }).catch(() => {});
+    await p.waitForFunction(() => /第 1 轮/.test([...document.querySelectorAll('.ai-chat .chat-msg.ai:not(.pending) .md')].pop()?.textContent || '') && /星澜、白夜/.test([...document.querySelectorAll('.ai-chat .chat-msg.ai:not(.pending) .md')].pop()?.textContent || ''), null, { timeout: 8000 }).catch(() => {});
     ok(/星澜、白夜/.test(await p.locator('.ai-chat .chat-msg.ai .md').last().textContent()), `${label}: two refs sent with the anthropic profile`);
     // 失败和重试
     await p.fill('.ai-chat .chat-input', 'FAILME');
@@ -131,6 +139,31 @@ const j = async (m, u, b) => (await fetch(B + u, { method: m, headers: { 'Conten
     await p.waitForTimeout(400);
     ok(/AI 修改/.test(await p.locator('.detail-sheet').last().textContent()), 'detail files tab shows the AI version');
     await p.screenshot({ path: `${OUT}/edit-files.png` });
+    ok(!errs.length, 'no page errors ' + errs.join(' | '));
+    await c.close();
+  }
+
+  // ---- 世界书的修改建议 ----
+  {
+    const c = await b.newContext({ viewport: { width: 393, height: 820 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true });
+    const p = await c.newPage(); const errs = []; p.on('pageerror', (e) => errs.push(e.message));
+    await p.goto(B + '/#/library'); await p.waitForSelector('.card');
+    await p.click('.card:has-text("魔法学院世界书")'); await p.waitForSelector('.detail-sheet');
+    await p.click('button[title="更多操作"]'); await p.click('.menu-item:has-text("问 AI")');
+    await p.fill('.ai-chat .chat-input', 'EDITWB 帮我完善');
+    await p.click('.ai-chat .chat-send');
+    await p.waitForSelector('.ai-chat .chat-edit', { timeout: 8000 });
+    ok(/修改建议 · 魔法学院世界书/.test(await p.textContent('.chat-edit')) && await p.locator('.chat-edit .chip-s').count() === 4, 'worldbook suggestion card');
+    await p.click('.chat-edit button:has-text("预览改动")');
+    await p.waitForSelector('.sheet:has-text("改动预览") .chat-edit-diff');
+    const pv = await p.textContent('.sheet:has-text("改动预览")');
+    ok(await p.locator('.sheet:has-text("改动预览") .chat-edit-diff').count() === 4 && /的关键词/.test(pv) && /新增条目「图书馆」/.test(pv), 'worldbook preview shows keys, title, new entry');
+    await p.screenshot({ path: `${OUT}/edit-worldbook.png` });
+    await p.click('.sheet:has-text("改动预览") .sheet-foot button:has-text("应用")');
+    await p.waitForSelector('.chat-edit.applied');
+    ok(/已存成「魔法学院世界书」的新版本/.test(await p.textContent('.chat-edit')), 'worldbook applied');
+    await p.click('.chat-edit button:has-text("撤销")');
+    await p.waitForSelector('.chat-edit:not(.applied)');
     ok(!errs.length, 'no page errors ' + errs.join(' | '));
     await c.close();
   }
