@@ -1,11 +1,12 @@
 // 酒馆联通页：浏览酒馆本地内容、收藏进仓库；比对两边版本；把仓库条目导入（或覆盖）到酒馆
-import { h, clear, toast, sheet, icon, btn, emptyState, choiceDialog, fmtDate } from '../ui.js';
+import { h, clear, toast, sheet, icon, btn, emptyState, choiceDialog, fmtDate, lightbox } from '../ui.js';
 import { api } from '../api.js';
 import { bridge } from '../bridge.js';
-import { state, findByName, typeMeta, reload } from '../state.js';
+import { state, findByName, typeMeta, reload, savePrefs, notify } from '../state.js';
+import { setTavernList, loadTavernIndex, normName } from '../tavern-index.js';
 import { sigOf, stripSyncEntries, syncParts, sameParts, partsDiff, CARD_PARTS, ENTRY_FLAGS, SYNC_OPTIONS } from '../sig.js';
 import { topbar, ensureView } from './common.js';
-import { openDetail } from './detail.js';
+import { openDetail, openPreview } from './detail.js';
 import { openDiff } from './diff.js';
 
 const KINDS = [
@@ -20,14 +21,35 @@ const KINDS = [
 export const TAVERN_IMPORTABLE = new Set(KINDS.map(([k]) => k));
 const SIG_KINDS = new Set(['character', 'worldbook', 'preset', 'regex', 'quickreply', 'theme']);
 
-const ui = { kind: 'character', lists: {}, loading: false, selected: new Set(), q: '', filter: 'all', sigs: new Map(), checking: null };
+const ui = { kind: 'character', lists: {}, loading: false, selected: new Set(), selecting: false, q: '', filter: 'all', sigs: new Map(), checking: null };
 const thumbCache = new Map();
+// 预览读到的内容：sigKey → { item, content, cover }
+const previews = new Map();
+// 有封面的类型默认用卡片网格（像酒馆自己的角色列表），可以切换成列表
+const COVER_KINDS = new Set(['character', 'background']);
+// 显示方式按类型分开存（卡片 / 紧凑 / 列表），和仓库那边的设置互不影响
+const tavernView = (kind) => (COVER_KINDS.has(kind) ? state.prefs.tavernViews?.[kind] || 'grid' : 'list');
+const useGrid = (kind) => tavernView(kind) !== 'list';
+const VIEW_OPTS = [['grid', '卡片', 'grid'], ['dense', '紧凑', 'grid3'], ['list', '列表', 'list']];
+function pickView(root) {
+    const kind = ui.kind;
+    const label = KINDS.find(([k]) => k === kind)?.[1] || '';
+    const s = sheet({ title: `显示方式 · ${label}`, body: h('div', { class: 'stack-s' },
+        h('div', { class: 'opts' }, VIEW_OPTS.map(([v, l, ic]) => h('button', { class: `opt ${tavernView(kind) === v ? 'active' : ''}`, onclick: () => {
+            state.prefs.tavernViews = { ...state.prefs.tavernViews, [kind]: v };
+            savePrefs();
+            s.close();
+            renderTavern(root);
+        } }, icon(ic, { size: 14 }), l))),
+        h('div', { class: 'muted small' }, `只对酒馆页的「${label}」生效，不影响仓库和其它类型。`)) });
+}
 
 // 酒馆数据变化时，下次进入酒馆页重新读取
 bridge.on((event) => {
     if (event !== 'tavern-changed') return;
     ui.lists = {};
     ui.sigs.clear();
+    previews.clear();
     const root = document.querySelector('main.main');
     if (root?.dataset.view === 'tavern' && !ui.loading) renderTavern(root);
 });
@@ -89,8 +111,7 @@ export function renderTavern(root) {
         const content = h('div');
         const selbar = h('div', { class: 'selbar', hidden: true });
         root.append(head, h('div', { class: 'page' }, note, toolbar, content), selbar);
-        clear(actions, btn('', { icon: 'refresh', cls: 'ghost', title: '重新读取', onclick: () => refresh(true) }));
-        return { seg, toolbar, note, content, selbar };
+        return { seg, toolbar, note, content, selbar, actions, searchInput };
     });
     if (!bridge.host) {
         clear(refs.content, emptyState('beer', '未连接酒馆', '这个页面需要在酒馆插件里打开'));
@@ -99,7 +120,13 @@ export function renderTavern(root) {
     clear(refs.note, !bridge.has('raw')
         ? h('div', { class: 'note warn' }, icon('alert', { size: 15 }), h('span', {}, '酒馆里的插件版本较旧，无法比对版本和覆盖导入。请在酒馆的扩展管理里更新「酒馆藏馆」插件。'))
         : null);
-    clear(refs.seg, KINDS.map(([k, label]) => h('button', { class: `seg-item ${ui.kind === k ? 'active' : ''}`, onclick: () => { ui.kind = k; ui.selected.clear(); refresh(); } },
+    clear(refs.actions,
+        COVER_KINDS.has(ui.kind) ? btn('', { icon: useGrid(ui.kind) ? 'grid' : 'list', cls: 'ghost', title: '显示方式', onclick: () => pickView(root) }) : null,
+        btn('', { icon: 'refresh', cls: 'ghost', title: '重新读取', onclick: () => refresh(true) }));
+    clear(refs.seg, KINDS.map(([k, label]) => h('button', { class: `seg-item ${ui.kind === k ? 'active' : ''}`, onclick: () => {
+        if (ui.kind !== k) { ui.q = ''; refs.searchInput.value = ''; ui.filter = 'all'; }
+        ui.kind = k; ui.selected.clear(); ui.selecting = false; refresh();
+    } },
         icon(typeMeta(k).icon, { size: 14 }), h('span', { class: 'seg-label' }, label), ui.lists[k] ? h('span', { class: 'seg-n' }, ui.lists[k].length) : null)));
 
     const kind = ui.kind;
@@ -122,7 +149,8 @@ export function renderTavern(root) {
         FILTERS.map(([k, l]) => (k === 'diff' && !SIG_KINDS.has(kind) ? null : h('button', { class: `pill ${ui.filter === k ? 'active' : ''}`, onclick: () => { ui.filter = k; renderTavern(root); } }, h('span', {}, `${l} · ${count[k]}`)))),
         ui.checking?.kind === kind ? h('span', { class: 'muted small tv-checking' }, h('span', { class: 'spinner' }), `比对中 ${ui.checking.done}/${ui.checking.total}`) : null,
         h('span', { class: 'grow' }),
-        btn('全选', { cls: 'sm ghost', onclick: () => { const all = rows.every(({ r }) => ui.selected.has(r.id)); rows.forEach(({ r }) => (all ? ui.selected.delete(r.id) : ui.selected.add(r.id))); renderTavern(root); } }));
+        ui.selecting ? btn('全选', { cls: 'sm ghost', onclick: () => { const all = rows.every(({ r }) => ui.selected.has(r.id)); rows.forEach(({ r }) => (all ? ui.selected.delete(r.id) : ui.selected.add(r.id))); renderTavern(root); } }) : null,
+        btn(ui.selecting ? '完成' : '多选', { icon: ui.selecting ? 'check' : 'checkSquare', cls: 'sm ghost', onclick: () => { ui.selecting = !ui.selecting; if (!ui.selecting) ui.selected.clear(); renderTavern(root); } }));
 
     if (!rows.length) {
         clear(refs.content, emptyState(typeMeta(kind).icon, list.length ? '没有符合条件的内容' : '酒馆里还没有这类内容'));
@@ -130,10 +158,25 @@ export function renderTavern(root) {
         const io = new IntersectionObserver((entries) => {
             for (const e of entries) if (e.isIntersecting) { io.unobserve(e.target); loadThumb(e.target); }
         }, { rootMargin: '200px' });
-        const toggle = (r) => { ui.selected.has(r.id) ? ui.selected.delete(r.id) : ui.selected.add(r.id); renderTavern(root); };
+        const toggle = (r) => { ui.selected.has(r.id) ? ui.selected.delete(r.id) : ui.selected.add(r.id); ui.selecting = true; renderTavern(root); };
         const stop = (fn) => (e) => { e.stopPropagation(); fn(); };
-        clear(refs.content, h('div', { class: 'rows' }, rows.map(({ r, st }) => {
+        // 点一下打开预览；多选模式下点一下是选中
+        const open = (r) => (ui.selecting ? toggle(r) : openRow(kind, r, rows.map((x) => x.r)));
+        const grid = useGrid(kind);
+        clear(refs.content, h('div', { class: grid ? `grid tv-grid ${tavernView(kind) === 'dense' ? 'dense' : ''}` : 'rows' }, rows.map(({ r, st }) => {
             const sel = ui.selected.has(r.id);
+            if (grid) {
+                const cover = h('div', { class: 'tv-cover', dataset: { kind, id: r.id } }, icon(typeMeta(kind).icon, { size: 28, stroke: 1.3 }));
+                if (r.thumb) io.observe(cover);
+                const chip = statusChip(st);
+                return h('article', { class: `card has-cover tv-card ${sel ? 'selected' : ''} ${ui.selecting ? 'selecting' : ''} ${isDiff(st) ? `tv-${st.s}` : ''}`, style: { '--tc': typeMeta(kind).color }, onclick: () => open(r) },
+                    h('div', { class: 'card-media' },
+                        h('div', { class: 'card-frame' }, cover, chip ? h('span', { class: 'card-corner corner-bl' }, chip) : null),
+                        h('span', { class: 'card-check', onclick: stop(() => toggle(r)) }, icon('check', { size: 14, stroke: 3 }))),
+                    h('div', { class: 'card-body' },
+                        h('div', { class: 'card-title' }, r.name),
+                        r.sub ? h('div', { class: 'card-sub' }, r.sub) : null));
+            }
             const thumb = h('div', { class: 'row-thumb', dataset: { kind, id: r.id } }, icon(typeMeta(kind).icon, { size: 20 }));
             if (r.thumb) io.observe(thumb);
             let right;
@@ -165,8 +208,8 @@ export function renderTavern(root) {
                 default:
                     right = h('button', { class: 'chip-s ok as-btn', title: '在仓库中查看', onclick: stop(() => openDetail(st.item.id)) }, icon('check', { size: 11, stroke: 3 }), '已收藏');
             }
-            return h('div', { class: `row-item ${sel ? 'selected' : ''} ${isDiff(st) ? `tv-${st.s}` : ''}`, style: { '--tc': typeMeta(kind).color }, onclick: () => toggle(r) },
-                h('span', { class: `row-check ${sel ? 'on' : ''}` }, icon('check', { size: 13, stroke: 3 })),
+            return h('div', { class: `row-item ${sel ? 'selected' : ''} ${isDiff(st) ? `tv-${st.s}` : ''}`, style: { '--tc': typeMeta(kind).color }, onclick: () => open(r) },
+                h('span', { class: `row-check ${sel ? 'on' : ''}`, title: '选择', onclick: stop(() => toggle(r)) }, icon('check', { size: 13, stroke: 3 })),
                 thumb,
                 h('div', { class: 'row-main' },
                     h('div', { class: 'row-title' }, h('span', {}, r.name)),
@@ -185,7 +228,7 @@ export function renderTavern(root) {
         const olderItems = picked.filter(({ st }) => st.s === 'older' || st.s === 'other').map(({ st }) => st.item);
         clear(refs.selbar, h('div', { class: 'sel-top' }, h('span', { class: 'sel-count' }, `已选 ${n} 项`),
             h('span', { class: 'grow' }),
-            btn('取消', { cls: 'sm ghost', onclick: () => { ui.selected.clear(); renderTavern(root); } }),
+            btn('取消', { cls: 'sm ghost', onclick: () => { ui.selected.clear(); ui.selecting = false; renderTavern(root); } }),
             olderItems.length ? btn(`更新到酒馆 · ${olderItems.length}`, { cls: 'sm', onclick: () => importItemsToTavern(olderItems, { decide: 'replace' }) }) : null,
             btn('收藏到仓库', { icon: 'download', cls: 'sm primary', onclick: () => collect(picked.map(({ r }) => r)) })));
     }
@@ -193,10 +236,11 @@ export function renderTavern(root) {
 
 async function refresh(force = false) {
     const kind = ui.kind;
-    if (force) { ui.lists = {}; ui.sigs.clear(); thumbCache.clear(); }
+    if (force) { ui.lists = {}; ui.sigs.clear(); thumbCache.clear(); previews.clear(); }
     ui.loading = true;
     try {
         ui.lists[kind] = await bridge.call('list', { kind });
+        setTavernList(kind, ui.lists[kind]);
     } catch (e) {
         ui.lists[kind] = [];
         toast(`读取失败：${e.message}`, 'err');
@@ -229,6 +273,8 @@ async function checkSigs(kind, list, { force = false } = {}) {
     }
     if (ui.checking === job) ui.checking = null;
     rerender();
+    // 打开着的预览也要更新状态（已同步 / 有改动）
+    notify();
 }
 
 function rerender() {
@@ -236,18 +282,76 @@ function rerender() {
     if (root?.dataset.view === 'tavern') renderTavern(root);
 }
 
+async function thumbUrl(kind, id, full = false) {
+    const key = `${kind}:${id}${full ? ':full' : ''}`;
+    let url = thumbCache.get(key);
+    if (!url) {
+        const r = await bridge.call('thumb', { kind, id, full }, [], 30000);
+        if (!r?.data) return '';
+        url = URL.createObjectURL(new Blob([r.data], { type: r.mime || 'image/png' }));
+        thumbCache.set(key, url);
+    }
+    return url;
+}
+
 async function loadThumb(el) {
-    const key = `${el.dataset.kind}:${el.dataset.id}`;
     try {
-        let url = thumbCache.get(key);
-        if (!url) {
-            const r = await bridge.call('thumb', { kind: el.dataset.kind, id: el.dataset.id }, [], 30000);
-            if (!r?.data) return;
-            url = URL.createObjectURL(new Blob([r.data], { type: r.mime || 'image/png' }));
-            thumbCache.set(key, url);
-        }
-        clear(el, h('img', { src: url, alt: '' }));
+        const url = await thumbUrl(el.dataset.kind, el.dataset.id);
+        if (url) clear(el, h('img', { src: url, alt: '', loading: 'lazy' }));
     } catch { /* 忽略缩略图失败 */ }
+}
+
+/** 网格卡片左下角的状态 */
+function statusChip(st) {
+    const map = { new: ['new', '未收藏'], synced: ['ok', '已同步'], collected: ['ok', '已收藏'], changed: ['dupe', '酒馆有改动'], older: ['info', '藏馆较新'], other: ['info', '版本不同'] };
+    const [k, label] = map[st.s] || [];
+    return label ? h('span', { class: `badge-${k}` }, label) : null;
+}
+
+/** 预览：从酒馆读出原始内容，交给服务端解析成和藏馆条目一样的资料，不存进藏馆 */
+async function loadPreview(kind, r) {
+    const key = sigKey(kind, r.id);
+    if (previews.has(key)) return previews.get(key);
+    const [one] = await bridge.call('raw', { kind, ids: [r.id] }, [], 30000);
+    if (!one?.data) throw new Error('酒馆里读不到这一项');
+    const q = new URLSearchParams({ filename: `${r.name || 'item'}.json`, type: kind });
+    const res = await api.req('POST', `/api/preview?${q}`, new Blob([JSON.stringify(one.data)]), { raw: true, headers: { 'Content-Type': 'application/json' } });
+    const cover = r.thumb ? await thumbUrl(kind, r.id, bridge.has('image')).catch(() => '') : '';
+    const out = { item: { ...res.item, id: key, name: r.name || res.item.name }, content: res.content, cover };
+    previews.set(key, out);
+    return out;
+}
+
+/** 打开酒馆里的一项：背景直接看大图；其它用和藏馆详情一样的预览，可以左右切换 */
+function openRow(kind, r, rows) {
+    if (kind === 'background') {
+        thumbUrl(kind, r.id, true).then((u) => u && lightbox(u)).catch((e) => toast(e.message, 'err'));
+        return;
+    }
+    if (!bridge.has('raw')) { toast('酒馆里的插件版本较旧，不能预览。请在扩展管理里更新「酒馆藏馆」插件', 'err'); return; }
+    const byId = new Map(rows.map((x) => [x.id, x]));
+    const label = KINDS.find(([k]) => k === kind)?.[1] || '';
+    openPreview(r.id, {
+        title: `酒馆里的${label}`,
+        type: kind,
+        ids: rows.map((x) => x.id),
+        get: (id) => previews.get(sigKey(kind, id)),
+        load: (id) => loadPreview(kind, byId.get(id)),
+        badges: (id) => {
+            const st = statusOf(kind, byId.get(id));
+            const chip = statusChip(st);
+            return chip ? h('span', { class: `chip-s ${st.s === 'changed' ? 'warn' : st.s === 'new' ? '' : st.s === 'synced' || st.s === 'collected' ? 'ok' : 'info'}` }, chip.textContent) : null;
+        },
+        foot: (id, close) => {
+            const row = byId.get(id);
+            const st = statusOf(kind, row);
+            const inVault = st.item ? btn('在藏馆中查看', { icon: 'archive', onclick: () => { close(); openDetail(st.item.id); } }) : null;
+            if (st.s === 'new') return [btn('收藏到藏馆', { icon: 'download', cls: 'primary', onclick: () => collect([row]) })];
+            if (st.s === 'changed') return [inVault, btn('对比', { icon: 'eye', onclick: () => compareWithTavern(row, st.item) }), btn('同步', { cls: 'primary', onclick: () => syncChoice(row, st.item, changedNote(kind, st.parts).text) })];
+            if (st.s === 'older' || st.s === 'other') return [inVault, btn('对比', { icon: 'eye', onclick: () => compareWithTavern(row, st.item) }), btn('更新到酒馆', { cls: 'primary', onclick: () => importItemsToTavern([st.item], { decide: 'replace' }) })];
+            return [inVault];
+        },
+    });
 }
 
 async function exportFromTavern(kind, r) {
@@ -367,8 +471,6 @@ async function collect(rows, { primary } = {}) {
     checkSigs(kind, ui.lists[kind]);
 }
 
-const normName = (s) => String(s || '').trim().toLowerCase().replace(/\.(png|jpe?g|webp|gif|avif|bmp|json)$/, '');
-
 /**
  * 把仓库条目导入酒馆
  * opts.decide: 遇到酒馆里同名条目时的处理，'replace' | 'new' | 'skip'；不传则询问
@@ -434,7 +536,7 @@ export async function importItemsToTavern(items, { decide } = {}) {
     }
     const extraMsg = [same.length && `${same.length} 项内容一致已跳过`, skipped && `${skipped} 项不支持已跳过`, clashes.length && action === 'skip' && `${clashes.length} 项同名已跳过`].filter(Boolean).join('，');
     prog.done(`已导入 ${ok}/${run.length}${extraMsg ? `，${extraMsg}` : ''}`);
-    for (const kind of new Set(run.map((m) => m.it.type))) delete ui.lists[kind];
+    for (const kind of new Set(run.map((m) => m.it.type))) { delete ui.lists[kind]; loadTavernIndex([kind]); }
     for (const m of run) if (m.existing) ui.sigs.delete(sigKey(m.it.type, m.existing.id));
     rerender();
 }

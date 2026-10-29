@@ -93,6 +93,8 @@ const ok = (c, m) => { console.log(c ? 'PASS' : 'FAIL', m); if (!c) process.exit
   await p.screenshot({ path: `${OUT}/6b-library.png` });
   await p.click('.card:has-text("紫夜")');
   await p.waitForSelector('.detail-sheet');
+  // 主题这类默认先打开「内容」，AI 简介在「介绍」里
+  await p.click('.detail-sheet .tabs button:has-text("介绍")');
   await p.waitForSelector('.ai-summary');
   await p.locator('.ai-summary').scrollIntoViewIfNeeded().catch(() => {});
   ok(/雨夜酒馆/.test(await p.locator('.ai-summary').innerText()), 'detail shows AI 简介 block');

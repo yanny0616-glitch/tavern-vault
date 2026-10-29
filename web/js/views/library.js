@@ -2,7 +2,7 @@
 import { h, clear, toast, confirmDialog, promptDialog, debounce, downloadBlob, sheet, icon, btn, emptyState, switchEl } from '../ui.js';
 import { api } from '../api.js';
 import { bridge } from '../bridge.js';
-import { state, live, allTags, savePrefs, TYPE_META, reload } from '../state.js';
+import { state, live, allTags, savePrefs, TYPE_META, reload, viewOf, setView, resetView } from '../state.js';
 import { topbar, ensureView, itemCard, itemRow, collectionName, applyHit, versionCount } from './common.js';
 import { openDetail } from './detail.js';
 import { openImporter } from './importer.js';
@@ -11,6 +11,7 @@ import { startOrganize, aiReady } from './ai.js';
 import { openAiChat } from './aichat.js';
 import { findDuplicates, openDuplicates } from './dupes.js';
 import { openDiff } from './diff.js';
+import { inTavern } from '../tavern-index.js';
 
 export const SORTS = {
     updated: ['最近更新', (a, b) => b.updatedAt.localeCompare(a.updatedAt)],
@@ -43,6 +44,9 @@ export const QUICK = {
     untagged: ['未打标签', (it) => !it.tags.length],
     unsorted: ['未整理', (it) => !it.tags.length && !it.notes && !it.rating && !it.favorite && !it.collections.length],
     multi: ['多个版本', (it) => versionCount(it) > 1],
+    // 下面两个只在酒馆插件里打开时出现；酒馆不支持的类型两个都不算
+    notInTavern: ['未导入酒馆', (it) => inTavern(it) === false, true],
+    inTavern: ['已在酒馆', (it) => inTavern(it) === true, true],
 };
 
 export function filtered() {
@@ -144,7 +148,7 @@ export function renderLibrary(root) {
     refs.sub.textContent = `共 ${items.length} 件藏品${list.length !== items.length ? ` · 显示 ${list.length}` : ''}`;
 
     clear(refs.actions,
-        btn('', { icon: state.prefs.view === 'grid' ? 'list' : 'grid', cls: 'ghost', title: '切换视图', onclick: () => { state.prefs.view = state.prefs.view === 'grid' ? 'list' : 'grid'; savePrefs(); renderLibrary(root); } }),
+        btn('', { icon: viewOf().view === 'grid' ? 'list' : 'grid', cls: 'ghost', title: '切换视图', onclick: () => { setView({ view: viewOf().view === 'grid' ? 'list' : 'grid' }); renderLibrary(root); } }),
         aiReady() ? btn('', { icon: 'message', cls: 'ghost', title: 'AI 对话', onclick: () => openAiChat() }) : null,
         h('button', { class: `btn ghost icon ${fc ? 'has-dot' : ''}`, title: '筛选与排序', onclick: () => openFilters(root) }, icon('filter', { size: 17 })),
         btn(state.selecting ? '完成' : '', { icon: state.selecting ? null : 'checkSquare', cls: state.selecting ? 'primary sm' : 'ghost', title: '多选', onclick: () => { state.selecting = !state.selecting; state.selection.clear(); renderLibrary(root); } }),
@@ -201,8 +205,9 @@ export function renderLibrary(root) {
         const LIMIT = 300;
         const shown = list.slice(0, refs.limit || LIMIT);
         const dupes = dupIds();
-        const container = state.prefs.view === 'grid'
-            ? h('div', { class: `grid ${state.prefs.dense ? 'dense' : ''} ${state.prefs.cols ? `fixed-cols c${state.prefs.cols}` : ''}`, style: { '--cols': state.prefs.cols || null } }, withTimeGroups(shown, (it, i) => applyHit(itemCard(it, { onClick: click(it), selected: state.selection.has(it.id), selecting: state.selecting, index: i, dupe: dupes.has(it.id) }), it, hitOf(it)), 'in-grid'))
+        const vw = viewOf();
+        const container = vw.view === 'grid'
+            ? h('div', { class: `grid ${vw.dense ? 'dense' : ''} ${vw.cols ? `fixed-cols c${vw.cols}` : ''}`, style: { '--cols': vw.cols || null } }, withTimeGroups(shown, (it, i) => applyHit(itemCard(it, { onClick: click(it), selected: state.selection.has(it.id), selecting: state.selecting, index: i, dupe: dupes.has(it.id) }), it, hitOf(it)), 'in-grid'))
             : h('div', { class: 'rows' }, withTimeGroups(shown, (it, i) => applyHit(itemRow(it, { cache: true, onClick: click(it), selected: state.selection.has(it.id), index: i, dupe: dupes.has(it.id),
                 right: state.selecting ? h('span', { class: `row-check ${state.selection.has(it.id) ? 'on' : ''}` }, icon('check', { size: 13, stroke: 3 })) : null }), it, hitOf(it)), 'in-rows'));
         clear(refs.content, container,
@@ -274,6 +279,15 @@ function reveal(refs, root, list, id) {
 }
 
 function setFilter(root, patch) {
+    // 换类型时，新类型里没有任何条目带着的标签筛选会让列表变空，顺手清掉并提示
+    if (patch.type && patch.type !== 'all' && patch.type !== state.filter.type && state.filter.tagsIn.length) {
+        const have = new Set(live().filter((i) => i.type === patch.type).flatMap((i) => i.tags));
+        const dropped = state.filter.tagsIn.filter((t) => !have.has(t));
+        if (dropped.length) {
+            patch = { ...patch, tagsIn: state.filter.tagsIn.filter((t) => have.has(t)) };
+            toast(`「${TYPE_META[patch.type]?.label || patch.type}」里没有标签 ${dropped.slice(0, 3).join('、')}${dropped.length > 3 ? ` 等 ${dropped.length} 个` : ''}，已取消这些标签筛选`);
+        }
+    }
     Object.assign(state.filter, patch);
     if (root._refs) root._refs.limit = 0;
     renderLibrary(root);
@@ -314,18 +328,23 @@ function openFilters(root) {
     const draw = () => {
         const opt = (active, label, onclick, ic) => h('button', { class: `opt ${active ? 'active' : ''}`, onclick: () => { onclick(); draw(); renderLibrary(root); } }, ic ? icon(ic, { size: 14 }) : null, label);
         const tags = allTags();
+        const vw = viewOf();
+        const typeOnly = state.filter.type !== 'all' ? TYPE_META[state.filter.type]?.label || state.filter.type : '';
         clear(s.body,
             h('div', { class: 'form-group' }, h('div', { class: 'form-label' }, '排序'),
                 h('div', { class: 'opts' }, Object.entries(SORTS).map(([k, [label]]) => opt(!state.prefs.groupTime && state.prefs.sort === k, label, () => { state.prefs.sort = k; state.prefs.groupTime = false; savePrefs(); })),
                     opt(state.prefs.groupTime, '按添加时间分组', () => { state.prefs.groupTime = !state.prefs.groupTime; savePrefs(); }, 'clock')),
                 state.prefs.groupTime ? h('div', { class: 'muted small' }, '最近添加的在前，分成今天、昨天、7 天内、30 天内，更早的按月份。') : null),
-            h('div', { class: 'form-group' }, h('div', { class: 'form-label' }, '显示'),
+            h('div', { class: 'form-group' }, h('div', { class: 'form-label' }, typeOnly ? `显示 · ${typeOnly}` : '显示'),
                 h('div', { class: 'opts' },
-                    opt(state.prefs.view === 'grid' && !state.prefs.dense, '卡片', () => { state.prefs.view = 'grid'; state.prefs.dense = false; savePrefs(); }, 'grid'),
-                    opt(state.prefs.view === 'grid' && state.prefs.dense, '紧凑', () => { state.prefs.view = 'grid'; state.prefs.dense = true; savePrefs(); }, 'grid3'),
-                    opt(state.prefs.view === 'list', '列表', () => { state.prefs.view = 'list'; savePrefs(); }, 'list'))),
-            state.prefs.view === 'grid' ? h('div', { class: 'form-group' }, h('div', { class: 'form-label' }, '每行显示'),
-                h('div', { class: 'opts' }, [0, 1, 2, 3, 4, 5, 6].map((n) => opt((state.prefs.cols || 0) === n, n ? `${n} 个` : '自动', () => { state.prefs.cols = n; savePrefs(); }))),
+                    opt(vw.view === 'grid' && !vw.dense, '卡片', () => setView({ view: 'grid', dense: false }), 'grid'),
+                    opt(vw.view === 'grid' && vw.dense, '紧凑', () => setView({ view: 'grid', dense: true }), 'grid3'),
+                    opt(vw.view === 'list', '列表', () => setView({ view: 'list' }), 'list')),
+                h('div', { class: 'muted small' }, typeOnly
+                    ? h('span', {}, `只对「${typeOnly}」生效，其它类型不受影响。`, vw.own ? h('a', { href: '#', onclick: (e) => { e.preventDefault(); resetView(state.filter.type); draw(); renderLibrary(root); } }, '恢复成默认') : '还没单独设置过，现在用的是默认。')
+                    : '「全部」和没单独设置过的类型用这个。选了某个类型后再改，就只改那个类型。')),
+            vw.view === 'grid' ? h('div', { class: 'form-group' }, h('div', { class: 'form-label' }, '每行显示'),
+                h('div', { class: 'opts' }, [0, 1, 2, 3, 4, 5, 6].map((n) => opt((vw.cols || 0) === n, n ? `${n} 个` : '自动', () => setView({ cols: n })))),
                 h('div', { class: 'muted small' }, '只对这台设备生效。手机和电脑可以分别设置。')) : null,
             aiReady() || live().some((i) => i.ai?.at) ? h('div', { class: 'form-group' }, h('div', { class: 'form-label' }, 'AI 整理'),
                 h('div', { class: 'opts' }, [['', '全部'], ['no', '未整理'], ['yes', '已整理']].map(([v, l]) => opt((state.filter.ai || '') === v, l, () => { state.filter.ai = v; })))) : null,
@@ -334,7 +353,7 @@ function openFilters(root) {
                 h('div', { class: 'opts' }, opt(!state.filter.collection, '全部', () => { state.filter.collection = ''; }),
                     state.collections.map((c) => opt(state.filter.collection === c.id, c.name, () => { state.filter.collection = c.id; }, c.icon)))) : null,
             h('div', { class: 'form-group' }, h('div', { class: 'form-label' }, '快捷筛选'),
-                h('div', { class: 'opts' }, Object.entries(QUICK).map(([k, [label]]) => opt(state.filter.quick.includes(k), label, () => {
+                h('div', { class: 'opts' }, Object.entries(QUICK).filter(([, [, , tavern]]) => !tavern || bridge.host).map(([k, [label]]) => opt(state.filter.quick.includes(k), label, () => {
                     const q = state.filter.quick;
                     state.filter.quick = q.includes(k) ? q.filter((x) => x !== k) : [...q, k];
                 })))),

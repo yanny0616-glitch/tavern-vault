@@ -865,9 +865,9 @@ html.embed-edge .tb-close { display: inline-flex; }
 /* ---------------- 每台设备的显示偏好（设置 → 外观 / 浏览） ---------------- */
 .detail-body .rt, .detail-body .lead, .detail-body .prose, .read-full .rt, .read-full .dlg-list { zoom: var(--read-zoom, 1); }
 html[data-motion] *, html[data-motion] *::before, html[data-motion] *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition: none !important; scroll-behavior: auto !important; }
-html[data-hide-tags] .card-tags, html[data-hide-tags] .row-tag { display: none !important; }
-html[data-hide-rating] .card-stars, html[data-hide-rating] .card-rank { display: none !important; }
-html[data-hide-no] .card-no, html[data-hide-no] .row-no { display: none !important; }
+.no-tags .card-tags, .no-tags .row-tag { display: none !important; }
+.no-rating .card-stars, .no-rating .card-rank { display: none !important; }
+.no-no .card-no, .no-no .row-no { display: none !important; }
 html[data-blur-nsfw] .card.nsfw .card-frame img, html[data-blur-nsfw] .row-item.nsfw .row-thumb img { filter: blur(16px) saturate(.8); transform: scale(1.15); }
 html[data-blur-nsfw] .card.nsfw .card-frame { overflow: hidden; }
 html[data-blur-nsfw] .card.nsfw .card-media::after { content: "NSFW"; position: absolute; left: 50%; top: 42%; transform: translate(-50%, -50%); padding: 3px 10px; border-radius: 4px; background: rgba(0, 0, 0, .55); color: #fff; font-size: calc(11px * var(--fs)); font-weight: 700; letter-spacing: .12em; pointer-events: none; }
@@ -1028,19 +1028,39 @@ mark { background: color-mix(in srgb, var(--accent) 22%, transparent); color: in
 /* 对比窗口底部按钮多时换行，手机上每个占满一行 */
 .sheet-foot:has(> .btn:nth-child(3)) { flex-wrap: wrap; }
 @media (max-width: 640px) { .sheet-foot:has(> .btn:nth-child(3)) > .btn { flex: 1 1 100%; } }
-/* 卡片角标：「3 版」「可能重复」 */
-.card-badges { position: absolute; left: 6px; bottom: 6px; z-index: 2; display: flex; flex-wrap: wrap; gap: 4px; pointer-events: none; }
-.card-badges > span, .row-badges > span {
-  display: inline-flex; align-items: center; height: 18px; padding: 0 6px; border-radius: 4px;
+/* 封面角标：四个角各一组（设置 → 外观 → 封面角标）。每组最多占一半宽度，放不下往里换行，左右两组不会叠在一起 */
+.card-corner {
+  position: absolute; z-index: 2; display: flex; flex-wrap: wrap; gap: 4px; max-width: calc(50% - 9px); pointer-events: none;
+  max-height: calc(50% - var(--cy) - 2px); overflow: hidden;
+  --cx: 6px; --cy: 6px;
+}
+.corner-tl { left: var(--cx); top: var(--cy); }
+/* 右边两个角从右往左排，第一个角标总在最靠角的位置；下边两个角从下往上换行 */
+.corner-tr { right: var(--cx); top: var(--cy); flex-direction: row-reverse; }
+.corner-bl { left: var(--cx); bottom: var(--cy); flex-wrap: wrap-reverse; }
+.corner-br { right: var(--cx); bottom: var(--cy); flex-direction: row-reverse; flex-wrap: wrap-reverse; }
+.card-corner > .is-cut { display: none; }
+.card-corner > span, .row-badges > span {
+  display: inline-flex; align-items: center; gap: 3px; height: 18px; padding: 0 6px; border-radius: 4px; max-width: 100%; overflow: hidden; text-overflow: ellipsis;
   font-size: calc(10.5px * var(--fs)); font-weight: 600; line-height: 1; white-space: nowrap;
 }
-.card-badges > span { background: rgba(0, 0, 0, .62); color: #fff; backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px); }
-.card-badges > .badge-dupe { background: color-mix(in srgb, var(--warn, #c98a1b) 88%, #000); }
+.card-corner > span { background: rgba(0, 0, 0, .62); color: #fff; backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px); }
+.card-corner > .badge-dupe { background: color-mix(in srgb, var(--warn, #c98a1b) 88%, #000); }
+.card-corner > .badge-tavern { background: color-mix(in srgb, var(--accent) 82%, #000); }
 .row-badges { display: inline-flex; gap: 4px; flex-shrink: 0; }
 .row-badges > span { height: 16px; padding: 0 5px; background: var(--surface-2); color: var(--text-2); border: 1px solid var(--line); }
 .row-badges > .badge-dupe { color: var(--warn, #c98a1b); border-color: color-mix(in srgb, var(--warn, #c98a1b) 45%, transparent); }
-html[data-skin="neon"] .card-badges { left: calc(var(--cut, 0px) + 4px); }
-.grid.dense .card-badges > span { height: 16px; padding: 0 4px; font-size: calc(9.5px * var(--fs)); }
+.row-badges > .badge-tavern { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, transparent); }
+.grid.dense .card-corner > span { height: 16px; padding: 0 4px; font-size: calc(9.5px * var(--fs)); }
+/* 避开角上原有的东西：右上的收藏 / 多选勾，左上的类型标签和评分，右下的评分和编号 */
+.card:has(.card-fav) .card-corner.corner-tr, .card.selecting .card-corner.corner-tr { --cy: 38px; }
+html[data-skin="sakura"] .card-corner.corner-tl, html[data-skin="neon"] .card.has-cover .card-corner.corner-tl { --cy: 34px; }
+html[data-skin="tavern"] .card:not(.no-rating):has(.card-rank) .card-corner.corner-tl { --cy: 36px; }
+html[data-skin="sakura"] .card:not(.no-rating):has(.card-rank) .card-corner.corner-br { --cy: 36px; }
+html[data-skin="neon"] .card-corner.corner-bl { --cx: calc(var(--cut, 0px) + 4px); }
+html[data-skin="neon"] .card:not(.no-no) .card-corner.corner-br { --cy: 22px; }
+html[data-skin="tavern"] .card-corner.corner-bl, html[data-skin="tavern"] .card-corner.corner-br { --cy: 64px; }
+html[data-skin="tavern"] .grid.dense .card-corner.corner-bl, html[data-skin="tavern"] .grid.dense .card-corner.corner-br { --cy: 44px; }
 /* 标签管理 */
 .tag-admin-tools { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .tag-admin-tools .opts { flex-shrink: 0; }
@@ -1162,3 +1182,24 @@ html[data-hide-ai] .ai-line { display: none !important; }
 html.embed .login-close { position: fixed; top: calc(var(--safe-top, 0px) + 8px); right: calc(var(--safe-right, 0px) + 8px); }
 .login-close { display: none; }
 html.embed-edge .login-close { display: inline-flex; }
+/* 设置 → 封面角标：每条一行，右边一个 2×2 的小方格选位置 */
+.mark-rules { display: flex; flex-direction: column; gap: 6px; }
+.mark-rule { display: flex; align-items: center; gap: 10px; padding: 6px 4px 6px 10px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface); }
+.mark-rule-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pos-pick { display: grid; grid-template-columns: repeat(2, 18px); grid-template-rows: repeat(2, 18px); gap: 3px; padding: 3px; border-radius: 6px; background: var(--surface-2); flex-shrink: 0; }
+.pos-cell { width: 18px; height: 18px; padding: 0; border-radius: 4px; border: 1px solid var(--line-2); background: var(--surface); }
+.pos-cell.on { background: var(--accent); border-color: var(--accent); }
+/* 酒馆页的卡片网格：封面来自酒馆的缩略图，左下角是和藏馆的关系 */
+.tv-cover { position: absolute; inset: 0; display: grid; place-items: center; color: var(--text-3); background: var(--surface-2); }
+.tv-cover > img { width: 100%; height: 100%; object-fit: cover; }
+.card-corner > .badge-new { background: rgba(0, 0, 0, .62); }
+.card-corner > .badge-ok { background: color-mix(in srgb, var(--ok, #2f9e6a) 80%, #000); }
+.card-corner > .badge-info { background: color-mix(in srgb, var(--accent) 75%, #000); }
+.tv-card .card-check { cursor: pointer; }
+.tv-card.tv-changed .card-media { box-shadow: 0 0 0 2px color-mix(in srgb, var(--warn, #c98a1b) 70%, transparent); }
+.src-status { display: contents; }
+.view-own { display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; }
+.view-own .chip { display: inline-flex; align-items: center; gap: 4px; padding: 3px 4px 3px 9px; border-radius: 99px; background: var(--surface-2); font-size: 12px; }
+.view-own .chip-x { display: grid; place-items: center; width: 18px; height: 18px; border-radius: 50%; color: var(--text-3); }
+.view-own .chip-x:hover { background: var(--surface-3, rgba(0,0,0,.08)); color: var(--text); }
+.scope-note { margin: -2px 0 6px; }

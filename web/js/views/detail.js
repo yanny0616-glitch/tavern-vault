@@ -2,7 +2,7 @@
 import { h, clear, sheet, toast, debounce, confirmDialog, promptDialog, lightbox, fmtBytes, fmtDate, timeAgo, downloadBlob, downloadUrl, switchEl, icon, btn, starsEl, emptyState } from '../ui.js';
 import { api } from '../api.js';
 import { bridge } from '../bridge.js';
-import { state, typeMeta, TYPE_META, fieldsFor, subscribe, allTags, notify, savePrefs, applyAccent, readZoom, READ_ZOOM } from '../state.js';
+import { state, typeMeta, TYPE_META, fieldsFor, subscribe, allTags, notify, savePrefs, applyAccent, readZoom, READ_ZOOM, detailTabOf } from '../state.js';
 import { collectionName, typeBadge } from './common.js';
 import { pickCollection } from './library.js';
 import { importItemsToTavern, TAVERN_IMPORTABLE } from './tavern.js';
@@ -15,6 +15,7 @@ import { runRegex, applyScripts, displayScripts, looksHtml, stView, hasHtmlFence
 import { cardPng } from '../pngcard.js';
 import { discordAppUrl, sourceLinkProps } from '../source-links.js';
 import { entriesOf, entryKeys, entryKeys2, effectivePrompts, presetRegex } from '../cardfmt.js';
+import { inTavern } from '../tavern-index.js';
 
 const TOP_LEVEL_FIELDS = new Set(['source', 'author', 'version', 'rating']);
 const SHOWN_IN_HERO = new Set(['author', 'version', 'rating']);
@@ -152,13 +153,28 @@ function fieldDisplay(f, v) {
 
 /** 12345 → 1.2 万 */
 const fmtTok = (n) => (n >= 10000 ? `${(n / 10000).toFixed(1).replace(/\.0$/, '')} 万` : String(n));
-export function openDetail(id, { seq = null, onLeave = null } = {}) {
-    let tab = state.prefs.detailTab === 'content' ? 'content' : 'overview';
+
+/**
+ * 预览不在藏馆里的内容（酒馆里的角色卡、世界书……），界面和条目详情一样，只读。
+ * src = { ids：可以左右切换的顺序, get(id) → 已读到的 { item, content, cover }, load(id) → Promise,
+ *         badges(id) → 标题上方的状态, foot(id, close) → 底部按钮, title }
+ */
+export function openPreview(id, src) {
+    openDetail(id, { src });
+}
+
+export function openDetail(id, { seq = null, onLeave = null, src = null } = {}) {
+    let tab;
     let content = null;
     let contentSha = '';
     let loading = false;
     let greetIdx = 0;
-    const order = Array.isArray(seq) && seq.length > 1 && seq.includes(id) ? seq : null;
+    const order = src ? (src.ids.length > 1 && src.ids.includes(id) ? src.ids : null)
+        : Array.isArray(seq) && seq.length > 1 && seq.includes(id) ? seq : null;
+    // 预览模式下条目来自 src，不在藏馆里：没有编辑、文件页、收藏评分这些
+    const itemOf = (x) => (src ? src.get(x)?.item : state.byId.get(x));
+    tab = detailTabOf(src?.type || itemOf(id)?.type);
+    const hasFiles = (it) => (src ? true : it.files.length > 0);
     const headMore = h('div', { class: 'head-extra' });
     const s = sheet({ title: '', body: h('div'), full: true, headExtra: headMore, onClose: () => { unsub(); document.removeEventListener('keydown', onNavKey); onLeave?.(id); } });
     s.el.classList.add('detail-sheet');
@@ -167,8 +183,8 @@ export function openDetail(id, { seq = null, onLeave = null } = {}) {
     function browse(dir) {
         if (!order) return;
         for (let k = order.indexOf(id) + dir; k >= 0 && k < order.length; k += dir) {
-            const it = state.byId.get(order[k]);
-            if (it && !it.deletedAt) { goTo(order[k], dir); return; }
+            const it = src ? true : state.byId.get(order[k]);
+            if (it && (src || !it.deletedAt)) { goTo(order[k], dir); return; }
         }
         toast(dir > 0 ? '已经是最后一项' : '已经是第一项');
     }
@@ -211,6 +227,14 @@ export function openDetail(id, { seq = null, onLeave = null } = {}) {
         }, { passive: true });
     }
     const unsub = subscribe(() => {
+        if (src) {
+            const r = src.get(id);
+            if (!r) return;
+            renderFoot(r.item);
+            const el = s.body.querySelector('.src-status');
+            if (el) clear(el, src.badges(id));
+            return;
+        }
         const it = state.byId.get(id);
         if (!it) { s.close(); return; }
         if (primary(it)?.sha !== contentSha) content = null;
@@ -262,6 +286,7 @@ export function openDetail(id, { seq = null, onLeave = null } = {}) {
     const macroNames = (t, n) => String(t).replace(/\{\{char\}\}/gi, n.char).replace(/\{\{user\}\}/gi, n.user);
 
     async function loadContent(it) {
+        if (src) { content = src.get(id)?.content || { kind: 'error', error: '读取失败' }; return; }
         if (loading) return;
         loading = true;
         const forId = id;
@@ -272,29 +297,53 @@ export function openDetail(id, { seq = null, onLeave = null } = {}) {
         loading = false;
         render();
     }
-    const ensureContent = (it) => { if (it.files.length && !content) loadContent(it); return content; };
+    const ensureContent = (it) => { if (hasFiles(it) && !content) loadContent(it); return content; };
+
+    // 预览模式：还没读到内容时先显示加载中
+    function renderLoading() {
+        const forId = id;
+        s.title.textContent = src.title || '预览';
+        clear(s.body, h('div', { class: 'loading' }, h('span', { class: 'spinner' }), h('span', {}, '正在读取')));
+        clear(headMore, order ? navEl() : null);
+        if (s.foot) clear(s.foot);
+        src.load(id).then(() => { if (forId === id) render(); }, (e) => {
+            if (forId === id) clear(s.body, emptyState('alert', '读取失败', e.message));
+        });
+    }
+    const navEl = () => {
+        const pos = order.indexOf(id);
+        return h('div', { class: 'detail-nav' },
+            btn('', { icon: 'chevronLeft', cls: 'ghost icon sm', title: '上一项（也可以左右滑动或按方向键）', disabled: pos <= 0, onclick: () => browse(-1) }),
+            h('span', { class: 'detail-pos' }, `${pos + 1} / ${order.length}`),
+            btn('', { icon: 'chevronRight', cls: 'ghost icon sm', title: '下一项', disabled: pos >= order.length - 1, onclick: () => browse(1) }));
+    };
 
     function render() {
-        const it = state.byId.get(id);
+        if (src && !src.get(id)) { renderLoading(); return; }
+        const it = itemOf(id);
         if (!it) return;
         lastSig = sigOf(it);
-        s.title.textContent = typeMeta(it.type).label;
+        s.title.textContent = src ? (src.title || typeMeta(it.type).label) : typeMeta(it.type).label;
+        if (src) content = src.get(id).content;
         const scroll = s.body.scrollTop;
-        const pos = order ? order.indexOf(id) : -1;
         clear(headMore,
-            order ? h('div', { class: 'detail-nav' },
-                btn('', { icon: 'chevronLeft', cls: 'ghost icon sm', title: '上一项（也可以左右滑动或按方向键）', disabled: pos <= 0, onclick: () => browse(-1) }),
-                h('span', { class: 'detail-pos' }, `${pos + 1} / ${order.length}`),
-                btn('', { icon: 'chevronRight', cls: 'ghost icon sm', title: '下一项', disabled: pos >= order.length - 1, onclick: () => browse(1) })) : null,
-            btn('', { icon: 'more', cls: 'ghost icon', title: '更多操作', onclick: () => moreMenu(it) }));
+            order ? navEl() : null,
+            !src ? btn('', { icon: 'more', cls: 'ghost icon', title: '更多操作', onclick: () => moreMenu(it) }) : null);
+        const tabs = src ? [['overview', '介绍'], ['content', '内容']] : [['overview', '介绍'], ['content', '内容'], ['files', `文件 · ${it.files.length}`]];
+        if (src && tab === 'files') tab = 'overview';
         clear(s.body, h('div', { class: 'detail-layout' },
             h('aside', { class: 'detail-aside' }, hero(it)),
             h('div', { class: 'detail-main' },
-                h('div', { class: 'tabs-bar' }, h('div', { class: 'tabs' }, [['overview', '介绍'], ['content', '内容'], ['files', `文件 · ${it.files.length}`]].map(([k, label]) =>
+                h('div', { class: 'tabs-bar' }, h('div', { class: 'tabs' }, tabs.map(([k, label]) =>
                     h('button', { class: tab === k ? 'active' : '', onclick: () => switchTab(k) }, label)))),
                 h('div', { class: 'detail-body' }, tab === 'overview' ? overview(it) : tab === 'content' ? contentTabCached(it) : filesTab(it)))));
         s.body.scrollTop = scroll;
+        renderFoot(it);
+    }
+
+    function renderFoot(it) {
         if (!s.foot) { s.foot = h('div', { class: 'sheet-foot' }); s.el.append(s.foot); }
+        if (src) { clear(s.foot, src.foot(id, () => s.close())); return; }
         const p = primary(it);
         const toTavern = bridge.host && TAVERN_IMPORTABLE.has(it.type) && !it.deletedAt;
         clear(s.foot,
@@ -349,9 +398,15 @@ export function openDetail(id, { seq = null, onLeave = null } = {}) {
     }
 
     // ---------- 头部 ----------
+    // 封面：藏馆条目用缩略图；预览模式用酒馆给的图片
+    const coverUrl = (it) => (src ? src.get(id)?.cover || '' : it.cover ? coverSrc(it) : '');
+    const coverNode = (it, props) => (src ? h('img', { src: coverUrl(it), alt: '' }) : coverImg(it, props));
+    const bigCover = (it) => lightbox(src ? coverUrl(it) : api.fileUrl(it.cover));
+
     function hero(it) {
         const tm = typeMeta(it.type);
         const c = it.meta?.card;
+        const hasCover = Boolean(coverUrl(it));
         const facts = c ? [
             c.characterVersion && `v${c.characterVersion}`,
             `${c.greetings} 条开场白`,
@@ -359,25 +414,28 @@ export function openDetail(id, { seq = null, onLeave = null } = {}) {
             c.regexCount && `${c.regexCount} 条正则`,
             c.estTokens ? `约 ${fmtTok(c.estTokens)} tokens` : '',
         ].filter(Boolean) : [it.version && `v${it.version}`].filter(Boolean);
-        return h('div', { class: `hero ${it.cover ? 'has-cover' : 'no-cover'}`, style: { '--tc': tm.color } },
-            it.cover ? h('div', { class: 'hero-bg', style: { backgroundImage: `url("${coverSrc(it)}")` } }) : null,
+        return h('div', { class: `hero ${hasCover ? 'has-cover' : 'no-cover'}`, style: { '--tc': tm.color } },
+            hasCover ? h('div', { class: 'hero-bg', style: { backgroundImage: `url("${coverUrl(it)}")` } }) : null,
             h('div', { class: 'hero-inner' },
-                h('div', { class: 'hero-cover', onclick: () => it.cover && lightbox(api.fileUrl(it.cover)) },
-                    it.cover ? coverImg(it, { loading: null }) : h('div', { class: 'hero-ph' }, icon(tm.icon, { size: 40, stroke: 1.3 }))),
+                h('div', { class: 'hero-cover', onclick: () => hasCover && bigCover(it) },
+                    hasCover ? coverNode(it, { loading: null }) : h('div', { class: 'hero-ph' }, icon(tm.icon, { size: 40, stroke: 1.3 }))),
                 h('div', { class: 'hero-info' },
                     h('div', { class: 'hero-badges' }, typeBadge(it.type),
                         it.subtype ? h('span', { class: 'chip-s' }, it.subtype.replace('chara_card_', '').toUpperCase()) : null,
-                        it.origin === 'tavern' ? h('span', { class: 'chip-s ok' }, '来自酒馆') : null,
+                        src ? h('span', { class: 'src-status' }, src.badges(id)) : null,
+                        !src && it.origin === 'tavern' ? h('span', { class: 'chip-s ok' }, '来自酒馆') : null,
+                        !src && inTavern(it) ? h('span', { class: 'chip-s info', title: '酒馆里已经有同名的' }, icon('beer', { size: 11 }), '酒馆里已有') : null,
                         it.fields?.nsfw ? h('span', { class: 'chip-s danger' }, 'NSFW') : null,
                         it.deletedAt ? h('span', { class: 'chip-s warn' }, '已删除') : null),
                     h('h2', { class: 'hero-title' }, it.name),
                     it.author ? h('div', { class: 'hero-author' }, icon('user', { size: 13 }), it.author) : null,
                     facts.length ? h('div', { class: 'hero-facts' }, facts.map((f) => h('span', {}, f))) : null,
-                    it.tags.length ? h('div', { class: 'hero-tags' }, it.tags.map((t) => h('button', { class: 'tag', title: `查看所有「${t}」`, onclick: () => filterByTag(t) }, t))) : null,
-                    h('div', { class: 'hero-actions' },
+                    it.tags.length ? h('div', { class: 'hero-tags' }, it.tags.map((t) => (src ? h('span', { class: 'tag' }, t)
+                        : h('button', { class: 'tag', title: `查看所有「${t}」`, onclick: () => filterByTag(t) }, t)))) : null,
+                    !src ? h('div', { class: 'hero-actions' },
                         h('button', { class: `fav-btn ${it.favorite ? 'on' : ''}`, onclick: () => save({ favorite: !it.favorite }) }, icon('star', { size: 16, fill: it.favorite }), h('span', {}, it.favorite ? '已收藏' : '收藏')),
-                        starsEl(it.rating, (v) => save({ rating: v }), { size: 17 })),
-                    h('div', { class: 'hero-time' }, `收录于 ${fmtDate(it.createdAt)} · ${timeAgo(it.updatedAt)}更新`))));
+                        starsEl(it.rating, (v) => save({ rating: v }), { size: 17 })) : null,
+                    !src ? h('div', { class: 'hero-time' }, `收录于 ${fmtDate(it.createdAt)} · ${timeAgo(it.updatedAt)}更新`) : null)));
     }
 
     function section(title, ic, body, action) {
@@ -402,13 +460,13 @@ export function openDetail(id, { seq = null, onLeave = null } = {}) {
                     icon('book', { size: 14 }), h('span', {}, `阅读全文 · ${source.length} 字`)))
             : clampBox((t) => h('p', { class: 'lead' }, t), desc, '简介');
         return h('div', { class: 'stack' },
-            lead || (!it.deletedAt && !it.ai?.summary ? h('button', { class: 'lead-empty', onclick: () => editItem(it, 'description') }, icon('pencil', { size: 14 }), '写一句简介') : null),
-            aiStamp(it, !it.deletedAt ? () => editItem(it, 'ai') : null),
-            it.type === 'character' && it.files.length ? greetingCard(it) : null,
+            lead || (!src && !it.deletedAt && !it.ai?.summary ? h('button', { class: 'lead-empty', onclick: () => editItem(it, 'description') }, icon('pencil', { size: 14 }), '写一句简介') : null),
+            !src ? aiStamp(it, !it.deletedAt ? () => editItem(it, 'ai') : null) : null,
+            it.type === 'character' && hasFiles(it) ? greetingCard(it) : null,
             quickInfo(it),
             note && !(desc && note.startsWith(desc)) ? section('作者的话', 'feather', clampBox((t) => h('blockquote', { class: 'quote' }, t), note, '作者的话')) : null,
             peek(it),
-            infoPanel(it),
+            !src ? infoPanel(it) : null,
             it.notes ? section('笔记', 'feather', richText(it.notes, null, { cls: 'rt-notes' }), editLink(it, 'notes')) : null);
     }
 
@@ -435,7 +493,7 @@ export function openDetail(id, { seq = null, onLeave = null } = {}) {
         draw();
         return h('section', { class: 'greet' },
             h('div', { class: 'greet-head' },
-                h('div', { class: 'greet-avatar', style: { '--tc': typeMeta(it.type).color } }, it.cover ? coverImg(it) : icon('user', { size: 16 })),
+                h('div', { class: 'greet-avatar', style: { '--tc': typeMeta(it.type).color } }, coverUrl(it) ? coverNode(it) : icon('user', { size: 16 })),
                 h('div', { class: 'greet-who' }, h('b', {}, d.name || it.name), label),
                 list.length > 1 ? h('div', { class: 'greet-nav' }, prev, count, next) : null,
                 btn('', { icon: 'maximize', cls: 'sm ghost icon', title: '全屏阅读', onclick: () => readGreetings(it, list, greetIdx) })),
@@ -635,7 +693,7 @@ export function openDetail(id, { seq = null, onLeave = null } = {}) {
 
     // ---------- 内容 ----------
     function contentTab(it) {
-        if (!it.files.length) return emptyState('file', '没有文件', '这个条目只是一条记录，可以在「文件」页补充上传');
+        if (!hasFiles(it)) return emptyState('file', '没有文件', '这个条目只是一条记录，可以在「文件」页补充上传');
         if (!ensureContent(it)) return h('div', { class: 'loading' }, h('span', { class: 'spinner' }));
         if (content.kind === 'error') return emptyState('alert', '加载失败', content.error);
         if (content.kind === 'card') return cardView(it, content);
@@ -699,7 +757,7 @@ export function openDetail(id, { seq = null, onLeave = null } = {}) {
                 c.spec ? h('span', { class: 'chip-s' }, c.spec.replace('chara_card_', '').toUpperCase()) : null,
                 d.character_version ? h('span', { class: 'muted small' }, `v${d.character_version}`) : null,
                 h('span', { class: 'grow' }),
-                !it.deletedAt ? btn('编辑内容', { icon: 'pencil', cls: 'sm', onclick: () => editCard(it, c) }) : null,
+                !src && !it.deletedAt ? btn('编辑内容', { icon: 'pencil', cls: 'sm', onclick: () => editCard(it, c) }) : null,
                 btn('JSON', { icon: 'download', cls: 'sm', onclick: () => downloadBlob(new Blob([JSON.stringify(c.card, null, 2)], { type: 'application/json' }), `${d.name || 'card'}.json`) })),
             secs.length > 2 ? h('nav', { class: 'sec-nav' }, secs.map((sc) => h('button', { onclick: () => document.getElementById(anchor(sc.key))?.scrollIntoView({ behavior: 'smooth', block: 'start' }) }, sc.title))) : null,
             secs.length ? secs.map((sc) => h('section', { class: 'read-sec', id: anchor(sc.key) },

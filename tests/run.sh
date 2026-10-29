@@ -79,6 +79,7 @@ run live-refresh   seed 0 live-refresh.cjs
 run scroll-chrome  perf 0 scroll-chrome.cjs
 run tavern-ignore  seed 1 tavern-ignore.cjs
 run tavern-bridge  seed 1 tavern-bridge.cjs
+run tavern-browse  seed 1 tavern-browse.cjs
 run embed          seed 1 embed.cjs
 
 echo

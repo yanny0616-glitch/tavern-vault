@@ -12,6 +12,8 @@ const j = async (u, o) => (await fetch(u, o)).json();
   const browser = await chromium.launch({ executablePath: process.env.CHROMIUM, args: ['--no-sandbox'] });
   const ctx = await browser.newContext({ viewport: { width: 402, height: 874 }, deviceScaleFactor: 1.5, isMobile: true, hasTouch: true });
   await ctx.addInitScript(() => { document.addEventListener('DOMContentLoaded', () => { const s = document.createElement('style'); s.textContent = '#toasts{opacity:.0001}'; document.head.append(s); }); });
+  // 这里测的是列表行上的收藏 / 对比 / 同步按钮：酒馆页用列表显示（默认是封面网格）
+  await ctx.addInitScript(() => { if (location.port !== '5199') return; try { const p = JSON.parse(localStorage.getItem('tv_prefs') || '{}'); if (!p.tavernViews) { p.tavernViews = { character: 'list', background: 'list' }; localStorage.setItem('tv_prefs', JSON.stringify(p)); } } catch { /* ignore */ } });
   const page = await ctx.newPage();
   const errs = [];
   page.on('pageerror', (e) => errs.push('pageerror: ' + e.message));

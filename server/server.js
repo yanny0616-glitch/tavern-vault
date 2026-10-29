@@ -593,6 +593,35 @@ route('POST', '/api/items', async ({ req, url }) => {
     return result;
 });
 
+// 预览：解析酒馆发来的内容（角色卡 JSON、世界书、预设……），返回和条目详情一样的资料和内容，不存进藏馆
+route('POST', '/api/preview', async ({ req, url }) => {
+    const buf = await readBody(req);
+    if (!buf.length) throw new HttpError(400, '空内容');
+    const filename = url.searchParams.get('filename') || 'preview.json';
+    const kind = url.searchParams.get('type') || '';
+    const det = detectFile(buf, filename);
+    const { obj, text } = parseFile(buf, filename);
+    const type = kind || det.type;
+    let meta = det.meta || {};
+    let content;
+    if (type === 'character' && obj) {
+        const n = normalizeCard(obj);
+        if (det.type !== 'character') meta = { card: summarizeCard(obj) };
+        content = { kind: 'card', card: obj, data: n.data, spec: n.spec };
+    } else if (obj) content = { kind: 'json', data: obj };
+    else if (text != null) content = { kind: 'text', text: text.slice(0, 2 * 1024 * 1024) };
+    else content = { kind: 'binary' };
+    const s = meta.card;
+    return {
+        item: {
+            type, subtype: det.subtype || '', name: (type === det.type && det.name) || s?.name || path.basename(filename, path.extname(filename)),
+            author: det.author || s?.creator || '', version: det.version || s?.characterVersion || '',
+            tags: det.tags || s?.tags || [], description: det.description || '', meta,
+        },
+        content,
+    };
+});
+
 const syncExclude = () => store.db.settings.syncExclude ?? DEFAULT_SYNC_EXCLUDE;
 // 从酒馆同步时忽略的角色卡分段；syncKeep：收新版本时，这几段沿用藏馆原来的内容
 const syncIgnore = () => (store.db.settings.syncIgnore || []).filter((k) => k in SYNC_OPTIONS);

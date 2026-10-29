@@ -2,7 +2,7 @@
 // 作用：1) 全屏内嵌藏馆网页；2) 作为桥，替藏馆页面读写酒馆本地数据（角色卡、世界书、预设、正则、快速回复、主题、背景）
 
 const EXT_KEY = 'tavernVault';
-const VERSION = '1.2.2';
+const VERSION = '1.2.3';
 const DEFAULTS = { url: '', token: '', fab: true, fabPos: null };
 const isTT = () => Boolean(window.__TAURITAVERN__);
 
@@ -107,7 +107,7 @@ async function backgroundList() {
 const jsonFile = (name, obj) => ({ filename: `${String(name).replace(/[\\/:*?"<>|]/g, '_')}.json`, data: new TextEncoder().encode(JSON.stringify(obj, null, 2)).buffer });
 
 const handlers = {
-    hello: async () => ({ host: isTT() ? 'TauriTavern' : 'SillyTavern', version: VERSION, features: ['raw', 'replace', 'theme', 'insets'] }),
+    hello: async () => ({ host: isTT() ? 'TauriTavern' : 'SillyTavern', version: VERSION, features: ['raw', 'replace', 'theme', 'insets', 'image'] }),
 
     /** 藏馆告诉插件当前风格的颜色：面板顶部（状态栏那一条）和标题栏跟着变，不再是固定的深色 */
     async theme({ bg, fg, line } = {}) {
@@ -216,8 +216,13 @@ const handlers = {
         }
     },
 
-    async thumb({ kind, id }) {
+    /** full：取原图（预览大图用），取不到时退回缩略图 */
+    async thumb({ kind, id, full = false }) {
         const type = kind === 'background' ? 'bg' : 'avatar';
+        if (full) {
+            const res = await fetch(`/${kind === 'background' ? 'backgrounds' : 'characters'}/${encodeURIComponent(id)}`, { headers: headers() }).catch(() => null);
+            if (res?.ok && /^image\//.test(res.headers.get('content-type') || '')) return { mime: res.headers.get('content-type'), data: await res.arrayBuffer(), transfer: true };
+        }
         const res = await fetch(`/thumbnail?type=${type}&file=${encodeURIComponent(id)}`, { headers: headers() });
         if (!res.ok) throw new Error('缩略图获取失败');
         return { mime: res.headers.get('content-type') || 'image/png', data: await res.arrayBuffer(), transfer: true };

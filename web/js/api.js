@@ -29,7 +29,7 @@ export const api = {
             throw new Error(msg);
         }
         // 自己的改动成功后马上通知页面重新读取，不只靠服务器推送（推送可能慢或断了）
-        if (method !== 'GET' && path !== '/api/login' && !path.startsWith('/api/thumbs/')) window.dispatchEvent(new CustomEvent('tv:mutated'));
+        if (method !== 'GET' && path !== '/api/login' && !path.startsWith('/api/thumbs/') && !path.startsWith('/api/preview')) window.dispatchEvent(new CustomEvent('tv:mutated'));
         if (blob) return res.blob();
         const ct = res.headers.get('content-type') || '';
         return ct.includes('json') ? res.json() : res.text();

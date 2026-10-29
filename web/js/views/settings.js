@@ -3,10 +3,10 @@ import { h, clear, toast, confirmDialog, choiceDialog, promptDialog, sheet, down
 import { api } from '../api.js';
 import { bridge } from '../bridge.js';
 import { native, LAUNCHER_URL } from '../native.js';
-import { state, savePrefs, applyAccent, reload, TYPE_META, SKINS, uiFont, readZoom, UI_FONT, READ_ZOOM, notify } from '../state.js';
+import { state, savePrefs, applyAccent, reload, TYPE_META, SKINS, uiFont, readZoom, UI_FONT, READ_ZOOM, notify, allTags, resetView, cardPrefOf, setCardPref, resetCardPref } from '../state.js';
 import { CARD_PARTS, ENTRY_FLAGS } from '../sig.js';
 import { SORTS } from './library.js';
-import { topbar, ensureView } from './common.js';
+import { topbar, ensureView, MARK_POS, DEFAULT_MARKS, MARK_FIELD_KINDS, markRules, markName } from './common.js';
 import { aiSettings, aiReady } from './ai.js';
 import { findDuplicates, openDuplicates } from './dupes.js';
 
@@ -173,20 +173,92 @@ function browse() {
         panel('打开与视图', 'grid', null,
             deviceNote(),
             setRow('打开时进入', null, seg(p.start || 'library', [['library', '仓库'], ['collections', '合集'], ['stats', '统计']], (v) => setPref({ start: v }))),
-            setRow('仓库视图', null, seg(viewVal, [['grid', '卡片', 'grid'], ['dense', '紧凑', 'grid3'], ['list', '列表', 'list']], (v) => setPref({ view: v === 'list' ? 'list' : 'grid', dense: v === 'dense' }))),
+            setRow('仓库视图', '「全部」和没单独设置过的类型用这个。在仓库里选了某个类型后再改显示方式，就只改那个类型', seg(viewVal, [['grid', '卡片', 'grid'], ['dense', '紧凑', 'grid3'], ['list', '列表', 'list']], (v) => setPref({ view: v === 'list' ? 'list' : 'grid', dense: v === 'dense' }))),
             setRow('每行显示', '卡片视图下每行放几个，「自动」按屏幕宽度决定', cols),
+            Object.keys(p.viewByType || {}).length ? setRow('单独设置过的类型', null,
+                h('div', { class: 'view-own' }, Object.entries(p.viewByType).map(([t, v]) => h('span', { class: 'chip' },
+                    `${TYPE_META[t]?.label || t} · ${v.view === 'list' ? '列表' : v.dense ? '紧凑' : '卡片'}${v.view !== 'list' && v.cols ? ` · ${v.cols} 个` : ''}`,
+                    h('button', { class: 'chip-x', title: '恢复成默认', onclick: () => { resetView(t); rerender(); } }, icon('x', { size: 11 })))))) : null,
             setRow('默认排序', null, sort)),
-        panel('卡片上显示', 'image', null,
-            setRow('标签', null, switchEl(p.showTags !== false, (v) => setPref({ showTags: v }))),
-            setRow('评分', null, switchEl(p.showRating !== false, (v) => setPref({ showRating: v }))),
-            setRow('编号', '卡片角上的 No.001', switchEl(p.showNo !== false, (v) => setPref({ showNo: v }))),
-            setRow('AI 简介', 'AI 整理写的一句话简介，显示在卡片标题和列表行下面', switchEl(p.showAi !== false, (v) => setPref({ showAi: v }))),
-            setRow('模糊 NSFW 封面', '资料里勾了 NSFW 的条目，在列表里模糊封面；打开详情时正常显示', switchEl(!!p.blurNsfw, (v) => setPref({ blurNsfw: v })))),
+        cardShowPanel(),
+        marksPanel(),
         panel('详情页', 'fileText', null,
-            setRow('打开时先显示', null, seg(p.detailTab === 'content' ? 'content' : 'overview', [['overview', '介绍'], ['content', '内容']], (v) => setPref({ detailTab: v }))),
+            setRow('打开时先显示', '角色卡', seg(p.detailTab === 'content' ? 'content' : 'overview', [['overview', '介绍'], ['content', '内容']], (v) => setPref({ detailTab: v }))),
+            setRow('其它类型先显示', '世界书、预设、正则等。它们的「内容」页就是条目和设置', seg(p.detailTabOther === 'overview' ? 'overview' : 'content', [['overview', '介绍'], ['content', '内容']], (v) => setPref({ detailTabOther: v }))),
             setRow('长文折叠', '超过这个字数的简介、开场白、作者的话和角色卡段落只显示开头，点「阅读全文」在单独页面看', seg(Number.isFinite(Number(p.foldAt)) ? Number(p.foldAt) : 500, [[300, '300 字'], [500, '500 字'], [1000, '1000 字'], [0, '不折叠']], (v) => setPref({ foldAt: v }))),
             setRow('{{user}} 显示为', '角色卡里出现 {{user}} 的地方替换成这个称呼', userName)),
     ];
+}
+
+// 「卡片上显示」和「封面角标」现在设置给哪个类型：all 是默认
+let cardScope = 'all';
+const scopeLabel = () => (cardScope === 'all' ? '' : TYPE_META[cardScope]?.label || cardScope);
+function scopeRow() {
+    const own = Object.keys(state.prefs.cardByType || {});
+    const sel = h('select', { class: 'select', onchange: () => { cardScope = sel.value; rerender(); } },
+        h('option', { value: 'all', selected: cardScope === 'all' }, '默认（所有类型）'),
+        Object.entries(TYPE_META).map(([k, m]) => h('option', { value: k, selected: cardScope === k }, `${m.label}${own.includes(k) ? '（单独设置过）' : ''}`)));
+    const cp = cardPrefOf(cardScope);
+    return h('div', { class: 'stack-s' },
+        setRow('设置给', '可以给某个类型单独设置，比如世界书不显示编号、角色卡多显示几个角标。没单独设置过的类型跟着默认走', sel),
+        cardScope !== 'all' ? h('div', { class: 'muted small scope-note' }, cp.own
+            ? h('span', {}, `下面的改动只对「${scopeLabel()}」生效。`, h('a', { href: '#', onclick: (e) => { e.preventDefault(); resetCardPref(cardScope); applyAccent(); rerender(); } }, '恢复成默认'))
+            : `「${scopeLabel()}」还没单独设置过，现在和默认一样；改了下面的选项就只对它生效。`) : null);
+}
+const setCard = (patch) => { setCardPref(cardScope, patch); applyAccent(); rerender(); };
+
+function cardShowPanel() {
+    const p = state.prefs;
+    const cp = cardPrefOf(cardScope);
+    return panel('卡片上显示', 'image', null,
+        scopeRow(),
+        setRow('标签', null, switchEl(cp.showTags, (v) => setCard({ showTags: v }))),
+        setRow('评分', null, switchEl(cp.showRating, (v) => setCard({ showRating: v }))),
+        setRow('编号', '卡片角上的 No.001', switchEl(cp.showNo, (v) => setCard({ showNo: v }))),
+        cardScope === 'all' ? [
+            setRow('AI 简介', 'AI 整理写的一句话简介，显示在卡片标题和列表行下面（所有类型共用）', switchEl(p.showAi !== false, (v) => setPref({ showAi: v }))),
+            setRow('模糊 NSFW 封面', '资料里勾了 NSFW 的条目，在列表里模糊封面；打开详情时正常显示（所有类型共用）', switchEl(!!p.blurNsfw, (v) => setPref({ blurNsfw: v }))),
+        ] : null);
+}
+
+/** 封面角标：每种标记选一个角显示（列表视图里排在名字下面）。跟着上面「设置给」选的类型 */
+function marksPanel() {
+    const rules = markRules(cardScope);
+    const save = (list) => setCard({ marks: list });
+    const has = (src) => rules.some((r) => r.src === src);
+    const add = (src) => { if (!has(src)) save([...rules, { src, pos: 'br' }]); };
+    const pickTag = () => {
+        const list = h('div', { class: 'menu' });
+        const draw = (q = '') => clear(list, allTags().filter(([t]) => !has(`tag:${t}`) && (!q || t.toLowerCase().includes(q))).slice(0, 80)
+            .map(([t, n]) => h('button', { class: 'menu-item', onclick: () => { s.close(); add(`tag:${t}`); } }, icon('tag', { size: 16 }), h('span', { class: 'grow' }, t), h('span', { class: 'muted small' }, String(n)))));
+        const s = sheet({ title: '用哪个标签做角标', body: h('div', { class: 'stack-s' },
+            h('label', { class: 'search inline' }, icon('search', { size: 15 }), h('input', { class: 'input search-input', placeholder: '搜索标签', oninput: (e) => draw(e.target.value.toLowerCase()) })), list) });
+        draw();
+    };
+    const pickSource = () => {
+        const opt = (ic, label, note, fn) => h('button', { class: 'menu-item', onclick: () => { s.close(); fn(); } }, icon(ic, { size: 17 }), h('span', { class: 'grow' }, h('span', { class: 'menu-label' }, label), note ? h('span', { class: 'menu-note' }, note) : null));
+        const fields = state.fields.filter((f) => !f.hidden && MARK_FIELD_KINDS.has(f.kind) && !has(`field:${f.id}`));
+        const s = sheet({ title: '添加角标', body: h('div', { class: 'menu' },
+            !has('tavern') ? opt('beer', '酒馆里已有', '在酒馆插件里打开时，酒馆里已经有同名内容的条目', () => add('tavern')) : null,
+            !has('ver') ? opt('layers', '版本数', '有多个版本时显示「3 版」', () => add('ver')) : null,
+            !has('dupe') ? opt('copy', '可能重复', '和别的条目可能重复时显示', () => add('dupe')) : null,
+            !has('tags') ? opt('tag', '标签（这张卡自己的）', '把卡片自己的标签显示在封面上，最多 3 个，多的显示「+数量」', () => add('tags')) : null,
+            opt('tag', '指定标签', '只在带有某个标签（比如「推荐」）的卡片上显示', pickTag),
+            fields.map((f) => opt('fileText', `字段：${f.label}`, f.kind === 'checkbox' ? '勾选了就显示' : '填了就显示填的内容', () => add(`field:${f.id}`)))) });
+    };
+    const posPick = (r, i) => h('div', { class: 'pos-pick', title: '显示在哪个角' }, Object.entries(MARK_POS).map(([k, label]) =>
+        h('button', { class: `pos-cell ${r.pos === k ? 'on' : ''}`, title: label, 'aria-label': label, onclick: () => save(rules.map((x, j) => (j === i ? { ...x, pos: k } : x))) })));
+    return panel(scopeLabel() ? `封面角标 · ${scopeLabel()}` : '封面角标', 'tag', null,
+        help((scopeLabel() ? `只对「${scopeLabel()}」生效，在上面「设置给」里切换。` : '') + '选择卡片封面四个角上显示什么。每个角最多显示 3 个，多的显示「+数量」；列表视图里排在名字下面。已有的收藏星标、多选勾、评分会自动让开。'),
+        rules.length ? h('div', { class: 'mark-rules' }, rules.map((r, i) => h('div', { class: 'mark-rule' },
+            h('span', { class: 'grow mark-rule-name' }, markName(r.src)),
+            h('span', { class: 'muted small' }, MARK_POS[r.pos]),
+            posPick(r, i),
+            btn('', { icon: 'x', cls: 'sm ghost icon', title: '不显示这个角标', onclick: () => save(rules.filter((_, j) => j !== i)) }))))
+            : h('div', { class: 'muted small' }, '现在封面上不显示任何角标'),
+        h('div', { class: 'row-actions' },
+            btn('添加角标', { icon: 'plus', cls: 'sm', onclick: pickSource }),
+            btn('恢复默认', { cls: 'sm ghost', onclick: () => save(DEFAULT_MARKS.map((x) => ({ ...x }))) })));
 }
 
 function importPrefs() {

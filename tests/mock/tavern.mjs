@@ -62,6 +62,7 @@ http.createServer(async (req, res) => {
     if (url.pathname === '/') { res.writeHead(200, { 'Content-Type': 'text/html' }); return res.end(page); }
     if (url.pathname.startsWith('/ext/')) { const f = `${EXT}/${url.pathname.slice(5)}`; res.writeHead(200, { 'Content-Type': f.endsWith('.js') ? 'text/javascript' : 'text/css' }); return res.end(fs.readFileSync(f)); }
     if (url.pathname === '/thumbnail') { res.writeHead(200, { 'Content-Type': 'image/png' }); return res.end(base); }
+    if (url.pathname.startsWith('/characters/') && chars.has(decodeURIComponent(url.pathname.slice(12)))) { res.writeHead(200, { 'Content-Type': 'image/png', 'X-Full': '1' }); return res.end(base); }
     if (url.pathname === '/__chars') return json([...chars.keys()].map((a) => ({ avatar: a, name: chars.get(a).data.name, creator: chars.get(a).data.creator, tags: chars.get(a).data.tags })));
     if (url.pathname === '/__state') return json({ chars: Object.fromEntries(chars), worlds: Object.fromEntries(worlds), received });
     if (url.pathname === '/__setworld') { const { name, entry, patch } = jbody(); Object.assign(worlds.get(name).entries[entry], patch); return json({ ok: true }); }

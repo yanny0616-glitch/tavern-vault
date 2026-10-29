@@ -3,8 +3,9 @@
 import { h, icon, starsEl } from '../ui.js';
 import { coverImg } from '../thumbs.js';
 import { api } from '../api.js';
-import { typeMeta, state, SKINS } from '../state.js';
+import { typeMeta, state, SKINS, viewOf, cardPrefOf } from '../state.js';
 import { bridge } from '../bridge.js';
+import { inTavern } from '../tavern-index.js';
 
 /** 页面标题栏：kicker / 标题 / 副标题 + 右侧操作 */
 export function topbar(title, { kicker = '', sub = '', actions = [] } = {}) {
@@ -88,14 +89,114 @@ const cardNo = (i) => `No.${String(i + 1).padStart(3, '0')}`;
 /** 版本数：当前版本和有内容指纹的旧版本（不算附件） */
 export const versionCount = (it) => it.files.filter((x) => x.primary || x.sig).length;
 
-/** 卡片 / 列表行上的角标：「3 版」「可能重复」 */
-function badgesOf(it, dupe) {
-    const n = versionCount(it);
-    return [n > 1 ? ['ver', `${n} 版`] : null, dupe ? ['dupe', '可能重复'] : null].filter(Boolean);
+/**
+ * 封面角标：每种标记放在哪个角由「设置 → 外观 → 封面角标」决定（每台设备各自设置）。
+ * src：ver 版本数 · dupe 可能重复 · tavern 酒馆里已有 · tag:<标签> · field:<字段 id>；pos：tl / tr / bl / br
+ */
+export const MARK_POS = { tl: '左上', tr: '右上', bl: '左下', br: '右下' };
+export const DEFAULT_MARKS = [{ src: 'ver', pos: 'bl' }, { src: 'dupe', pos: 'bl' }, { src: 'tavern', pos: 'br' }];
+/** type 不传或是 'all' 就是默认规则 */
+export const markRules = (type) => { const m = cardPrefOf(type).marks; return (Array.isArray(m) ? m : DEFAULT_MARKS).filter((x) => x && MARK_POS[x.pos]); };
+// 能当角标的字段：值短、一眼能看懂的
+export const MARK_FIELD_KINDS = new Set(['checkbox', 'select', 'text', 'number', 'tags']);
+const TOP_FIELDS = new Set(['author', 'version', 'rating']);
+// 每个角最多显示几个，多的折成「+n」；紧凑视图卡片小，少放一个
+const maxPerCorner = () => (viewOf().dense ? 2 : 3);
+
+/** 规则的名字（设置页里显示） */
+export function markName(src) {
+    if (src === 'ver') return '版本数';
+    if (src === 'dupe') return '可能重复';
+    if (src === 'tavern') return '酒馆里已有';
+    if (src === 'tags') return '标签（这张卡自己的）';
+    if (src.startsWith('tag:')) return `标签「${src.slice(4)}」`;
+    if (src.startsWith('field:')) return state.fields.find((f) => f.id === src.slice(6))?.label || '（已删除的字段）';
+    return src;
 }
 
+function fieldMark(it, id) {
+    const f = state.fields.find((x) => x.id === id);
+    if (!f || !MARK_FIELD_KINDS.has(f.kind) || (f.types?.length && !f.types.includes(it.type))) return null;
+    const v = TOP_FIELDS.has(id) ? it[id] : it.fields?.[id];
+    if (f.kind === 'checkbox') return v ? f.label : null;
+    const t = Array.isArray(v) ? v[0] : v;
+    if (t == null || t === '') return null;
+    const str = String(t);
+    return str.length > 10 ? `${str.slice(0, 9)}…` : str;
+}
+
+/** 这个条目要显示的角标：[{ k, label, pos, title }] */
+function marksOf(it, dupe) {
+    const out = [];
+    const rules = markRules(it.type);
+    for (const { src, pos } of rules) {
+        let label = null;
+        let k = src;
+        let title = '';
+        if (src === 'ver') { const n = versionCount(it); if (n > 1) label = `${n} 版`; } else if (src === 'dupe') { if (dupe) label = '可能重复'; } else if (src === 'tavern') { if (inTavern(it)) { label = '酒馆'; title = '酒馆里已经有同名的'; } } else if (src === 'tags') { for (const t of it.tags) if (!rules.some((r) => r.src === `tag:${t}`)) out.push({ k: 'tag', label: t, pos, title: '标签' }); } else if (src.startsWith('tag:')) { k = 'tag'; if (it.tags.includes(src.slice(4))) label = src.slice(4); } else if (src.startsWith('field:')) { k = 'field'; label = fieldMark(it, src.slice(6)); title = markName(src); }
+        if (label) out.push({ k, label, pos, title });
+    }
+    return out;
+}
+const marksKey = (marks) => `${maxPerCorner()}|${marks.map((m) => `${m.pos}:${m.k}:${m.label}`).join(',')}`;
+
+function markEl(m) {
+    return h('span', { class: `badge-${m.k}`, title: m.title || null }, m.k === 'tavern' ? icon('beer', { size: 11 }) : null, m.label);
+}
+
+/** 卡片：四个角各一组，每组最多 3 个（紧凑视图 2 个），多的显示「+n」 */
+function cornerEls(marks) {
+    return Object.keys(MARK_POS).map((pos) => {
+        const list = marks.filter((m) => m.pos === pos);
+        if (!list.length) return null;
+        const max = maxPerCorner();
+        const el = h('span', { class: `card-corner corner-${pos}`, dataset: { extra: Math.max(0, list.length - max) } }, list.slice(0, max).map(markEl));
+        el.tvRest = list.slice(max).map((m) => m.label);
+        return el;
+    });
+}
+
+// 每个角最多占封面一半高度。小卡片上放不下的角标整个收进「+n」，不会被切掉一半：
+// 卡片第一次出现在屏幕上时量一次，窗口大小变了再量
+function fitCorners(card) {
+    for (const c of card.querySelectorAll('.card-corner')) {
+        const chips = [...c.children].filter((x) => !x.classList.contains('badge-more'));
+        for (const x of chips) x.classList.remove('is-cut');
+        const box = c.getBoundingClientRect();
+        if (!box.height) continue;
+        let more = c.querySelector('.badge-more');
+        const cut = [];
+        const setMore = () => {
+            const n = Number(c.dataset.extra || 0) + cut.length;
+            if (!n) { more?.remove(); more = null; return; }
+            if (!more) { more = h('span', { class: 'badge-more' }); c.append(more); }
+            more.textContent = `+${n}`;
+            more.title = [...cut.map((x) => x.textContent), ...(c.tvRest || [])].join('、');
+        };
+        const outside = (x) => { const r = x.getBoundingClientRect(); return r.top < box.top - 1 || r.bottom > box.bottom + 1; };
+        setMore();
+        for (let i = chips.length - 1; i >= 0 && [...chips.filter((x) => !x.classList.contains('is-cut')), more].some((x) => x && outside(x)); i--) {
+            chips[i].classList.add('is-cut');
+            cut.unshift(chips[i]);
+            setMore();
+        }
+    }
+}
+const fitIO = typeof IntersectionObserver === 'function'
+    ? new IntersectionObserver((entries) => { for (const e of entries) if (e.isIntersecting) fitCorners(e.target); }, { rootMargin: '150px' }) : null;
+const fitCards = new Set();
+let fitTimer = 0;
+const refitSoon = () => {
+    clearTimeout(fitTimer);
+    fitTimer = setTimeout(() => { for (const el of fitCards) { fitIO?.unobserve(el); fitIO?.observe(el); } }, 150);
+};
+window.addEventListener('resize', refitSoon);
+// 换风格、改字号、隐藏评分 / 编号时，角上能用的空间也变了
+new MutationObserver(refitSoon).observe(document.documentElement, { attributes: true, attributeFilter: ['data-skin', 'style'] });
+
 export function itemCard(it, { onClick, selected = false, selecting = false, index = 0, dupe = false } = {}) {
-    const key = [it.updatedAt, it.thumb, it.cover, it.favorite, it.rating, it.files.length, dupe].join('|');
+    const marks = marksOf(it, dupe);
+    const key = [it.updatedAt, it.thumb, it.cover, it.favorite, it.rating, it.files.length, marksKey(marks), hideCls(it)].join('|');
     const hit = cardCache.get(it.id);
     if (hit && hit.key === key) {
         hit.el.tvClick = onClick;
@@ -105,22 +206,27 @@ export function itemCard(it, { onClick, selected = false, selecting = false, ind
         if (no) no.textContent = cardNo(index);
         return hit.el;
     }
-    const el = buildCard(it, { selected, selecting, index, dupe });
+    const el = buildCard(it, { selected, selecting, index, marks });
     el.dataset.id = it.id;
     el.tvClick = onClick;
     el.addEventListener('click', (e) => el.tvClick?.(e));
+    if (el.querySelector('.card-corner')) { fitCards.add(el); fitIO?.observe(el); }
     cardCache.set(it.id, { key, el });
-    if (cardCache.size > 2000) cardCache.delete(cardCache.keys().next().value);
+    if (cardCache.size > 2000) {
+        const [oldId, old] = cardCache.entries().next().value;
+        cardCache.delete(oldId);
+        if (fitCards.delete(old.el)) fitIO?.unobserve(old.el);
+    }
     return el;
 }
 
-function buildCard(it, { selected, selecting, index, dupe }) {
+function buildCard(it, { selected, selecting, index, marks }) {
     const tm = typeMeta(it.type);
     const media = it.cover ? coverImg(it) : docPreview(it);
     const sub = metaLine(it);
-    return h('article', { class: `card ${it.cover ? 'has-cover' : 'is-doc'} ${it.fields?.nsfw ? 'nsfw' : ''} ${selected ? 'selected' : ''} ${selecting ? 'selecting' : ''}`, style: { '--tc': tm.color }, dataset: { type: it.type } },
+    return h('article', { class: `card ${it.cover ? 'has-cover' : 'is-doc'} ${it.fields?.nsfw ? 'nsfw' : ''} ${selected ? 'selected' : ''} ${selecting ? 'selecting' : ''} ${hideCls(it)}`, style: { '--tc': tm.color }, dataset: { type: it.type } },
         h('div', { class: 'card-media' },
-            h('div', { class: 'card-frame' }, media, badgeEls(it, dupe, 'card-badges')),
+            h('div', { class: 'card-frame' }, media, cornerEls(marks)),
             h('span', { class: 'card-no' }, cardNo(index)),
             h('span', { class: 'card-type' }, icon(tm.icon, { size: 11 }), h('span', {}, tm.label)),
             it.favorite ? h('span', { class: 'card-fav' }, icon('star', { size: 13, fill: true })) : null,
@@ -170,13 +276,19 @@ export function applyHit(el, it, hit) {
     return el;
 }
 
+/** 这个类型设置了不显示的部分：no-tags / no-rating / no-no */
+function hideCls(it) {
+    const c = cardPrefOf(it.type);
+    return [c.showTags ? '' : 'no-tags', c.showRating ? '' : 'no-rating', c.showNo ? '' : 'no-no'].filter(Boolean).join(' ');
+}
+
 // 仓库列表视图的行同样复用；其他地方（right 是按钮等）每次新建
 const rowCache = new Map();
 
 export function itemRow(it, opts = {}) {
     if (!opts.cache) return buildRow(it, opts);
     const { onClick, selected = false, right = null, index = null, dupe = false } = opts;
-    const key = [it.updatedAt, it.thumb, it.cover, selected, index, right ? right.className : '', it.files.length, dupe].join('|');
+    const key = [it.updatedAt, it.thumb, it.cover, selected, index, right ? right.className : '', it.files.length, marksKey(marksOf(it, dupe)), hideCls(it)].join('|');
     const hit = rowCache.get(it.id);
     if (hit && hit.key === key) { hit.el.tvClick = onClick; return hit.el; }
     const el = buildRow(it, { selected, right, index, dupe });
@@ -190,12 +302,12 @@ export function itemRow(it, opts = {}) {
 
 function buildRow(it, { onClick, selected = false, right = null, index = null, dupe = false } = {}) {
     const tm = typeMeta(it.type);
-    return h('div', { class: `row-item ${it.fields?.nsfw ? 'nsfw' : ''} ${selected ? 'selected' : ''}`, style: { '--tc': tm.color }, onclick: onClick },
+    return h('div', { class: `row-item ${it.fields?.nsfw ? 'nsfw' : ''} ${selected ? 'selected' : ''} ${hideCls(it)}`, style: { '--tc': tm.color }, onclick: onClick },
         index != null ? h('span', { class: 'row-no' }, String(index + 1).padStart(2, '0')) : null,
         h('div', { class: 'row-thumb' }, it.cover ? coverImg(it) : icon(tm.icon, { size: 20 })),
         h('div', { class: 'row-main' },
             h('div', { class: 'row-title' }, it.favorite ? icon('star', { size: 13, fill: true, cls: 'row-fav' }) : null, h('span', {}, it.name)),
-            h('div', { class: 'row-sub' }, h('span', { class: 'row-type' }, tm.label), badgeEls(it, dupe, 'row-badges'), metaLine(it) ? h('span', {}, metaLine(it)) : null,
+            h('div', { class: 'row-sub' }, h('span', { class: 'row-type' }, tm.label), badgeEls(it, dupe), metaLine(it) ? h('span', {}, metaLine(it)) : null,
                 it.tags.slice(0, 2).map((t) => h('span', { class: 'row-tag' }, t))),
             aiLine(it, 'row-ai')),
         right ?? icon('chevronRight', { size: 16, cls: 'row-chev' }));
@@ -207,9 +319,10 @@ function aiLine(it, cls) {
     return s ? h('div', { class: `ai-line ${cls}`, title: `AI 简介：${s}` }, s) : null;
 }
 
-function badgeEls(it, dupe, cls) {
-    const list = badgesOf(it, dupe);
-    return list.length ? h('span', { class: cls }, list.map(([k, label]) => h('span', { class: `badge-${k}` }, label))) : null;
+/** 列表行没有封面，角标排在名字下面 */
+function badgeEls(it, dupe) {
+    const list = marksOf(it, dupe);
+    return list.length ? h('span', { class: 'row-badges' }, list.map(markEl)) : null;
 }
 
 export function collectionName(id) {

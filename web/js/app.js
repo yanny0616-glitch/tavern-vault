@@ -12,6 +12,7 @@ import { renderTrash } from './views/trash.js';
 import { openImporter } from './views/importer.js';
 import { filesFromDrop } from './files.js';
 import { initNative } from './native.js';
+import { loadTavernIndex } from './tavern-index.js';
 
 // 手机浏览器的 100vh 按「工具栏收起」时算，比实际能看到的高，弹窗底部会被截掉。
 // 这里量出真实的可见高度给 CSS 用（地址栏伸缩、旋转屏幕时更新）
@@ -223,6 +224,8 @@ async function start() {
             if (files.length) openImporter(files);
         });
         initNative({ onFiles: openImporter, notify: toast });
+        // 酒馆里已有哪些内容：藏馆卡片上的「酒馆」角标和「未导入酒馆」筛选要用
+        if (bridge.host) loadTavernIndex();
         const m = location.hash.match(/[?&]item=([a-f0-9]+)/);
         if (m && state.byId.has(m[1])) setTimeout(() => openDetail(m[1]), 100);
     }

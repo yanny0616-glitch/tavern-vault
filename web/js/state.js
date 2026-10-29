@@ -56,6 +56,61 @@ export const state = {
 
 export function savePrefs() { lsSet('tv_prefs', state.prefs); }
 
+/**
+ * 仓库的显示方式（卡片 / 紧凑 / 列表、每行几个）。每个类型可以单独设置，比如世界书用列表、角色卡用卡片；
+ * 「全部」和没单独设置过的类型用默认（设置 → 浏览）
+ */
+export function viewOf(type = state.filter.type) {
+    const own = type && type !== 'all' ? state.prefs.viewByType?.[type] : null;
+    return { view: own?.view ?? state.prefs.view, dense: own?.dense ?? state.prefs.dense, cols: own?.cols ?? state.prefs.cols, own: Boolean(own) };
+}
+export function setView(patch, type = state.filter.type) {
+    if (!type || type === 'all') Object.assign(state.prefs, patch);
+    else {
+        const { own: _own, ...cur } = viewOf(type);
+        state.prefs.viewByType = { ...state.prefs.viewByType, [type]: { ...cur, ...patch } };
+    }
+    savePrefs();
+}
+/**
+ * 卡片上显示什么（标签、评分、编号、封面角标）。和显示方式一样，每个类型可以单独设置，只存改过的那几项，
+ * 没改的跟着默认走
+ */
+export function cardPrefOf(type) {
+    const p = state.prefs;
+    const own = type && type !== 'all' ? p.cardByType?.[type] : null;
+    return {
+        showTags: own?.showTags ?? p.showTags !== false,
+        showRating: own?.showRating ?? p.showRating !== false,
+        showNo: own?.showNo ?? p.showNo !== false,
+        marks: own?.marks ?? p.marks,
+        own: Boolean(own),
+    };
+}
+export function setCardPref(type, patch) {
+    if (!type || type === 'all') Object.assign(state.prefs, patch);
+    else state.prefs.cardByType = { ...state.prefs.cardByType, [type]: { ...state.prefs.cardByType?.[type], ...patch } };
+    savePrefs();
+}
+export function resetCardPref(type) {
+    const { [type]: _gone, ...rest } = state.prefs.cardByType || {};
+    state.prefs.cardByType = rest;
+    savePrefs();
+}
+
+/** 详情页先打开哪一页：角色卡默认「介绍」；世界书、预设这些内容就是条目和设置，默认「内容」 */
+export function detailTabOf(type) {
+    const own = state.prefs.detailTabByType?.[type];
+    if (own) return own;
+    return type === 'character' ? (state.prefs.detailTab === 'content' ? 'content' : 'overview') : (state.prefs.detailTabOther === 'overview' ? 'overview' : 'content');
+}
+
+export function resetView(type) {
+    const { [type]: _gone, ...rest } = state.prefs.viewByType || {};
+    state.prefs.viewByType = rest;
+    savePrefs();
+}
+
 const subs = new Set();
 export function subscribe(fn) { subs.add(fn); return () => subs.delete(fn); }
 export function notify() { for (const fn of subs) fn(); }
@@ -110,9 +165,7 @@ export function applyAccent() {
     root.style.setProperty('--read-zoom', String(readZoom(p) / 100));
     const flag = (k, on) => { if (on) root.dataset[k] = ''; else delete root.dataset[k]; };
     flag('motion', p.reduceMotion);
-    flag('hideTags', !p.showTags);
-    flag('hideRating', !p.showRating);
-    flag('hideNo', !p.showNo);
+    // 标签、评分、编号可以按类型分开设置，由每张卡片自己的 class 控制（见 common.js）
     flag('hideAi', p.showAi === false);
     flag('blurNsfw', p.blurNsfw);
     const bg = getComputedStyle(root).getPropertyValue('--bg').trim();
