@@ -21,9 +21,9 @@ cp "$APP_DIR/assets/icon-1024.png" "$IOS/Assets.xcassets/AppIcon.appiconset/AppI
 for f in "$IOS"/Assets.xcassets/Splash.imageset/*.png; do cp "$APP_DIR/assets/splash-2732.png" "$f"; done
 
 # 3. Info.plist
-set_key() { # key type value
+set_key() { # key type [value]（dict / array 不带值）
     $PB -c "Delete :$1" "$PLIST" >/dev/null 2>&1 || true
-    $PB -c "Add :$1 $2 $3" "$PLIST"
+    if [ $# -ge 3 ]; then $PB -c "Add :$1 $2 $3" "$PLIST"; else $PB -c "Add :$1 $2" "$PLIST"; fi
 }
 set_key CFBundleDisplayName string "藏馆"
 set_key ITSAppUsesNonExemptEncryption bool false
