@@ -27,14 +27,16 @@ let fails = 0; const ok = (c, m) => { console.log(c ? 'PASS' : 'FAIL', m); if (!
   await p.screenshot({ path: OUT + '/search-rows.png' });
   await p.click('button[title="切换视图"]'); await p.fill('.search-input', '');
   // 预设顺序
-  await p.fill('.search-input', '测试预设'); await p.waitForTimeout(500); await p.click('.card'); await p.waitForSelector('.detail-sheet');
+  await p.fill('.search-input', '测试预设'); await p.waitForTimeout(500);
+  // 仓库每次只看一种类型：当前类型里没有，点提示去「预设」
+  await p.click('.empty .btn:has-text("看预设")'); await p.click('.card'); await p.waitForSelector('.detail-sheet');
   await p.click('.tabs button:has-text("内容")'); await p.waitForSelector('.fold.entry');
   const rows = await p.$$eval('.fold.entry', (a) => a.map((x) => x.querySelector('.fold-title').textContent + (x.classList.contains('off') ? '(off)' : '') + ([...x.querySelectorAll('.chip-s')].map((c) => c.textContent).join(''))));
   ok(rows.slice(0, 3).join(',') === '提示B,提示A(off)关闭,提示C(off)未加入', 'preset shown in effective order: ' + rows.join(','));
   ok(await p.$('summary:has-text("附带正则")') !== null, 'preset regex section');
   await p.keyboard.press('Escape'); await p.waitForTimeout(200);
   // 编辑防丢稿
-  await p.fill('.search-input', '程砚'); await p.waitForTimeout(500); await p.click('.card'); await p.waitForSelector('.detail-sheet');
+  await p.fill('.search-input', '程砚'); await p.waitForTimeout(500); if (await p.$('.empty .btn:has-text("看角色卡")')) await p.click('.empty .btn:has-text("看角色卡")'); await p.click('.card'); await p.waitForSelector('.detail-sheet');
   await p.click('button[title="更多操作"]');
   await p.click('text=编辑角色卡内容'); await p.waitForSelector('.sheet textarea');
   const ta = (await p.$$('.sheet.full textarea'))[0];
@@ -45,7 +47,7 @@ let fails = 0; const ok = (c, m) => { console.log(c ? 'PASS' : 'FAIL', m); if (!
   ok(await p.$('text=编辑 · 程砚') !== null, 'edit sheet still open after cancel');
   // 刷新页面（模拟意外关闭）后再打开，提示恢复
   await p.reload(); await p.waitForSelector('.card');
-  await p.fill('.search-input', '程砚'); await p.waitForTimeout(500); await p.click('.card'); await p.waitForSelector('.detail-sheet');
+  await p.fill('.search-input', '程砚'); await p.waitForTimeout(500); if (await p.$('.empty .btn:has-text("看角色卡")')) await p.click('.empty .btn:has-text("看角色卡")'); await p.click('.card'); await p.waitForSelector('.detail-sheet');
   await p.click('button[title="更多操作"]');
   await p.click('text=编辑角色卡内容'); await p.waitForSelector('.sheet.dialog:has-text("恢复")', { timeout: 5000 });
   await p.screenshot({ path: OUT + '/draft.png' });

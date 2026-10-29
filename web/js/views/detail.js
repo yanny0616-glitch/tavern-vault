@@ -392,7 +392,8 @@ export function openDetail(id, { seq = null, onLeave = null, src = null } = {}) 
     }
 
     function filterByTag(t) {
-        Object.assign(state.filter, { tagsIn: [t], tagsOut: [] });
+        // 停在这一项的类型里看带这个标签的
+        Object.assign(state.filter, { tagsIn: [t], tagsOut: [], type: itemOf(id)?.type || state.filter.type });
         s.close();
         if (!location.hash.startsWith('#/library')) location.hash = '#/library'; else notify();
     }

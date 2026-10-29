@@ -148,6 +148,7 @@ const j = async (m, u, b) => (await fetch(B + u, { method: m, headers: { 'Conten
     const c = await b.newContext({ viewport: { width: 393, height: 820 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true });
     const p = await c.newPage(); const errs = []; p.on('pageerror', (e) => errs.push(e.message));
     await p.goto(B + '/#/library'); await p.waitForSelector('.card');
+    await p.click('.main .seg-item:has-text("世界书")');
     await p.click('.card:has-text("魔法学院世界书")'); await p.waitForSelector('.detail-sheet');
     await p.click('button[title="更多操作"]'); await p.click('.menu-item:has-text("问 AI")');
     await p.fill('.ai-chat .chat-input', 'EDITWB 帮我完善');

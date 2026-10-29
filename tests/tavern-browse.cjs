@@ -116,6 +116,8 @@ const putSettings = (o) => fetch(`${V}/api/settings`, { method: 'PUT', headers: 
 
   // ---- 藏馆这边：右下角「酒馆」角标、未导入酒馆筛选 ----
   await tab('仓库');
+  ok(await frame.locator('.main .seg-item:has-text("全部")').count() === 0, 'library has no 全部 type tab');
+  await frame.click('.main .seg-item:has-text("角色卡")');
   const vcard = (name) => frame.locator(`.grid .card:has-text("${name}")`);
   await vcard('酒馆里的莉莉').locator('.corner-br .badge-tavern').waitFor({ timeout: 10000 });
   ok(true, 'vault card shows 酒馆 mark at bottom-right');
@@ -206,7 +208,7 @@ const putSettings = (o) => fetch(`${V}/api/settings`, { method: 'PUT', headers: 
   const pick = async (label) => { await frame.click(`.seg-item:has-text("${label}")`); await frame.waitForTimeout(300); };
   const mode = () => frame.evaluate(() => (document.querySelector('.main .grid') ? (document.querySelector('.main .grid.dense') ? 'dense' : 'grid') : 'list'));
   const setMode = async (label) => { await frame.click('.btn[title="筛选与排序"]'); await frame.click(`.overlay .opt:has-text("${label}")`); await frame.evaluate(() => history.back()); await frame.waitForTimeout(400); };
-  await pick('全部');
+  await pick('角色卡');
   await setMode('卡片');
   await pick('世界书');
   await setMode('列表');
@@ -216,8 +218,6 @@ const putSettings = (o) => fetch(`${V}/api/settings`, { method: 'PUT', headers: 
   await setMode('紧凑');
   await pick('世界书');
   ok(await mode() === 'list', 'worldbook still list after characters set to dense');
-  await pick('全部');
-  ok(await mode() === 'grid', `全部 keeps the default (${await mode()})`);
   await tab('设置');
   await frame.click('text=浏览');
   ok(await frame.locator('.view-own .chip').count() === 2, 'settings lists 2 types with their own view');
@@ -240,11 +240,12 @@ const putSettings = (o) => fetch(`${V}/api/settings`, { method: 'PUT', headers: 
   await frame.selectOption('.set-row:has-text("设置给") select', 'character');
   ok(await frame.locator('.mark-rule').count() === 4, `character marks unchanged (${await frame.locator('.mark-rule').count()})`);
   await tab('仓库');
-  await pick('全部');
+  await pick('世界书');
   const wbCard = frame.locator('.grid .card[data-type="worldbook"]').first();
-  const chCard = frame.locator('.grid .card[data-type="character"]').first();
-  ok(await wbCard.evaluate((e) => e.classList.contains('no-no')) && !(await chCard.evaluate((e) => e.classList.contains('no-no'))), 'numbers hidden only on worldbook cards');
+  ok(await wbCard.evaluate((e) => e.classList.contains('no-no')), 'numbers hidden on worldbook cards');
   ok(await frame.locator('.grid .card[data-type="worldbook"]:has-text("酒馆世界书") .badge-tavern').count() === 0, 'worldbook card has no 酒馆 mark (its own rules)');
+  await pick('角色卡');
+  ok(!(await frame.locator('.grid .card[data-type="character"]').first().evaluate((e) => e.classList.contains('no-no'))), 'numbers still shown on character cards');
   ok(await vcard('酒馆里的莉莉').locator('.badge-tavern').count() === 1, 'character card still has 酒馆 mark');
 
   // ---- 详情页：角色卡先看介绍，世界书先看内容 ----
@@ -253,6 +254,7 @@ const putSettings = (o) => fetch(`${V}/api/settings`, { method: 'PUT', headers: 
   ok(true, 'character opens on 介绍');
   await frame.evaluate(() => history.back());
   await frame.waitForSelector('.detail-sheet', { state: 'detached', timeout: 5000 });
+  await pick('世界书');
   await frame.locator('.grid .card[data-type="worldbook"]:has-text("酒馆世界书")').click();
   await frame.locator('.detail-sheet .tabs button.active:has-text("内容")').waitFor({ timeout: 5000 });
   ok(true, 'worldbook opens on 内容');
@@ -266,8 +268,16 @@ const putSettings = (o) => fetch(`${V}/api/settings`, { method: 'PUT', headers: 
   await frame.evaluate(() => history.back());
   await frame.waitForTimeout(300);
   ok(await frame.locator('.grid .card').count() === 1, 'tag filter applied on characters');
+  ok(await frame.locator('.main .seg-item.is-empty:has-text("世界书") .seg-n').innerText() === '0', 'type tabs show match counts while filtering');
   await pick('世界书');
   ok(await frame.locator('.grid .card, .rows .row-item').count() > 0, 'switching to worldbook drops the character-only tag filter');
+  // 当前类型里搜不到、别的类型里有：提示去那个类型看
+  await pick('角色卡');
+  await frame.fill('.main .search-input', '酒馆世界书');
+  await frame.locator('.empty .btn:has-text("看世界书")').click({ timeout: 10000 });
+  await frame.locator('.grid .card:has-text("酒馆世界书"), .rows .row-item:has-text("酒馆世界书")').first().waitFor({ timeout: 5000 });
+  ok(true, 'empty result suggests the type that has matches');
+  await frame.fill('.main .search-input', '');
 
   ok(errs.length === 0, `no errors ${errs.slice(0, 5).join(' | ')}`);
   await browser.close();

@@ -1203,3 +1203,6 @@ html.embed-edge .login-close { display: inline-flex; }
 .view-own .chip-x { display: grid; place-items: center; width: 18px; height: 18px; border-radius: 50%; color: var(--text-3); }
 .view-own .chip-x:hover { background: var(--surface-3, rgba(0,0,0,.08)); color: var(--text); }
 .scope-note { margin: -2px 0 6px; }
+/* 有筛选时，没有符合条件内容的类型标签变淡 */
+.seg-item.is-empty:not(.active) { opacity: .45; }
+.empty .row-actions.center { justify-content: center; flex-wrap: wrap; }

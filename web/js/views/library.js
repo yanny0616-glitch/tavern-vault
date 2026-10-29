@@ -50,11 +50,16 @@ export const QUICK = {
 };
 
 export function filtered() {
+    const ok = matcher();
+    return live().filter((it) => it.type === state.filter.type && ok(it)).sort((state.prefs.groupTime ? SORTS.created : SORTS[state.prefs.sort] || SORTS.updated)[1]);
+}
+
+/** 除了类型以外的所有筛选条件（搜索、标签、合集、收藏……） */
+function matcher() {
     const f = state.filter;
     const pq = parseQuery(f.q);
     const useDeep = pq.text && deepReady(pq.text);
-    return live().filter((it) => {
-        if (f.type !== 'all' && it.type !== f.type) return false;
+    return (it) => {
         if (f.fav && !it.favorite) return false;
         if (f.tagsIn.length && !f.tagsIn.every((t) => it.tags.includes(t))) return false;
         if (f.tagsOut.length && f.tagsOut.some((t) => it.tags.includes(t))) return false;
@@ -68,7 +73,20 @@ export function filtered() {
         // 全文结果回来之前先按列表里已有的资料搜
         const hay = `${it.name}\n${it.description}\n${it.author}\n${it.tags.join(' ')}\n${it.notes}\n${it.searchText}\n${Object.values(it.fields || {}).join(' ')}`.toLowerCase();
         return pq.pos.every((t) => hay.includes(t)) && !pq.neg.some((t) => hay.includes(t));
-    }).sort((state.prefs.groupTime ? SORTS.created : SORTS[state.prefs.sort] || SORTS.updated)[1]);
+    };
+}
+
+/**
+ * 仓库每次只看一种类型（没有「全部」）。从合集、标签跳过来，或者当前类型已经没有东西了，
+ * 就换到上次看的类型；它在当前筛选下没有结果时，换到结果最多的类型
+ */
+function resolveType(total, hits) {
+    const cur = state.filter.type;
+    if (cur !== 'all' && total[cur]) return;
+    const order = Object.keys(TYPE_META).filter((k) => total[k]);
+    const best = (score) => order.reduce((a, k) => ((score[k] || 0) > (score[a] || 0) ? k : a), order[0]);
+    const last = state.prefs.libType;
+    state.filter.type = last && hits[last] ? last : Object.values(hits).some(Boolean) ? best(hits) : last && total[last] ? last : best(total) || 'character';
 }
 
 // 按添加时间分组：今天、昨天、7 天内、30 天内，再往前按月
@@ -140,12 +158,17 @@ export function renderLibrary(root) {
     const hitOf = (it) => (pq.pos.length ? { terms: pq.pos, ...(deepReady(pq.text) ? deep.hits[it.id] : null) } : null);
     const counts = {};
     for (const it of items) counts[it.type] = (counts[it.type] || 0) + 1;
+    // 有筛选或搜索时，类型标签上显示每种类型里符合条件的数量
+    const narrowing = Boolean(activeFilterCount() || state.filter.q.trim());
+    const hits = {};
+    if (narrowing) { const ok = matcher(); for (const it of items) if (ok(it)) hits[it.type] = (hits[it.type] || 0) + 1; } else Object.assign(hits, counts);
+    resolveType(counts, hits);
     const list = filtered();
     refs.list = list;
     refs.content.classList.toggle('is-selecting', state.selecting);
     const fc = activeFilterCount();
 
-    refs.sub.textContent = `共 ${items.length} 件藏品${list.length !== items.length ? ` · 显示 ${list.length}` : ''}`;
+    refs.sub.textContent = `共 ${items.length} 件藏品 · ${TYPE_META[state.filter.type]?.label || ''} ${list.length !== counts[state.filter.type] ? `${list.length} / ${counts[state.filter.type] || 0}` : list.length}`;
 
     clear(refs.actions,
         btn('', { icon: viewOf().view === 'grid' ? 'list' : 'grid', cls: 'ghost', title: '切换视图', onclick: () => { setView({ view: viewOf().view === 'grid' ? 'list' : 'grid' }); renderLibrary(root); } }),
@@ -155,11 +178,9 @@ export function renderLibrary(root) {
         btn('添加', { icon: 'plus', cls: 'primary desktop-only', onclick: () => openImporter() }));
 
     // 类型分段
-    const segItem = (key, label, n, ic) => h('button', { class: `seg-item ${state.filter.type === key ? 'active' : ''}`, onclick: () => setFilter(root, { type: state.filter.type === key && key !== 'all' ? 'all' : key }) },
-        ic ? icon(ic, { size: 14 }) : null, h('span', { class: 'seg-label' }, label), n != null ? h('span', { class: 'seg-n' }, n) : null);
-    clear(refs.seg,
-        segItem('all', '全部', items.length),
-        Object.entries(TYPE_META).filter(([k]) => counts[k]).map(([k, v]) => segItem(k, v.label, counts[k], v.icon)));
+    const segItem = (key, label, n, ic) => h('button', { class: `seg-item ${state.filter.type === key ? 'active' : ''} ${narrowing && !n ? 'is-empty' : ''}`, onclick: () => setFilter(root, { type: key }) },
+        ic ? icon(ic, { size: 14 }) : null, h('span', { class: 'seg-label' }, label), h('span', { class: 'seg-n' }, n || 0));
+    clear(refs.seg, Object.entries(TYPE_META).filter(([k]) => counts[k]).map(([k, v]) => segItem(k, v.label, hits[k], v.icon)));
 
     // 已生效的筛选
     const pills = [];
@@ -173,12 +194,16 @@ export function renderLibrary(root) {
     refs.activeRow.hidden = !pills.length;
 
     renderHealth(refs.health);
-    renderDupNotice(refs.notice, fc || state.filter.q || state.filter.type !== 'all' || state.selecting);
+    renderDupNotice(refs.notice, fc || state.filter.q || state.selecting);
 
     if (!items.length) {
         clear(refs.content, emptyState('archive', '仓库还是空的', '上传角色卡、世界书、预设、正则、脚本、主题等文件，类型会自动识别。', btn('添加第一件藏品', { icon: 'plus', cls: 'primary', onclick: () => openImporter() })));
     } else if (!list.length) {
-        clear(refs.content, emptyState('search', '没有符合条件的内容', '换个关键词，或清除筛选条件', btn('清除筛选', { icon: 'x', onclick: () => { refs.search.value = ''; setFilter(root, { q: '', type: 'all', ...CLEAR_FILTERS() }); } })));
+        const elsewhere = Object.entries(hits).filter(([k, n]) => n && k !== state.filter.type);
+        clear(refs.content, elsewhere.length
+            ? emptyState('search', `「${TYPE_META[state.filter.type]?.label}」里没有符合条件的`, `${elsewhere.map(([k, n]) => `${TYPE_META[k]?.label} ${n} 个`).join('，')}`,
+                h('div', { class: 'row-actions center' }, elsewhere.slice(0, 4).map(([k, n]) => btn(`看${TYPE_META[k]?.label}（${n}）`, { icon: TYPE_META[k]?.icon, onclick: () => setFilter(root, { type: k }) }))))
+            : emptyState('search', '没有符合条件的内容', '换个关键词，或清除筛选条件', btn('清除筛选', { icon: 'x', onclick: () => { refs.search.value = ''; setFilter(root, { q: '', ...CLEAR_FILTERS() }); } })));
     } else {
         const click = (it) => (e) => {
             if (state.selecting) {
@@ -289,6 +314,8 @@ function setFilter(root, patch) {
         }
     }
     Object.assign(state.filter, patch);
+    // 记住最后看的类型，下次打开、从合集或标签跳过来都优先回到它
+    if (patch.type && patch.type !== 'all' && state.prefs.libType !== patch.type) { state.prefs.libType = patch.type; savePrefs(); }
     if (root._refs) root._refs.limit = 0;
     renderLibrary(root);
 }
@@ -329,7 +356,7 @@ function openFilters(root) {
         const opt = (active, label, onclick, ic) => h('button', { class: `opt ${active ? 'active' : ''}`, onclick: () => { onclick(); draw(); renderLibrary(root); } }, ic ? icon(ic, { size: 14 }) : null, label);
         const tags = allTags();
         const vw = viewOf();
-        const typeOnly = state.filter.type !== 'all' ? TYPE_META[state.filter.type]?.label || state.filter.type : '';
+        const typeOnly = TYPE_META[state.filter.type]?.label || '';
         clear(s.body,
             h('div', { class: 'form-group' }, h('div', { class: 'form-label' }, '排序'),
                 h('div', { class: 'opts' }, Object.entries(SORTS).map(([k, [label]]) => opt(!state.prefs.groupTime && state.prefs.sort === k, label, () => { state.prefs.sort = k; state.prefs.groupTime = false; savePrefs(); })),

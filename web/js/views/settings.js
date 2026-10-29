@@ -173,7 +173,7 @@ function browse() {
         panel('打开与视图', 'grid', null,
             deviceNote(),
             setRow('打开时进入', null, seg(p.start || 'library', [['library', '仓库'], ['collections', '合集'], ['stats', '统计']], (v) => setPref({ start: v }))),
-            setRow('仓库视图', '「全部」和没单独设置过的类型用这个。在仓库里选了某个类型后再改显示方式，就只改那个类型', seg(viewVal, [['grid', '卡片', 'grid'], ['dense', '紧凑', 'grid3'], ['list', '列表', 'list']], (v) => setPref({ view: v === 'list' ? 'list' : 'grid', dense: v === 'dense' }))),
+            setRow('仓库视图', '没单独设置过的类型用这个。在仓库的「筛选与排序」里改显示方式，只改当前看的那个类型', seg(viewVal, [['grid', '卡片', 'grid'], ['dense', '紧凑', 'grid3'], ['list', '列表', 'list']], (v) => setPref({ view: v === 'list' ? 'list' : 'grid', dense: v === 'dense' }))),
             setRow('每行显示', '卡片视图下每行放几个，「自动」按屏幕宽度决定', cols),
             Object.keys(p.viewByType || {}).length ? setRow('单独设置过的类型', null,
                 h('div', { class: 'view-own' }, Object.entries(p.viewByType).map(([t, v]) => h('span', { class: 'chip' },

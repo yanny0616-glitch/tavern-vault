@@ -91,10 +91,9 @@ const ok = (c, m) => { console.log(c ? 'PASS' : 'FAIL', m); if (!c) process.exit
   await p.click('.topbar button:has-text("完成")');
   ok(await p.locator('.card .card-ai').count() >= 1, `library cards show AI summary (${await p.locator('.card .card-ai').count()})`);
   await p.screenshot({ path: `${OUT}/6b-library.png` });
-  await p.click('.card:has-text("紫夜")');
+  // 打开刚才 AI 整理过的任意一张
+  await p.locator('.card:has(.card-ai)').first().click();
   await p.waitForSelector('.detail-sheet');
-  // 主题这类默认先打开「内容」，AI 简介在「介绍」里
-  await p.click('.detail-sheet .tabs button:has-text("介绍")');
   await p.waitForSelector('.ai-summary');
   await p.locator('.ai-summary').scrollIntoViewIfNeeded().catch(() => {});
   ok(/雨夜酒馆/.test(await p.locator('.ai-summary').innerText()), 'detail shows AI 简介 block');
@@ -130,7 +129,10 @@ const ok = (c, m) => { console.log(c ? 'PASS' : 'FAIL', m); if (!c) process.exit
   await p.click('.sheet .opt:has-text("未整理")');
   await p.click('.sheet-foot button:has-text("完成")');
   const shown = await p.locator('.card').count();
-  ok(shown === st.items.filter((i) => !i.deletedAt).length - 3, `unorganized filter shows ${shown}`);
+  // 仓库每次只看一种类型；类型标签上的数字是各类型里符合条件的数量，加起来 = 全部未整理的
+  const segN = await p.$$eval('.main .seg-item .seg-n', (a) => a.map((e) => Number(e.textContent)));
+  const activeN = Number(await p.textContent('.main .seg-item.active .seg-n'));
+  ok(shown === activeN && segN.reduce((a, b) => a + b, 0) === st.items.filter((i) => !i.deletedAt).length - 3, `unorganized filter shows ${shown} (tabs ${segN.join('/')})`);
   console.log(errs.join('\n') || 'no errors');
   await b.close();
 })().catch((e) => { console.error('FAIL', e.message); process.exit(1); });

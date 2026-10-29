@@ -102,6 +102,7 @@ const j = async (u, o) => (await fetch(u, o)).json();
   // 世界书：酒馆里有同名但内容不同 → 询问覆盖
   await fetch(`${V}/api/items?filename=${encodeURIComponent('酒馆世界书.json')}`, { method: 'POST', body: JSON.stringify({ entries: { 0: { uid: 0, key: ['酒馆'], content: '酒馆搬到了城西', comment: '酒馆' } } }) });
   await page.waitForTimeout(800);
+  await frame.click('.main .seg-item:has-text("世界书")');
   await frame.click('.card:has-text("酒馆世界书")');
   await frame.click('.sheet-foot button:has-text("导入到酒馆")');
   await frame.waitForSelector('.sheet.choice', { timeout: 10000 });
@@ -129,6 +130,7 @@ const j = async (u, o) => (await fetch(u, o)).json();
   ok(st.collections.some((c) => c.name === 'pack'), 'zip collection created');
   await frame.locator('body').press('Escape');
   // 详情 → 文件 → 对比上一版
+  await frame.click('.main .seg-item:has-text("角色卡")');
   await frame.click('.card:has-text("星澜")');
   await frame.click('.tabs button:has-text("文件")');
   await frame.click('button:has-text("对比上一版")');
