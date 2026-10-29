@@ -2,6 +2,7 @@
 import { h, clear, toast, confirmDialog, choiceDialog, promptDialog, sheet, downloadBlob, switchEl, icon, btn, fmtBytes, fmtDate } from '../ui.js';
 import { api } from '../api.js';
 import { bridge } from '../bridge.js';
+import { native, LAUNCHER_URL } from '../native.js';
 import { state, savePrefs, applyAccent, reload, TYPE_META, SKINS, uiFont, readZoom, UI_FONT, READ_ZOOM, notify } from '../state.js';
 import { CARD_PARTS, ENTRY_FLAGS } from '../sig.js';
 import { SORTS } from './library.js';
@@ -20,7 +21,7 @@ const SECTIONS = [
     { key: 'tags', title: '标签', icon: 'tag', desc: () => `${tagCounts().size} 个标签`, render: tagsSection },
     { key: 'fields', title: '自定义字段', icon: 'sliders', desc: () => `${state.fields.filter((f) => !f.hidden).length} 个字段在用`, render: fieldsSection },
     { key: 'ai', title: 'AI 助手', icon: 'sparkles', desc: () => (state.settings.ai?.ready ? '已配置' : '还没有配置'), render: () => panel('AI 助手', 'sparkles', null, aiSettings()) },
-    { key: 'connect', title: '连接与设备', icon: 'beer', desc: () => (bridge.host ? `已连接 ${bridge.host.host}` : '酒馆插件、iPhone'), render: () => [connection(), shortcut()] },
+    { key: 'connect', title: '连接与设备', icon: 'beer', desc: () => (bridge.host ? `已连接 ${bridge.host.host}` : '酒馆插件、iPhone'), render: () => (native ? [iosApp(), connection()] : [connection(), shortcut()]) },
     { key: 'security', title: '访问密码', icon: 'lock', desc: () => (state.settings.auth ? '已启用' : '未设置'), render: () => [security(), state.settings.auth ? loginLogPanel() : null] },
     { key: 'data', title: '数据与存储', icon: 'database', desc: () => `${state.stats?.total ?? 0} 项 · ${fmtBytes(state.stats?.bytes || 0)}`, render: data },
     { key: 'about', title: '关于', icon: 'info', desc: () => `v${state.settings.version || '1.0.0'}`, render: about },
@@ -581,6 +582,13 @@ function connection() {
         h('div', { class: 'sub-label' }, '服务器地址'), copyBox(location.origin),
         help( '密码就是上面设置的访问密码。iOS 版 TauriTavern 需要 https 地址。'),
         btn('下载插件压缩包', { icon: 'download', cls: 'sm', href: '/api/extension.zip', download: 'tavern-vault-extension.zip' }));
+}
+
+function iosApp() {
+    return panel('iOS App', 'phone', null,
+        h('div', { class: 'sub-label' }, '当前服务器'), copyBox(location.origin),
+        help('在别的 App 或「文件」里分享角色卡、世界书、压缩包等文件，选「藏馆」就会打开导入。下载和导出的文件会弹出系统分享面板，选「存储到文件」或「存储图像」保存。'),
+        btn('更换服务器', { icon: 'refresh', cls: 'sm', onclick: () => { location.href = LAUNCHER_URL; } }));
 }
 
 function shortcut() {

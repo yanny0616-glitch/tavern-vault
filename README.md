@@ -74,6 +74,7 @@ tavern-vault/
 │   └── lib/             存储、类型识别、PNG 读写、ZIP 打包
 ├── web/                 网页前端（原生 JS，无需构建）
 ├── extension/           酒馆插件（SillyTavern / TauriTavern 通用）
+├── app/                 iOS App 外壳（Capacitor，在 GitHub Actions 里编译）
 └── deploy/              systemd 服务与 Cloudflare Tunnel 示例配置
 ```
 
@@ -171,7 +172,22 @@ https://github.com/yanny0616-glitch/tavern-vault
 3. 如果设置了密码，在头部添加 `Authorization`，值为 `Bearer <令牌>`
 4. 之后在 Safari、Discord、「文件」等 App 里分享角色卡，选这个快捷指令即可
 
-## 四、AI 功能
+## 四、iOS App
+
+`app/` 是一个很薄的原生外壳：App 打开后连到你的藏馆服务，界面就是服务器上的网页，所以服务端更新后 App 里马上是新界面，不用重新安装。和「添加到主屏幕」相比多了这些：
+
+- 在别的 App 或「文件」里分享角色卡、世界书、压缩包，选「藏馆」就直接打开导入
+- 下载、导出、备份会弹出系统分享面板，可以「存储到文件」「存储图像」或发给别的 App
+- 状态栏文字颜色跟随浅色 / 深色；不会因为 Safari 清理网站数据而掉登录
+- 只有你的藏馆服务器在 App 里打开，其它链接交给 Safari 或对应的 App
+
+**编译**：GitHub → Actions → iOS App → Run workflow，几分钟后在运行记录底部下载 `TavernVault-*.ipa`。推送 `app-v1.0.0` 这样的 tag 会同时发布到 Releases。修改 `app/` 下的文件推到 main 也会自动编译。
+
+**安装**：IPA 没有签名，用 AltStore / SideStore / Sideloadly / 爱思助手等工具用自己的 Apple ID 签名安装。免费 Apple ID 签的 App 7 天后要重新签一次（AltStore / SideStore 可以自动续签），同时最多 3 个。
+
+**第一次打开**：填藏馆的服务器地址（就是浏览器里打开藏馆用的那个），再输入访问密码。之后每次打开自动连上；要换服务器到「设置 → 连接与设备 → 更换服务器」。
+
+## 五、AI 功能
 
 在「设置 → AI 助手」添加服务：
 
@@ -183,7 +199,7 @@ https://github.com/yanny0616-glitch/tavern-vault
 
 使用：在仓库里多选条目点「AI 整理」，或在条目详情里点「AI 整理」。右下角会显示进度和待审核数量。筛选里可以只看「未整理」的条目。
 
-## 五、数据与备份
+## 六、数据与备份
 
 - 数据都在 `server/data/`：`db.json` 是索引，`files/` 存按 SHA-256 命名的原始文件
 - 「设置 → 下载完整备份」得到包含所有版本文件的 ZIP；在「设置 → 从备份还原」上传即可恢复，可以选「合并」（保留现有内容）或「替换」。也可以直接把 ZIP 解压回 data 目录

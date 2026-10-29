@@ -6,6 +6,7 @@ server/data/
 # 参考资料，不进仓库
 *.html
 !web/*.html
+!app/www/*.html
 
 # 测试运行时生成的数据和截图
 tests/.work/

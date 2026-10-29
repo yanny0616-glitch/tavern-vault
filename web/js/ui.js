@@ -1,5 +1,6 @@
 // 轻量 DOM 工具
 import { icon } from './icons.js';
+import { native, saveBlob, saveUrl } from './native.js';
 
 export { icon };
 export function h(tag, props = {}, ...children) {
@@ -259,12 +260,23 @@ export function debounce(fn, ms = 300) {
 }
 
 export function downloadBlob(blob, name) {
+    if (native) { saveBlob(blob, name).catch((e) => toast(`保存失败：${e.message}`, 'err')); return; }
     const url = URL.createObjectURL(blob);
     const a = h('a', { href: url, download: name });
     document.body.append(a);
     a.click();
     a.remove();
     setTimeout(() => URL.revokeObjectURL(url), 5000);
+}
+
+/** 下载服务器上的文件（不在页面里的 <a download> 用这个） */
+export function downloadUrl(url, name) {
+    if (native) {
+        toast('正在准备文件…');
+        saveUrl(url, name).catch((e) => toast(`保存失败：${e.message}`, 'err'));
+        return;
+    }
+    h('a', { href: url, download: name }).click();
 }
 
 export function switchEl(checked, onchange) {

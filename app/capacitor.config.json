@@ -1,0 +1,11 @@
+{
+  "appId": "top.yanny.tavernvault",
+  "appName": "藏馆",
+  "webDir": "www",
+  "ios": {
+    "contentInset": "never",
+    "backgroundColor": "#14111c",
+    "allowsLinkPreview": false,
+    "preferredContentMode": "mobile"
+  }
+}

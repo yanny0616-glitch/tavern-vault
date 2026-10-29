@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1">
+<title>藏馆</title>
+<style>
+  /* App 自带的连接页：第一次打开填服务器地址，之后自动跳到藏馆服务的网页 */
+  :root {
+    --bg: #f6f4fa; --card: #fff; --fg: #1d1a24; --muted: #6f6a7a; --line: #e4e0ec;
+    --accent: #7c5cf0; --accent-fg: #fff; --err: #c0364a;
+    color-scheme: light dark;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #14111c; --card: #1e1a28; --fg: #ece8f4; --muted: #9a93a8; --line: #2f2a3b; --accent: #a78bfa; --accent-fg: #14111c; --err: #f47086; }
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg); }
+  body {
+    font: 15px/1.5 -apple-system, BlinkMacSystemFont, "PingFang SC", "Helvetica Neue", sans-serif;
+    display: flex; align-items: center; justify-content: center;
+    padding: calc(env(safe-area-inset-top) + 24px) 20px calc(env(safe-area-inset-bottom) + 24px);
+    -webkit-user-select: none; user-select: none;
+  }
+  main { width: 100%; max-width: 380px; text-align: center; }
+  .logo { width: 76px; height: 76px; border-radius: 18px; box-shadow: 0 8px 24px rgba(60, 30, 120, .25); }
+  h1 { font-size: 24px; margin: 18px 0 4px; letter-spacing: .02em; }
+  .sub { color: var(--muted); margin: 0 0 28px; font-size: 14px; }
+  form { background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 18px; text-align: left; }
+  label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 8px; }
+  input {
+    width: 100%; font: inherit; font-size: 16px; color: var(--fg); background: var(--bg);
+    border: 1px solid var(--line); border-radius: 10px; padding: 11px 12px; outline: none;
+    -webkit-user-select: text; user-select: text;
+  }
+  input:focus { border-color: var(--accent); }
+  button {
+    width: 100%; margin-top: 14px; font: inherit; font-weight: 600; font-size: 16px;
+    color: var(--accent-fg); background: var(--accent); border: 0; border-radius: 10px; padding: 12px;
+  }
+  button:disabled { opacity: .55; }
+  button.ghost { background: transparent; color: var(--accent); margin-top: 6px; font-weight: 500; }
+  .hint { color: var(--muted); font-size: 12.5px; margin: 12px 0 0; }
+  .msg { min-height: 1.5em; margin: 14px 0 0; font-size: 14px; color: var(--muted); }
+  .msg.err { color: var(--err); }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<main>
+  <svg class="logo" viewBox="0 0 128 128" aria-hidden="true"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#c084fc"/><stop offset="1" stop-color="#6366f1"/></linearGradient></defs><rect width="128" height="128" rx="28" fill="#17131f"/><path d="M28 50 64 32l36 18v40L64 108 28 90Z" fill="none" stroke="url(#g)" stroke-width="7" stroke-linejoin="round"/><path d="M28 50l36 18 36-18M64 68v40" fill="none" stroke="url(#g)" stroke-width="7" stroke-linejoin="round"/><circle cx="64" cy="50" r="6" fill="#f0abfc"/></svg>
+  <h1>酒馆藏馆</h1>
+  <p class="sub" id="sub">连接到你的藏馆服务</p>
+
+  <form id="form" hidden>
+    <label for="url">服务器地址</label>
+    <input id="url" type="url" inputmode="url" autocomplete="url" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="https://vault.example.com">
+    <button id="go" type="submit">连接</button>
+    <button id="back" class="ghost" type="button" hidden>取消，回到藏馆</button>
+    <p class="hint">就是在浏览器里打开藏馆用的地址。之后每次打开 App 会自动连上，想换的话到「设置 → 连接与设备」。</p>
+  </form>
+
+  <div id="retry" hidden>
+    <button id="again" type="button">重试</button>
+    <button id="change" class="ghost" type="button">更换服务器</button>
+  </div>
+
+  <p class="msg" id="msg"></p>
+</main>
+<script>
+(function () {
+  var $ = function (id) { return document.getElementById(id); };
+  var cap = window.Capacitor;
+  var KEY = 'tv_server';
+
+  // 服务器地址存在原生的 UserDefaults 里：App 只放行这个地址在 App 里打开，别的网址交给 Safari
+  function getServer() {
+    if (cap && cap.isNativePlatform && cap.isNativePlatform()) return cap.nativePromise('VaultShell', 'getServer', {}).then(function (r) { return r.url || ''; });
+    return Promise.resolve(localStorage.getItem(KEY) || '');
+  }
+  function setServer(url) {
+    if (cap && cap.isNativePlatform && cap.isNativePlatform()) return cap.nativePromise('VaultShell', 'setServer', { url: url });
+    localStorage.setItem(KEY, url);
+    return Promise.resolve();
+  }
+
+  function normalize(raw) {
+    raw = String(raw || '').trim();
+    if (!raw) return '';
+    if (!/^https?:\/\//i.test(raw)) raw = 'https://' + raw;
+    try { return new URL(raw).origin; } catch (e) { return ''; }
+  }
+
+  function check(origin) {
+    var ctl = new AbortController();
+    var timer = setTimeout(function () { ctl.abort(); }, 10000);
+    return fetch(origin + '/api/health', { signal: ctl.signal, cache: 'no-store' })
+      .then(function (r) { if (!r.ok) throw new Error('服务器返回 ' + r.status); return r.json(); })
+      .then(function (j) { if (!j || j.app !== 'tavern-vault') throw new Error('这个地址不是藏馆服务'); return j; })
+      .catch(function (e) { throw new Error(e.name === 'AbortError' ? '连接超时' : e.message === 'Load failed' || e.message === 'Failed to fetch' ? '连不上这个地址' : e.message); })
+      .finally(function () { clearTimeout(timer); });
+  }
+
+  function say(text, err) { $('msg').textContent = text || ''; $('msg').className = 'msg' + (err ? ' err' : ''); }
+
+  function open(origin) { location.replace(origin + '/'); }
+
+  var saved = '';
+
+  function showForm() {
+    $('retry').hidden = true;
+    $('form').hidden = false;
+    $('back').hidden = !saved;
+    $('sub').textContent = '连接到你的藏馆服务';
+    $('url').value = saved;
+  }
+
+  function connectSaved() {
+    $('form').hidden = true;
+    $('retry').hidden = true;
+    $('sub').textContent = saved.replace(/^https?:\/\//, '');
+    say('正在连接…');
+    check(saved).then(function () { open(saved); }, function (e) {
+      say(e.message, true);
+      $('retry').hidden = false;
+    });
+  }
+
+  $('form').addEventListener('submit', function (e) {
+    e.preventDefault();
+    var origin = normalize($('url').value);
+    if (!origin) { say('请填写正确的地址', true); return; }
+    $('go').disabled = true;
+    say('正在连接…');
+    check(origin)
+      .then(function () { return setServer(origin); })
+      .then(function () { open(origin); })
+      .catch(function (err) { say(err.message, true); $('go').disabled = false; });
+  });
+  $('back').addEventListener('click', function () { open(saved); });
+  $('again').addEventListener('click', connectSaved);
+  $('change').addEventListener('click', function () { say(''); showForm(); });
+
+  getServer().then(function (url) {
+    saved = url;
+    if (!saved || /[?&]change=1/.test(location.search)) showForm();
+    else connectSaved();
+  });
+})();
+</script>
+</body>
+</html>

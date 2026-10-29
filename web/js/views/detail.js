@@ -1,5 +1,5 @@
 // 条目详情：介绍（预览）/ 内容（阅读排版）/ 文件；资料在单独的编辑面板里修改
-import { h, clear, sheet, toast, debounce, confirmDialog, promptDialog, lightbox, fmtBytes, fmtDate, timeAgo, downloadBlob, switchEl, icon, btn, starsEl, emptyState } from '../ui.js';
+import { h, clear, sheet, toast, debounce, confirmDialog, promptDialog, lightbox, fmtBytes, fmtDate, timeAgo, downloadBlob, downloadUrl, switchEl, icon, btn, starsEl, emptyState } from '../ui.js';
 import { api } from '../api.js';
 import { bridge } from '../bridge.js';
 import { state, typeMeta, TYPE_META, fieldsFor, subscribe, allTags, notify, savePrefs, applyAccent, readZoom, READ_ZOOM } from '../state.js';
@@ -331,7 +331,7 @@ export function openDetail(id, { seq = null, onLeave = null } = {}) {
                 it.type === 'character' && p && !it.deletedAt ? item('user', '编辑角色卡内容（保存为新版本）', () => withCard((c) => editCard(it, c))) : null,
                 it.type === 'character' && p && it.cover ? item('image', '导出 PNG 角色卡（用当前封面）', () => exportPng(it)) : null,
                 it.type === 'character' && p ? item('braces', '导出角色卡 JSON', () => withCard((c) => downloadBlob(new Blob([JSON.stringify(c.card, null, 2)], { type: 'application/json' }), `${c.data?.name || it.name}.json`))) : null,
-                p ? item('download', '下载当前文件', () => { h('a', { href: api.fileUrl(p.sha, p.name, true, it.id), download: p.name }).click(); }) : null,
+                p ? item('download', '下载当前文件', () => downloadUrl(api.fileUrl(p.sha, p.name, true, it.id), p.name)) : null,
                 it.cover ? item('maximize', '查看大图', () => lightbox(api.fileUrl(it.cover))) : null,
                 !it.deletedAt ? item('image', '更换封面 / 添加图片', () => switchTab('files')) : null,
                 it.deletedAt
