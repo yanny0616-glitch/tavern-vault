@@ -3,7 +3,7 @@ import { h, clear, toast, confirmDialog, choiceDialog, promptDialog, sheet, down
 import { api } from '../api.js';
 import { bridge } from '../bridge.js';
 import { native, LAUNCHER_URL } from '../native.js';
-import { state, savePrefs, applyAccent, reload, TYPE_META, SKINS, uiFont, readZoom, UI_FONT, READ_ZOOM, notify, allTags, resetView, cardPrefOf, setCardPref, resetCardPref, userNameOn } from '../state.js';
+import { state, savePrefs, applyAccent, reload, TYPE_META, SKINS, uiFont, readZoom, UI_FONT, READ_ZOOM, notify, allTags, resetView, cardPrefOf, setCardPref, resetCardPref, userNameOn, tagGroups } from '../state.js';
 import { CARD_PARTS, ENTRY_FLAGS } from '../sig.js';
 import { SORTS } from './library.js';
 import { topbar, ensureView, MARK_POS, DEFAULT_MARKS, MARK_FIELD_KINDS, markRules, markName } from './common.js';
@@ -136,6 +136,8 @@ async function saveLook(patch) {
     const before = { skin: state.settings.skin, accent: state.settings.accent };
     Object.assign(state.settings, patch);
     applyAccent();
+    // 输入框还有焦点时这一页不会重画（Safari 点按钮不会带走焦点），先让出焦点
+    if (/^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName)) document.activeElement.blur();
     rerender();
     try { await api.put('/api/settings', patch); } catch (e) {
         Object.assign(state.settings, before);
@@ -458,6 +460,101 @@ function aliasPanel() {
         h('div', { class: 'input-group' }, from, to, btn('添加', { icon: 'plus', onclick: add })));
 }
 
+// ---- 标签分类 ----
+async function saveTagGroups(groups, msg) {
+    try {
+        const r = await api.put('/api/tags/groups', { groups });
+        state.settings.tagGroups = r.groups;
+        if (msg) toast(msg, 'ok');
+        rerender();
+        return true;
+    } catch (e) { toast(e.message, 'err'); return false; }
+}
+/** 选哪些标签放进这个分类 */
+function pickGroupTags(name, counts) {
+    const cur = tagGroups();
+    const g = cur.find((x) => x.name === name);
+    if (!g) return;
+    const sel = new Set(g.tags);
+    let q = '';
+    const all = [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], 'zh'));
+    const elsewhere = new Map();
+    for (const x of cur) if (x.name !== name) for (const t of x.tags) elsewhere.set(t, [...(elsewhere.get(t) || []), x.name]);
+    const list = h('div', { class: 'opts tag-opts' });
+    const info = h('div', { class: 'muted small' });
+    const draw = () => {
+        const k = q.trim().toLowerCase();
+        const shown = all.filter(([t]) => !k || t.toLowerCase().includes(k));
+        clear(list, shown.slice(0, 400).map(([t, n]) => h('button', { class: `opt tag-opt ${sel.has(t) ? 'active in' : ''}`, title: elsewhere.has(t) ? `也在：${elsewhere.get(t).join('、')}` : '',
+            onclick: () => { if (sel.has(t)) sel.delete(t); else sel.add(t); draw(); } },
+            sel.has(t) ? icon('check', { size: 13, stroke: 3 }) : null, h('span', {}, t), h('span', { class: 'opt-n' }, n))),
+            !shown.length ? h('span', { class: 'muted small' }, '没有匹配的标签') : null);
+        info.textContent = `已选 ${sel.size} 个。一个标签可以同时放进几个分类。`;
+    };
+    const search = h('input', { class: 'input search-input', type: 'search', placeholder: `在 ${all.length} 个标签里找`, oninput: () => { q = search.value; draw(); } });
+    const s = sheet({ title: `「${name}」里的标签`, full: true,
+        body: h('div', { class: 'stack' }, all.length > 12 ? h('label', { class: 'search inline' }, icon('search', { size: 15 }), search) : null, info, list),
+        foot: [btn('取消', { onclick: () => s.close() }), btn('保存', { cls: 'primary', onclick: async () => {
+            // 原来在分类里、现在已经没有条目在用的标签也留着，免得误删
+            const keep = g.tags.filter((t) => !counts.has(t));
+            if (await saveTagGroups(tagGroups().map((x) => (x.name === name ? { ...x, tags: [...keep, ...all.map(([t]) => t).filter((t) => sel.has(t))] } : x)), '已保存')) s.close();
+        } })] });
+    draw();
+}
+/** 一个标签放进哪些分类 */
+function pickTagGroups(tag) {
+    const cur = tagGroups();
+    const sel = new Set(cur.filter((g) => g.tags.includes(tag)).map((g) => g.name));
+    const list = h('div', { class: 'opts' });
+    const draw = () => clear(list, cur.map((g) => h('button', { class: `opt ${sel.has(g.name) ? 'active' : ''}`, onclick: () => { if (sel.has(g.name)) sel.delete(g.name); else sel.add(g.name); draw(); } },
+        sel.has(g.name) ? icon('check', { size: 13, stroke: 3 }) : null, g.name)));
+    const s = sheet({ title: `「${tag}」放进哪些分类`, body: list,
+        foot: [btn('取消', { onclick: () => s.close() }), btn('保存', { cls: 'primary', onclick: async () => {
+            const next = tagGroups().map((g) => ({ ...g, tags: sel.has(g.name) ? [...new Set([...g.tags, tag])] : g.tags.filter((t) => t !== tag) }));
+            if (await saveTagGroups(next, '已保存')) s.close();
+        } })] });
+    s.el.classList.add('dialog');
+    s.el.parentElement.classList.add('center');
+    draw();
+}
+function tagGroupPanel(counts) {
+    const groups = tagGroups();
+    const names = () => tagGroups().map((g) => g.name);
+    const askName = async (title, value = '') => {
+        const v = String((await promptDialog('比如：题材、性格、世界观、来源', { title, value, ok: '确定' })) ?? '').trim().slice(0, 30);
+        if (!v || v === value) return '';
+        if (names().includes(v)) { toast(`已经有「${v}」这个分类`, 'err'); return ''; }
+        return v;
+    };
+    const create = async () => {
+        const name = await askName('新建分类');
+        if (name && await saveTagGroups([...tagGroups(), { name, tags: [] }])) pickGroupTags(name, counts);
+    };
+    const move = (i, d) => {
+        const next = [...tagGroups()];
+        [next[i], next[i + d]] = [next[i + d], next[i]];
+        saveTagGroups(next);
+    };
+    const used = new Set(groups.flatMap((g) => g.tags));
+    const loose = [...counts.keys()].filter((t) => !used.has(t)).length;
+    return panel(`标签分类 · ${groups.length}`, 'layers', btn('新建分类', { icon: 'plus', cls: 'sm', onclick: create }),
+        help('标签多了以后，把它们归到几个分类下面。仓库的「筛选与排序」里会按分类收起来显示，点分类名展开。一个标签可以同时放进几个分类；分类只是整理方式，不会改动条目。'),
+        groups.length ? h('div', { class: 'rows tag-admin' }, groups.map((g, i) => h('div', { class: 'row-item tag-admin-row' },
+            h('button', { class: 'tag-admin-name', title: '选择这个分类里的标签', onclick: () => pickGroupTags(g.name, counts) },
+                h('span', { class: 'min0' }, g.name), h('span', { class: 'fold-count' }, `${g.tags.filter((t) => counts.has(t)).length} 个标签`)),
+            btn('', { icon: 'arrowUp', cls: 'sm ghost icon', title: '上移', disabled: i === 0, onclick: () => move(i, -1) }),
+            btn('', { icon: 'arrowDown', cls: 'sm ghost icon', title: '下移', disabled: i === groups.length - 1, onclick: () => move(i, 1) }),
+            btn('', { icon: 'pencil', cls: 'sm ghost icon', title: '改名', onclick: async () => {
+                const name = await askName('分类改名', g.name);
+                if (name) saveTagGroups(tagGroups().map((x) => (x.name === g.name ? { ...x, name } : x)));
+            } }),
+            btn('', { icon: 'trash', cls: 'sm ghost icon', title: '删除分类', onclick: async () => {
+                if (await confirmDialog(`删除分类「${g.name}」？里面的标签不会删除，只是不再归在这个分类下。`, { ok: '删除', danger: true, title: '删除分类' })) saveTagGroups(tagGroups().filter((x) => x.name !== g.name), '已删除');
+            } }))))
+            : h('div', { class: 'muted small' }, '还没有分类。'),
+        groups.length && loose ? h('div', { class: 'muted small' }, `还有 ${loose} 个标签没归类，筛选时显示在「未分类」里。`) : null);
+}
+
 function tagsSection() {
     const counts = tagCounts();
     const all = [...counts.entries()];
@@ -498,6 +595,7 @@ function tagsSection() {
             h('button', { class: 'tag-admin-name', title: tagSelecting ? '选择' : '在仓库里查看带这个标签的条目', onclick: () => (tagSelecting ? toggle(t) : show(t)) }, h('span', { class: 'min0' }, t), h('span', { class: 'fold-count' }, n)),
             tagSelecting ? null : [
                 TAG_SPLIT.test(t) ? btn('拆开', { cls: 'sm ghost', title: '按逗号拆成几个标签', onclick: () => split(t) }) : null,
+                tagGroups().length ? btn('', { icon: 'layers', cls: `sm ghost icon ${tagGroups().some((g) => g.tags.includes(t)) ? 'on' : ''}`, title: '放进分类', onclick: () => pickTagGroups(t) }) : null,
                 btn('', { icon: 'pencil', cls: 'sm ghost icon', title: '改名 / 合并', onclick: () => rename(t) }),
                 btn('', { icon: 'trash', cls: 'sm ghost icon', title: '删除', onclick: () => remove(t) })]))
             : h('div', { class: 'muted small' }, all.length ? '没有匹配的标签' : '还没有标签'));
@@ -533,6 +631,7 @@ function tagsSection() {
             all.length > 8 ? h('div', { class: 'tag-admin-tools' }, h('label', { class: 'search inline grow' }, icon('search', { size: 15 }), search), sortSeg) : null,
             selBar,
             list),
+        tagGroupPanel(counts),
         aliasPanel(),
     ];
 }

@@ -70,6 +70,7 @@ export const api = {
         for (const k of ['type', 'name', 'mode', 'source', 'origin', 'match', 'target', 'collectionName', 'label']) if (opts[k]) q.set(k, opts[k]);
         if (opts.probe) q.set('probe', '1');
         if (opts.zipCollection) q.set('zipCollection', '1');
+        if (opts.review) q.set('review', '1');
         if (typeof opts.primary === 'boolean') q.set('primary', opts.primary ? '1' : '0');
         if (opts.unzip === false) q.set('unzip', '0');
         if (opts.tags?.length) q.set('tags', opts.tags.join(','));

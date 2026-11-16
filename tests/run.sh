@@ -82,6 +82,8 @@ run tavern-bridge  seed 1 tavern-bridge.cjs
 run tavern-browse  seed 1 tavern-browse.cjs
 run embed          seed 1 embed.cjs
 run scope-extract-read perf 0 scope-extract-read.cjs
+run tags-import-book perf 0 tags-import-book.cjs
+run compare-draw-chat seed 0 compare-draw-chat.cjs
 
 echo
 if [ ${#FAILED[@]} -eq 0 ]; then echo "全部通过（$PASS 项）"; exit 0; fi

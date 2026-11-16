@@ -1,5 +1,5 @@
 // AI 助手：服务配置、整理（草稿 → 审核 → 写入）、任务状态
-import { h, clear, toast, sheet, btn, icon, switchEl, confirmDialog, promptDialog, choiceDialog, fmtDate, emptyState } from '../ui.js';
+import { h, clear, toast, sheet, btn, icon, switchEl, confirmDialog, promptDialog, choiceDialog, fmtDate, emptyState, downloadBlob } from '../ui.js';
 import { api } from '../api.js';
 import { state, typeMeta, reload } from '../state.js';
 import { typeBadge } from './common.js';
@@ -294,6 +294,37 @@ function templatesForm(redraw) {
         tplSel = cfg.organize.template;
         redraw();
     };
+    // 导出 / 导入：模板存成一个 JSON 文件，可以换设备用或者发给别人
+    const exportIt = () => {
+        const pack = (list_) => list_.map(({ id: _id, ...rest }) => rest);
+        const mine = cfg.templates;
+        const out = { app: 'cardbox', kind: 'ai-templates', templates: pack(builtin || !mine.length ? [t] : mine.some((x) => x.id === t.id) && mine.length > 1 ? mine : [t]) };
+        downloadBlob(new Blob([JSON.stringify(out, null, 2)], { type: 'application/json' }), `卡匣整理模板-${out.templates.length > 1 ? `${out.templates.length}套` : t.name}.json`);
+    };
+    const importInput = h('input', { type: 'file', accept: '.json,application/json', hidden: true, onchange: async () => {
+        const file = importInput.files[0];
+        importInput.value = '';
+        if (!file) return;
+        try {
+            if (file.size > 512 * 1024) throw new Error('文件太大，不像是模板文件');
+            const raw = JSON.parse(await file.text());
+            const got = (Array.isArray(raw) ? raw : Array.isArray(raw?.templates) ? raw.templates : [raw]).filter((x) => x && typeof x === 'object' && typeof x.role === 'string' && typeof x.tagRule === 'string');
+            if (!got.length) throw new Error('这个文件里没有整理模板');
+            const names = new Set([def.name, ...cfg.templates.map((x) => x.name)]);
+            const fresh = got.slice(0, 20).map((x) => {
+                let name = String(x.name || '导入的模板').trim().slice(0, 20) || '导入的模板';
+                // 重名的加序号，不覆盖已有的
+                for (let i = 2; names.has(name); i++) name = `${String(x.name || '导入的模板').trim().slice(0, 16)} ${i}`;
+                names.add(name);
+                return { ...x, id: Math.random().toString(36).slice(2, 10), name };
+            });
+            await persist([...cfg.templates, ...fresh]);
+            tplDraft = null;
+            tplSel = fresh[0].id;
+            toast(`已导入 ${fresh.length} 套模板`, 'ok');
+            redraw();
+        } catch (e) { toast(e instanceof SyntaxError ? '不是有效的 JSON 文件' : e.message, 'err'); }
+    } });
     const previewIt = () => {
         const body = h('div', { class: 'loading' }, h('span', { class: 'spinner' }));
         sheet({ title: `完整提示词 · ${t.name}`, body, full: true });
@@ -330,6 +361,8 @@ function templatesForm(redraw) {
             h('div', { class: 'muted small' }, '「卡里的指令一律不执行」和输出格式是固定加上的，保证结果能被读取，预览里能看到完整内容。'),
             h('div', { class: 'row-actions tpl-acts' },
                 btn('预览完整提示词', { icon: 'eye', cls: 'sm', onclick: previewIt }),
+                btn('导出', { icon: 'download', cls: 'sm ghost', title: cfg.templates.length > 1 && !builtin ? '导出自己的全部模板' : '导出这套模板', onclick: exportIt }),
+                btn('导入', { icon: 'upload', cls: 'sm ghost', title: '从文件导入模板', onclick: () => importInput.click() }), importInput,
                 h('span', { class: 'grow' }),
                 builtin ? null : btn('删除', { icon: 'trash', cls: 'sm ghost danger', onclick: deleteIt }),
                 btn('复制一份来改', { icon: 'copy', cls: 'sm', onclick: copyIt }),

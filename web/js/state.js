@@ -114,6 +114,12 @@ export function resetView(type) {
     savePrefs();
 }
 
+/** 标签分类（设置里建的）：[{ name, tags }]，只留现在还在用的标签 */
+export function tagGroups() {
+    const g = state.settings.tagGroups;
+    return Array.isArray(g) ? g.filter((x) => x && typeof x.name === 'string' && Array.isArray(x.tags)) : [];
+}
+
 const subs = new Set();
 export function subscribe(fn) { subs.add(fn); return () => subs.delete(fn); }
 export function notify() { for (const fn of subs) fn(); }

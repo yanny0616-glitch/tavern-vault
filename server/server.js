@@ -321,7 +321,7 @@ function ingest(buf, filename, opts = {}) {
         const candidates = target ? [target] : findSimilar(det);
         if (candidates.length) {
             // 指定了目标：默认直接存为新版本；match=ask 时只返回对比结果（酒馆页「对比」用）
-            const action = target ? (opts.match === 'ask' ? 'ask' : opts.match === 'skip' ? 'skip' : 'version') : opts.match || 'ask';
+            const action = target ? (opts.match === 'ask' ? 'ask' : opts.match === 'skip' ? 'skip' : 'version') : opts.review ? 'ask' : opts.match || 'ask';
             const cand = candidates[0];
             if (action === 'version') {
                 // 版本号比当前低：存为历史版本，不顶替当前版本（从酒馆收录、手动指定的除外）
@@ -343,6 +343,8 @@ function ingest(buf, filename, opts = {}) {
                 return { ...base, status: 'conflict', conflict: true, duplicate: false, summary, changes, candidates: candidates.slice(0, 5).map(slim) };
             }
         }
+        // 先看清单再导入：新文件先不建条目，文件留着等确认
+        if (opts.review) return { ...base, status: 'review', duplicate: false };
     }
 
     const vm = vaultMetaFrom(buf, det);
@@ -436,6 +438,8 @@ function parseOpts(url) {
         target: sp.get('target') || '',
         collectionName: sp.get('collectionName') || '',
         zipCollection: sp.get('zipCollection') === '1',
+        // review=1：只检查不写入。新文件返回 status=review，等网页确认后再走 /api/ingest/resolve
+        review: sp.get('review') === '1',
         unzip: sp.get('unzip') !== '0',
         label: sp.get('label') || '',
         source: sp.get('source') || '',
@@ -721,6 +725,12 @@ route('POST', '/api/diff', async ({ req }) => {
 const aiTasks = createAiTasks({ dataDir: DATA_DIR, store, config: aiConfig, loadContent, broadcast });
 const aiFail = (e) => { throw new HttpError(e instanceof AiError ? 400 : 500, e.message); };
 const idList = (v) => (Array.isArray(v) ? v.map(String).filter((id) => store.db.items[id]).slice(0, 2000) : []);
+
+// AI 推荐：从给定的条目里按一句话的想法挑几个（只看名称、标签、简介、笔记）
+route('POST', '/api/ai/recommend', async ({ req }) => {
+    const { ids, want } = await readJson(req);
+    try { return await aiTasks.recommend(idList(ids), want); } catch (e) { return aiFail(e); }
+});
 
 route('GET', '/api/ai/config', () => aiConfig.public());
 route('PUT', '/api/ai/config', async ({ req }) => {
@@ -1033,6 +1043,17 @@ function removeVersion(it, fileId, prefer = '') {
 }
 
 // 编辑角色卡内容 → 生成新版本文件
+// 网页里编辑世界书文件（不在角色卡里的）：整份内容存成新版本
+route('PUT', '/api/items/:id/json', async ({ req, p }) => {
+    const it = getItem(p.id);
+    if (it.type !== 'worldbook') throw new HttpError(400, '只有世界书可以这样编辑');
+    const { data } = await readJson(req);
+    const es = data && typeof data === 'object' ? data.entries : null;
+    if (!es || typeof es !== 'object') throw new HttpError(400, '世界书数据无效');
+    saveJsonVersion(it, data, '网页编辑');
+    return slim(store.db.items[it.id]);
+});
+
 route('PUT', '/api/items/:id/card', async ({ req, p }) => {
     const it = getItem(p.id);
     const { card } = await readJson(req);
@@ -1069,6 +1090,41 @@ function updateAliases(ops, remember) {
     }
     store.db.settings.tagAliases = cleanAliases(al);
 }
+// 标签分类：把标签归到几个大类下面（一个标签可以放进多个分类），筛选时按分类展开。只是整理方式，不改条目
+const MAX_TAG_GROUPS = 60;
+function cleanTagGroups(v) {
+    const out = [];
+    const seen = new Set();
+    for (const g of (Array.isArray(v) ? v : []).slice(0, MAX_TAG_GROUPS)) {
+        const name = String(g?.name ?? '').trim().slice(0, 30);
+        if (!name || seen.has(name)) continue;
+        seen.add(name);
+        out.push({ name, tags: [...new Set((Array.isArray(g?.tags) ? g.tags : []).map((t) => String(t).trim().slice(0, 60)).filter(Boolean))].slice(0, 500) });
+    }
+    return out;
+}
+route('PUT', '/api/tags/groups', async ({ req }) => {
+    const { groups } = await readJson(req);
+    store.db.settings.tagGroups = cleanTagGroups(groups);
+    store.save();
+    broadcast('change', {});
+    return { groups: store.db.settings.tagGroups };
+});
+/** 标签改名、合并、拆开、删除后，分类里的也跟着换 */
+function retagGroups(list) {
+    const groups = store.db.settings.tagGroups;
+    if (!Array.isArray(groups) || !groups.length) return;
+    for (const g of groups) {
+        for (const { from, to } of list) {
+            const at = g.tags.findIndex((t) => from.includes(t));
+            if (at < 0) continue;
+            const rest = g.tags.filter((t) => !from.includes(t));
+            const pos = g.tags.slice(0, at).filter((t) => !from.includes(t)).length;
+            g.tags = [...new Set([...rest.slice(0, pos), ...to, ...rest.slice(pos)])];
+        }
+    }
+}
+
 route('PUT', '/api/tags/aliases', async ({ req }) => {
     const { aliases } = await readJson(req);
     store.db.settings.tagAliases = cleanAliases(aliases);
@@ -1101,6 +1157,7 @@ route('POST', '/api/tags/replace', async ({ req }) => {
         if (tags !== it.tags) { it.tags = tags; it.updatedAt = stamp; ids.push(it.id); }
     }
     updateAliases(list, Boolean(remember));
+    retagGroups(list);
     store.save();
     broadcast('change', { ids });
     return { ok: true, count: ids.length };

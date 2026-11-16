@@ -277,12 +277,14 @@ export class Store {
     updateItem(id, patch) {
         const it = this.db.items[id];
         if (!it) return null;
-        const allowed = ['type', 'subtype', 'name', 'description', 'tags', 'collections', 'favorite', 'rating', 'source', 'author', 'version', 'notes', 'fields', 'cover', 'meta', 'searchText', 'ai'];
+        const allowed = ['type', 'subtype', 'name', 'description', 'tags', 'collections', 'favorite', 'rating', 'source', 'author', 'version', 'notes', 'fields', 'cover', 'meta', 'searchText', 'ai', 'chatOf'];
         for (const k of allowed) {
             if (!(k in patch)) continue;
             // 标签、合集必须是数组，字段必须是对象；类型不对的不收，免得存坏条目
             if ((k === 'tags' || k === 'collections') && !Array.isArray(patch[k])) continue;
             if (k === 'fields' && (!patch[k] || typeof patch[k] !== 'object' || Array.isArray(patch[k]))) continue;
+            // 聊天记录绑定的角色卡：存条目 id，空字符串表示解绑
+            if (k === 'chatOf' && typeof patch[k] !== 'string') continue;
             it[k] = patch[k];
         }
         if (Array.isArray(patch.tags)) it.tags = this.canonTags(patch.tags);

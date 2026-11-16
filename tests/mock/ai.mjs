@@ -23,6 +23,11 @@ function reply(system, user) {
             { to: '校园', from: [], reason: '空的' },
         ] });
     }
+    // 推荐：第 2 个、第 1 个（重复一次应被去掉）、不存在的编号（应被去掉）
+    if (system.includes('从他自己的收藏里挑东西')) {
+        log.push({ recommend: user });
+        return JSON.stringify({ picks: [{ n: 2, reason: '标签对得上' }, { n: 2, reason: '重复' }, { n: 9999, reason: '不存在' }, { n: 1, reason: '简介提到了' }] });
+    }
     if (isOrganize(system) && system.includes('"items":[')) {
         const items = [...user.matchAll(/<item id="(\d+)"[^>]*>\n([\s\S]*?)\n<\/item>/g)];
         log.push({ batch: items.length });

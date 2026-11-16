@@ -2,6 +2,7 @@
 import { h, clear, toast, confirmDialog, promptDialog, debounce, downloadBlob, sheet, icon, btn, emptyState, switchEl } from '../ui.js';
 import { api } from '../api.js';
 import { bridge } from '../bridge.js';
+import { tagCloud } from '../tagcloud.js';
 import { state, live, allTags, savePrefs, TYPE_META, reload, viewOf, setView, resetView } from '../state.js';
 import { topbar, ensureView, itemCard, itemRow, collectionName, applyHit, versionCount } from './common.js';
 import { openDetail } from './detail.js';
@@ -11,6 +12,8 @@ import { startOrganize, aiReady } from './ai.js';
 import { openAiChat } from './aichat.js';
 import { findDuplicates, openDuplicates } from './dupes.js';
 import { openDiff } from './diff.js';
+import { openCompare } from './compare.js';
+import { openDraw } from './draw.js';
 import { inTavern } from '../tavern-index.js';
 
 export const SORTS = {
@@ -198,6 +201,7 @@ export function renderLibrary(root) {
 
     clear(refs.actions,
         btn('', { icon: viewOf().view === 'grid' ? 'list' : 'grid', cls: 'ghost', title: '切换视图', onclick: () => { setView({ view: viewOf().view === 'grid' ? 'list' : 'grid' }); renderLibrary(root); } }),
+        list.length && !state.selecting ? btn('', { icon: 'dice', cls: 'ghost', title: '抽一张', onclick: () => openDraw(list) }) : null,
         aiReady() ? btn('', { icon: 'message', cls: 'ghost', title: 'AI 对话', onclick: () => openAiChat() }) : null,
         h('button', { class: `btn ghost icon ${fc ? 'has-dot' : ''}`, title: '筛选与排序', onclick: () => openFilters(root) }, icon('filter', { size: 17 })),
         btn(state.selecting ? '完成' : '', { icon: state.selecting ? null : 'checkSquare', cls: state.selecting ? 'primary sm' : 'ghost', title: '多选', onclick: () => { state.selecting = !state.selecting; state.selection.clear(); renderLibrary(root); } }),
@@ -351,15 +355,14 @@ function setFilter(root, patch) {
 function openFilters(root) {
     const s = sheet({ title: '筛选与排序', body: h('div') });
     let tagQ = '';
+    const tagUi = { rare: false, sort: 'count' };
     // 标签：点一下「要有」，再点「不要」，再点取消；可以同时选多个
     const tagSection = (tags) => {
-        const list = h('div', { class: 'opts tag-opts' });
+        const list = h('div');
+        const tools = h('div', { class: 'tag-tools' });
         const drawTags = () => {
-            const q = tagQ.trim().toLowerCase();
             const f = state.filter;
-            const shown = tags.filter(([t]) => !q || t.toLowerCase().includes(q) || f.tagsIn.includes(t) || f.tagsOut.includes(t));
-            const limit = q ? 300 : 80;
-            clear(list, shown.slice(0, limit).map(([t, n]) => {
+            const tagBtn = (t, n) => {
                 const st = f.tagsIn.includes(t) ? 'in' : f.tagsOut.includes(t) ? 'out' : '';
                 return h('button', { class: `opt tag-opt ${st ? `active ${st}` : ''}`, title: st === 'in' ? '再点一下改成「不要这个标签」' : st === 'out' ? '再点一下取消' : '点一下只看带这个标签的', onclick: () => {
                     f.tagsIn = f.tagsIn.filter((x) => x !== t);
@@ -367,18 +370,23 @@ function openFilters(root) {
                     if (!st) f.tagsIn.push(t); else if (st === 'in') f.tagsOut.push(t);
                     drawTags();
                     renderLibrary(root);
-                } }, st === 'in' ? icon('check', { size: 13, stroke: 3 }) : st === 'out' ? icon('minus', { size: 13, stroke: 3 }) : null, h('span', {}, t), h('span', { class: 'opt-n' }, n));
-            }), shown.length > limit ? h('span', { class: 'muted small' }, `还有 ${shown.length - limit} 个，输入文字筛选`) : null,
-            !shown.length ? h('span', { class: 'muted small' }, '没有匹配的标签') : null);
+                } }, st === 'in' ? icon('check', { size: 13, stroke: 3 }) : st === 'out' ? icon('minus', { size: 13, stroke: 3 }) : null, h('span', {}, t), n ? h('span', { class: 'opt-n' }, n) : null);
+            };
+            tagCloud(list, { tags, chip: tagBtn, q: tagQ, picked: new Set([...f.tagsIn, ...f.tagsOut]), ui: tagUi, redraw: drawTags });
+            const any = f.tagsIn.length || f.tagsOut.length;
+            clear(tools,
+                tags.length > 12 ? h('label', { class: 'search inline grow' }, icon('search', { size: 15 }), search) : h('span', { class: 'grow' }),
+                tags.length > 12 ? h('div', { class: 'seg tag-sort' }, [['count', '常用'], ['name', '名称']].map(([k, l]) => h('button', { class: `seg-item ${tagUi.sort === k ? 'active' : ''}`, onclick: () => { tagUi.sort = k; drawTags(); } }, l))) : null,
+                any ? btn('清除', { cls: 'sm ghost', onclick: () => { f.tagsIn = []; f.tagsOut = []; drawTags(); renderLibrary(root); } }) : null);
         };
+        const search = h('input', { class: 'input search-input', type: 'search', placeholder: `在 ${tags.length} 个标签里找`, value: tagQ, oninput: (e) => { tagQ = e.target.value; drawTags(); } });
         drawTags();
         return h('div', { class: 'form-group' },
-            h('div', { class: 'row-between' }, h('div', { class: 'form-label' }, `标签 · ${tags.length}`), h('span', { class: 'grow' }),
-                btn('管理标签', { cls: 'sm ghost', onclick: () => { s.close(); location.hash = '#/settings/tags'; } }),
-                state.filter.tagsIn.length || state.filter.tagsOut.length ? btn('清除', { cls: 'sm ghost', onclick: () => { state.filter.tagsIn = []; state.filter.tagsOut = []; drawTags(); renderLibrary(root); } }) : null),
-            tags.length > 12 ? h('label', { class: 'search inline' }, icon('search', { size: 15 }), h('input', { class: 'input search-input', placeholder: '找标签', value: tagQ, oninput: (e) => { tagQ = e.target.value; drawTags(); } })) : null,
-            list,
-            h('div', { class: 'muted small' }, '点一次：只看带这个标签的；再点一次：排除这个标签；再点取消。选多个时要同时满足。'));
+            h('div', { class: 'row-between' }, h('div', { class: 'form-label' }, `标签 · ${tags.length}`),
+                h('span', { class: 'muted small tag-hint' }, '点一次要有，再点排除，再点取消'), h('span', { class: 'grow' }),
+                btn('管理标签', { cls: 'sm ghost', onclick: () => { s.close(); location.hash = '#/settings/tags'; } })),
+            tools,
+            list);
     };
     const draw = () => {
         const opt = (active, label, onclick, ic) => h('button', { class: `opt ${active ? 'active' : ''}`, onclick: () => { onclick(); draw(); renderLibrary(root); } }, ic ? icon(ic, { size: 14 }) : null, label);
@@ -561,7 +569,8 @@ function batchMore(items, run) {
     const m = sheet({
         title: `已选 ${n} 项`,
         body: h('div', { class: 'menu' },
-            item('layers', '对比这两项', () => {
+            item('grid', '并排对比', () => openCompare(items), n < 2 || n > 3, n >= 2 && n <= 3 ? '' : '选中 2～3 项时可用'),
+            item('layers', '逐行对比这两项', () => {
                 const [a, b] = [...items].sort((x, y) => String(x.createdAt).localeCompare(String(y.createdAt)));
                 openDiff({ sha: pf(a).sha, name: pf(a).name, label: a.name }, { sha: pf(b).sha, name: pf(b).name, label: b.name }, { title: '对比两个条目' });
             }, !canDiff, n === 2 ? '' : '选中 2 项时可用'),
@@ -591,12 +600,13 @@ function batchPick(items, kind) {
     const label = (k) => (isTag ? k : collectionName(k));
     const has = (k) => items.filter((it) => it[kind].includes(k)).length;
     const keys = isTag
-        ? [...new Set([...items.flatMap((it) => it.tags), ...allTags().slice(0, 40).map(([t]) => t)])]
+        ? [...new Set([...items.flatMap((it) => it.tags), ...allTags().map(([t]) => t)])]
         : state.collections.map((c) => c.id);
     const orig = new Map(keys.map((k) => [k, has(k) === n ? 'all' : has(k) ? 'some' : 'none']));
     const cur = new Map(orig);
     let q = '';
-    const list = h('div', { class: 'opts tri-opts' });
+    const list = h('div', { class: isTag ? 'tri-opts' : 'opts tri-opts' });
+    const cloudUi = { rare: false, sort: 'count' };
     const input = h('input', { class: 'input', placeholder: isTag ? '找标签，或输入新标签后回车' : '找合集', oninput: (e) => { q = e.target.value; draw(); },
         onkeydown: (e) => {
             if (e.key !== 'Enter' || !isTag) return;
@@ -614,14 +624,22 @@ function batchPick(items, kind) {
     };
     const draw = () => {
         const ql = q.trim().toLowerCase();
-        const shown = keys.filter((k) => !ql || label(k).toLowerCase().includes(ql) || cur.get(k) !== orig.get(k));
-        clear(list, shown.map((k) => {
+        const chipEl = (k) => {
             const c = cur.get(k);
             const changed = c !== orig.get(k);
             return h('button', { class: `opt tri ${c} ${changed ? 'changed' : ''}`, onclick: () => { cur.set(k, next(k)); draw(); } },
                 c === 'all' ? icon('check', { size: 13, stroke: 3 }) : c === 'some' ? icon('minus', { size: 13, stroke: 3 }) : null,
                 h('span', {}, label(k)), c === 'some' ? h('span', { class: 'opt-n' }, `${has(k)}/${n}`) : null);
-        }), !shown.length ? h('span', { class: 'muted small' }, isTag ? '按回车添加为新标签' : '没有匹配的合集') : null);
+        };
+        if (isTag) {
+            // 标签多：这几项已经有的、刚改过的放在最上面，其余按分类（或常用 / 少用）收起来
+            const cnt = new Map(allTags());
+            tagCloud(list, { tags: keys.map((k) => [k, cnt.get(k) || 0]).sort((a, b) => b[1] - a[1]), chip: chipEl, q,
+                picked: new Set(keys.filter((k) => cur.get(k) !== 'none' || orig.get(k) !== 'none')), ui: cloudUi, redraw: draw, empty: '按回车添加为新标签' });
+            return;
+        }
+        const shown = keys.filter((k) => !ql || label(k).toLowerCase().includes(ql) || cur.get(k) !== orig.get(k));
+        clear(list, shown.map(chipEl), !shown.length ? h('span', { class: 'muted small' }, isTag ? '按回车添加为新标签' : '没有匹配的合集') : null);
     };
     draw();
     const s = sheet({

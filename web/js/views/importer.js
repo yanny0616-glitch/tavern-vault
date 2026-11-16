@@ -1,6 +1,6 @@
 // 添加资源：批量上传（文件 / 文件夹 / 压缩包）、链接导入、手动记录
 // 遇到同名条目时可以选择：存为新版本 / 另存为新条目 / 跳过，支持一键应用到全部
-import { h, clear, sheet, toast, icon, btn } from '../ui.js';
+import { h, clear, sheet, toast, icon, btn, fmtBytes } from '../ui.js';
 import { api } from '../api.js';
 import { state, TYPE_META, typeMeta } from '../state.js';
 import { openDetail } from './detail.js';
@@ -13,10 +13,10 @@ const PREF_KEY = 'tv_import_opts';
 const MATCH_LABEL = { ask: '每次询问', version: '自动存为新版本', new: '另存为新条目', skip: '跳过' };
 
 function loadPrefs() {
-    try { return { match: 'ask', zipCollection: true, folderCollection: true, ...JSON.parse(localStorage.getItem(PREF_KEY) || '{}') }; } catch { return { match: 'ask', zipCollection: true, folderCollection: true }; }
+    try { return { match: 'ask', zipCollection: true, folderCollection: true, review: false, ...JSON.parse(localStorage.getItem(PREF_KEY) || '{}') }; } catch { return { match: 'ask', zipCollection: true, folderCollection: true }; }
 }
 function savePrefs(p) {
-    try { localStorage.setItem(PREF_KEY, JSON.stringify({ match: p.match, zipCollection: p.zipCollection, folderCollection: p.folderCollection })); } catch { /* ignore */ }
+    try { localStorage.setItem(PREF_KEY, JSON.stringify({ match: p.match, zipCollection: p.zipCollection, folderCollection: p.folderCollection, review: p.review })); } catch { /* ignore */ }
 }
 
 const STATUS = {
@@ -25,6 +25,7 @@ const STATUS = {
     duplicate: { text: '已存在', cls: '' },
     skipped: { text: '已跳过', cls: '' },
     conflict: { text: '同名条目', cls: 'warn' },
+    review: { text: '待确认', cls: 'info' },
     error: { text: '失败', cls: 'danger' },
 };
 
@@ -62,6 +63,7 @@ export function openImporter(initialFiles = []) {
                 h('div', { class: 'field' }, h('label', {}, '加入合集'), colSel),
                 h('div', { class: 'field wide' }, h('label', {}, '统一添加标签'), tagInput)),
             h('div', { class: 'stack-s' },
+                check('review', '先列出清单，确认后再导入（可以逐个改类型、移出不要的）'),
                 check('zipCollection', '压缩包：按包名自动建合集'),
                 check('folderCollection', '文件夹：按文件夹名自动建合集'))));
 
@@ -72,7 +74,7 @@ export function openImporter(initialFiles = []) {
     const resultBox = h('div', { class: 'results' }, summaryEl, bulkEl, listEl);
 
     const counts = () => {
-        const c = { total: rows.length, pending: 0, created: 0, version: 0, duplicate: 0, skipped: 0, conflict: 0, error: 0 };
+        const c = { total: rows.length, pending: 0, created: 0, version: 0, duplicate: 0, skipped: 0, conflict: 0, review: 0, error: 0 };
         for (const r of rows) {
             if (r.state === 'queued' || r.state === 'uploading') c.pending++;
             else c[r.status] = (c[r.status] || 0) + 1;
@@ -87,19 +89,28 @@ export function openImporter(initialFiles = []) {
         const done = c.total - c.pending;
         const parts = [
             c.created && `新增 ${c.created}`, c.version && `新版本 ${c.version}`, c.duplicate && `已存在 ${c.duplicate}`,
-            c.skipped && `跳过 ${c.skipped}`, c.conflict && `待决定 ${c.conflict}`, c.error && `失败 ${c.error}`,
+            c.skipped && `跳过 ${c.skipped}`, c.review && `待确认 ${c.review}`, c.conflict && `待决定 ${c.conflict}`, c.error && `失败 ${c.error}`,
         ].filter(Boolean);
         clear(summaryEl,
             h('div', { class: 'import-summary-top' },
-                h('b', {}, c.pending ? `正在导入 ${done} / ${c.total}` : `完成 ${c.total} 项`),
+                h('b', {}, c.pending ? `${c.review ? '正在检查' : '正在导入'} ${done} / ${c.total}` : c.review ? `已检查 ${c.total} 项，还没有导入` : `完成 ${c.total} 项`),
                 h('span', { class: 'grow' }),
                 c.error && !c.pending ? btn('重试失败项', { icon: 'refresh', cls: 'sm', onclick: retryFailed }) : null),
             h('div', { class: 'progress' }, h('i', { style: { width: `${c.total ? (done / c.total) * 100 : 0}%` } })),
             parts.length ? h('div', { class: 'muted small' }, parts.join(' · ')) : null);
         // 批量处理冲突
-        bulkEl.hidden = !c.conflict;
+        bulkEl.hidden = !c.conflict && !c.review;
+        clear(bulkEl);
+        // 清单模式：新文件等确认。同名的在各自那一行决定
+        if (c.review) {
+            bulkEl.append(
+                h('div', { class: 'import-bulk-text' }, icon('list', { size: 16 }), h('span', {}, `${c.review} 个新文件待确认。可以在每一行改类型，或者移出不要的`)),
+                h('div', { class: 'row-actions wrap' },
+                    btn(`导入这 ${c.review} 项`, { cls: 'sm primary', disabled: c.pending > 0, onclick: () => resolveAll('new', 'review') }),
+                    btn('全部移出', { cls: 'sm ghost', onclick: () => resolveAll('skip', 'review') })));
+        }
         if (c.conflict) {
-            clear(bulkEl,
+            bulkEl.append(
                 h('div', { class: 'import-bulk-text' }, icon('layers', { size: 16 }), h('span', {}, `${c.conflict} 项和已有条目同名，可能是新版本`)),
                 h('div', { class: 'row-actions wrap' },
                     btn('全部存为新版本', { cls: 'sm primary', onclick: () => resolveAll('version') }),
@@ -114,7 +125,7 @@ export function openImporter(initialFiles = []) {
 
     function rowEl(r) {
         const it = r.result?.item;
-        const tm = typeMeta(it?.type || r.result?.detected?.type);
+        const tm = typeMeta(r.status === 'review' ? r.opts?.type || r.result.detected.type : it?.type || r.result?.detected?.type);
         const st = r.state === 'done' ? STATUS[r.status] : null;
         let sub = r.path && r.path !== r.label ? r.path : '';
         if (r.state === 'uploading') sub = r.progress != null && r.progress < 1 ? `上传中 ${Math.round(r.progress * 100)}%` : '处理中…';
@@ -135,6 +146,15 @@ export function openImporter(initialFiles = []) {
                 btn('另存', { cls: 'sm', onclick: (e) => { e.stopPropagation(); resolveOne(r, 'new'); } }),
                 btn('跳过', { cls: 'sm ghost', onclick: (e) => { e.stopPropagation(); resolveOne(r, 'skip'); } }));
             sub = `${sub} · 已有：${cand.name}${cand.version ? ` v${cand.version}` : ''}`;
+        } else if (r.status === 'review') {
+            // 清单里的新文件：可以改类型，或者移出这一批
+            const det = r.result.detected;
+            const cur = r.opts?.type || det.type;
+            const sel = h('select', { class: 'select sm review-type', title: '导入成什么类型', onclick: (e) => e.stopPropagation(), onchange: () => { r.opts = { ...r.opts, type: sel.value }; draw(r); } },
+                Object.entries(TYPE_META).map(([k, v]) => h('option', { value: k, selected: k === cur }, v.label)));
+            right = h('div', { class: 'row-actions wrap conflict-acts' }, sel,
+                btn('移出', { cls: 'sm ghost', title: '这一项不导入', onclick: (e) => { e.stopPropagation(); resolveOne(r, 'skip'); } }));
+            sub = [cur !== det.type ? `识别为 ${typeMeta(det.type).label}，改成 ${typeMeta(cur).label}` : `识别为 ${typeMeta(det.type).label}`, det.author, det.version && `v${String(det.version).replace(/^v/i, '')}`, r.size ? fmtBytes(r.size) : ''].filter(Boolean).join(' · ');
         } else if (r.status === 'error' && r.retry) {
             right = h('div', { class: 'row-actions' }, h('span', { class: 'chip-s warn' }, '失败'), btn('', { icon: 'refresh', cls: 'sm ghost', title: '重试', onclick: (e) => { e.stopPropagation(); r.retry(); } }));
         } else if (r.status === 'duplicate') {
@@ -146,7 +166,7 @@ export function openImporter(initialFiles = []) {
         return h('div', { class: `row-item import-row ${r.status === 'conflict' ? 'is-conflict' : ''}`, style: { '--tc': tm.color }, onclick: () => openable && openDetail(it.id) },
             h('div', { class: 'row-thumb' }, it?.cover && r.status !== 'conflict' ? coverImg(it) : icon(r.isZip && !it ? 'archive' : tm.icon, { size: 20 })),
             h('div', { class: 'row-main' },
-                h('div', { class: 'row-title' }, h('span', {}, r.status === 'conflict' ? r.result.detected.name : it?.name || r.label)),
+                h('div', { class: 'row-title' }, h('span', {}, r.status === 'conflict' || r.status === 'review' ? r.result.detected.name || r.label : it?.name || r.label)),
                 h('div', { class: 'row-sub' }, h('span', {}, sub))),
             right);
     }
@@ -164,7 +184,7 @@ export function openImporter(initialFiles = []) {
         r.state = 'done';
         draw(r);
         // 设置里选了同名默认处理方式，就不再逐个询问
-        if (r.status === 'conflict' && ['version', 'new', 'skip'].includes(state.prefs.conflict)) resolveOne(r, state.prefs.conflict);
+        if (r.status === 'conflict' && !r.opts?.review && ['version', 'new', 'skip'].includes(state.prefs.conflict)) resolveOne(r, state.prefs.conflict);
     }
 
     // ---------- 上传 ----------
@@ -215,14 +235,14 @@ export function openImporter(initialFiles = []) {
             child.el = rowEl(child);
             anchor.after(child.el);
             anchor = child.el;
-            if (child.status === 'conflict' && ['version', 'new', 'skip'].includes(state.prefs.conflict)) resolveOne(child, state.prefs.conflict);
+            if (child.status === 'conflict' && !child.opts?.review && ['version', 'new', 'skip'].includes(state.prefs.conflict)) resolveOne(child, state.prefs.conflict);
         }
         if (!n) el.append(h('span', { class: 'muted' }, '（没有可导入的文件）'));
         drawSummary();
     }
 
     function baseOpts() {
-        return { ...opts, match: prefs.match };
+        return { ...opts, match: prefs.match, review: Boolean(prefs.review) };
     }
 
     function addFiles(list) {
@@ -274,8 +294,8 @@ export function openImporter(initialFiles = []) {
         }
     }
 
-    async function resolveAll(action) {
-        const list = rows.filter((r) => r.status === 'conflict');
+    async function resolveAll(action, status = 'conflict') {
+        const list = rows.filter((r) => r.status === status);
         const n = concurrency();
         for (let i = 0; i < list.length; i += n) await Promise.all(list.slice(i, i + n).map((r) => resolveOne(r, action)));
         toast(`已处理 ${list.length} 项`, 'ok');

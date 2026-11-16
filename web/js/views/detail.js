@@ -14,6 +14,7 @@ import { coverImg, coverSrc } from '../thumbs.js';
 import { runRegex, vetScripts, applyScripts, displayScripts, looksHtml, stView, hasHtmlFence, hasScript, PLACEMENT } from '../stview.js';
 import { cardPng } from '../pngcard.js';
 import { discordAppUrl, sourceLinkProps } from '../source-links.js';
+import { tagCloud } from '../tagcloud.js';
 import { entriesOf, entryKeys, entryKeys2, effectivePrompts, presetRegex } from '../cardfmt.js';
 import { inTavern } from '../tavern-index.js';
 
@@ -443,6 +444,8 @@ export function openDetail(id, { seq = null, onLeave = null, src = null } = {}) 
                 aiReady() && !it.deletedAt ? item('sparkles', 'AI 整理（标签、简介、字段）', () => startOrganize([it.id])) : null,
                 aiReady() && !it.deletedAt ? item('message', '问 AI（把这一项发给 AI 一起看）', () => openAiChat({ refs: [it.id] })) : null,
                 it.type === 'character' && p && !it.deletedAt ? item('user', '编辑角色卡内容（保存为新版本）', () => withCard((c) => editCard(it, c))) : null,
+                it.type === 'character' && p && !it.deletedAt ? item('book', '编辑内嵌世界书（保存为新版本）', () => withCard((c) => editBook(it, c))) : null,
+                it.type === 'worldbook' && p && !it.deletedAt ? item('book', '编辑世界书条目（保存为新版本）', async () => { if (!content) await loadContent(it); if (content?.kind === 'json') editBook(it, content); else toast('读取世界书失败', 'err'); }) : null,
                 it.type === 'character' && p && it.cover ? item('image', '导出 PNG 角色卡（用当前封面）', () => exportPng(it)) : null,
                 it.type === 'character' && p ? item('braces', '导出角色卡 JSON', () => withCard((c) => downloadBlob(new Blob([JSON.stringify(c.card, null, 2)], { type: 'application/json' }), `${c.data?.name || it.name}.json`))) : null,
                 p ? item('download', '下载当前文件', () => downloadUrl(api.fileUrl(p.sha, p.name, true, it.id), p.name)) : null,
@@ -530,6 +533,7 @@ export function openDetail(id, { seq = null, onLeave = null, src = null } = {}) 
             !src ? aiStamp(it, !it.deletedAt ? () => editItem(it, 'ai') : null) : null,
             it.type === 'character' && hasFiles(it) ? greetingCard(it) : null,
             quickInfo(it),
+            !src && it.type === 'character' ? chatsOf(it) : null,
             note && !(desc && note.startsWith(desc)) ? section('作者的话', 'feather', clampBox((t) => h('blockquote', { class: 'quote' }, t), note, '作者的话')) : null,
             peek(it),
             !src ? infoPanel(it) : null,
@@ -685,10 +689,26 @@ export function openDetail(id, { seq = null, onLeave = null, src = null } = {}) 
         } });
         const suggest = h('div', { class: 'tag-suggest' });
         const addTags = (v) => { for (const t of String(v).split(/[,，]/).map((x) => x.trim()).filter(Boolean)) if (!d.tags.includes(t)) d.tags.push(t); mark(); drawTags(); tagInput.focus(); };
+        /** 从全部标签里挑：按分类（没建分类就按常用 / 少用）列出来，点一下加上，再点去掉 */
+        const pickFromAll = () => {
+            const ui = { rare: false, sort: 'count' };
+            let q = '';
+            const box = h('div');
+            const drawAll = () => tagCloud(box, { tags: allTags(), q, picked: new Set(d.tags.filter((t) => allTags().some(([x]) => x === t))), ui, redraw: drawAll,
+                chip: (t, n) => h('button', { class: `opt tag-opt ${d.tags.includes(t) ? 'active in' : ''}`, onclick: () => {
+                    if (d.tags.includes(t)) d.tags = d.tags.filter((x) => x !== t); else d.tags.push(t);
+                    mark(); drawTags(); drawAll();
+                } }, d.tags.includes(t) ? icon('check', { size: 13, stroke: 3 }) : null, h('span', {}, t), h('span', { class: 'opt-n' }, n)) });
+            const find = h('input', { class: 'input search-input', type: 'search', placeholder: '找标签', oninput: () => { q = find.value; drawAll(); } });
+            const ps = sheet({ title: '选择标签', full: true, body: h('div', { class: 'stack-s' }, h('label', { class: 'search inline' }, icon('search', { size: 15 }), find), box),
+                foot: [btn('完成', { cls: 'primary', onclick: () => ps.close() })] });
+            drawAll();
+        };
         const drawTags = () => {
             clear(tagBox, d.tags.map((t) => h('span', { class: 'tag' }, t, h('button', { class: 'tag-x', title: '移除', onclick: () => { d.tags = d.tags.filter((x) => x !== t); mark(); drawTags(); } }, icon('x', { size: 11 })))), tagInput);
             const pool = allTags().filter(([t]) => !d.tags.includes(t)).slice(0, 14);
-            clear(suggest, pool.length ? [h('span', { class: 'muted small' }, '常用：'), pool.map(([t]) => h('button', { class: 'tag-sug', onclick: () => addTags(t) }, icon('plus', { size: 10 }), t))] : null);
+            clear(suggest, pool.length ? [h('span', { class: 'muted small' }, '常用：'), pool.map(([t]) => h('button', { class: 'tag-sug', onclick: () => addTags(t) }, icon('plus', { size: 10 }), t))] : null,
+                allTags().length > 14 ? h('button', { class: 'tag-sug', onclick: pickFromAll }, icon('tag', { size: 10 }), '全部标签…') : null);
         };
         drawTags();
 
@@ -757,6 +777,89 @@ export function openDetail(id, { seq = null, onLeave = null, src = null } = {}) 
         if (target) setTimeout(() => { target.focus(); target.scrollIntoView({ block: 'center' }); }, 120);
     }
 
+    // ---------- 聊天记录 ----------
+    /** 角色卡的介绍页：绑定到这张卡的聊天记录 */
+    function chatsOf(it) {
+        const chats = state.items.filter((x) => x.type === 'chat' && !x.deletedAt && x.chatOf === it.id).sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
+        if (!chats.length) return null;
+        return section(`聊天记录 · ${chats.length}`, 'message', h('div', { class: 'rows' }, chats.map((x) => h('button', { class: 'row-item chat-link', onclick: () => openDetail(x.id) },
+            h('div', { class: 'row-main' }, h('div', { class: 'row-title' }, h('span', {}, x.name)),
+                h('div', { class: 'row-sub' }, h('span', {}, [x.meta?.messages ? `${x.meta.messages} 条消息` : '', fmtDate(x.createdAt)].filter(Boolean).join(' · ')))),
+            icon('chevronRight', { size: 16, cls: 'row-chev' })))));
+    }
+    /** 选一张角色卡来绑定：名字和聊天记录里的角色名一样的排最前面 */
+    function pickCardFor(it, charName) {
+        let q = '';
+        const list = h('div', { class: 'rows' });
+        const same = (x) => x.name.trim().toLowerCase() === String(charName || '').trim().toLowerCase();
+        const cards = state.items.filter((x) => x.type === 'character' && !x.deletedAt).sort((a, b) => Number(same(b)) - Number(same(a)) || a.name.localeCompare(b.name, 'zh'));
+        const bind = async (card) => {
+            try { await api.patch(`/api/items/${it.id}`, { chatOf: card.id }); toast(`已绑定到「${card.name}」`, 'ok'); ps.close(); } catch (e) { toast(e.message, 'err'); }
+        };
+        const draw = () => {
+            const k = q.trim().toLowerCase();
+            const shown = cards.filter((x) => !k || x.name.toLowerCase().includes(k)).slice(0, 60);
+            clear(list, shown.length ? shown.map((x) => h('button', { class: 'row-item', onclick: () => bind(x) },
+                h('div', { class: 'row-thumb' }, x.cover ? coverImg(x) : icon('user', { size: 18 })),
+                h('div', { class: 'row-main' }, h('div', { class: 'row-title' }, h('span', {}, x.name), same(x) ? h('span', { class: 'chip-s info' }, '同名') : null),
+                    h('div', { class: 'row-sub' }, h('span', {}, x.author || ''))))) : h('div', { class: 'muted small' }, '没有匹配的角色卡'));
+        };
+        const find = h('input', { class: 'input search-input', type: 'search', placeholder: '找角色卡', oninput: () => { q = find.value; draw(); } });
+        const ps = sheet({ title: '绑定到哪张角色卡', full: true, body: h('div', { class: 'stack-s' }, h('label', { class: 'search inline' }, icon('search', { size: 15 }), find), list) });
+        draw();
+    }
+    /**
+     * 聊天记录阅读：酒馆导出的 .jsonl，一行一条消息。显示成一来一回的气泡，一次显示一段，往下再加载。
+     * 读不出消息的（不是这种格式）就原样显示文字。
+     */
+    function chatView(it, text) {
+        const msgs = [];
+        let head = {};
+        for (const line of String(text).split('\n')) {
+            const t = line.trim();
+            if (!t) continue;
+            let o;
+            try { o = JSON.parse(t); } catch { continue; }
+            if (!o || typeof o !== 'object') continue;
+            if (typeof o.mes === 'string') msgs.push(o);
+            else if (!msgs.length && ('character_name' in o || 'user_name' in o || 'chat_metadata' in o)) head = o;
+        }
+        if (!msgs.length) return h('pre', { class: 'code' }, String(text).slice(0, 200000));
+        const charName = String(head.character_name || msgs.find((m) => !m.is_user && !m.is_system)?.name || it.meta?.character || '');
+        const n = { char: charName || '角色', user: String(head.user_name || msgs.find((m) => m.is_user)?.name || userLabel()) };
+        const card = it.chatOf ? state.byId.get(it.chatOf) : null;
+        const PAGE = 80;
+        let shown = Math.min(PAGE, msgs.length);
+        const list = h('div', { class: 'dlg chat-log' });
+        const more = h('div', { class: 'chat-more' });
+        const bubble = (m) => {
+            const side = m.is_system ? 'note' : m.is_user ? 'user' : 'char';
+            const when = String(m.send_date || '').slice(0, 40);
+            return h('div', { class: `dlg-turn ${side}` },
+                h('span', { class: 'dlg-who' }, side === 'note' ? '系统' : String(m.name || (side === 'user' ? n.user : n.char)), when ? h('span', { class: 'chat-when' }, when) : null),
+                richText(m.mes, n));
+        };
+        const draw = () => {
+            clear(list, msgs.slice(0, shown).map(bubble));
+            clear(more, shown < msgs.length ? [
+                h('span', { class: 'muted small' }, `已显示 ${shown} / ${msgs.length} 条`),
+                btn(`再显示 ${Math.min(PAGE, msgs.length - shown)} 条`, { cls: 'sm', onclick: () => { shown = Math.min(msgs.length, shown + PAGE); draw(); } }),
+                btn('全部显示', { cls: 'sm ghost', onclick: () => { shown = msgs.length; draw(); } })] : h('span', { class: 'muted small' }, `共 ${msgs.length} 条，到底了`));
+        };
+        draw();
+        const canEdit = !src && !it.deletedAt;
+        const bindRow = h('div', { class: 'chat-bind' },
+            icon('user', { size: 15 }),
+            card && !card.deletedAt
+                ? [h('span', { class: 'muted small' }, '角色卡'), h('button', { class: 'chat-card', onclick: () => openDetail(card.id) }, card.name, icon('chevronRight', { size: 13 })), h('span', { class: 'grow' }),
+                    canEdit ? btn('解绑', { cls: 'sm ghost', onclick: async () => { try { await api.patch(`/api/items/${it.id}`, { chatOf: '' }); toast('已解绑', 'ok'); } catch (e) { toast(e.message, 'err'); } } }) : null]
+                : [h('span', { class: 'muted small grow' }, charName ? `和「${charName}」的聊天，还没绑定角色卡` : '还没绑定角色卡'),
+                    canEdit ? btn('绑定角色卡', { cls: 'sm', onclick: () => pickCardFor(it, charName) }) : null]);
+        return h('div', { class: 'stack' }, bindRow,
+            String(text).length >= 2 * 1024 * 1024 ? h('div', { class: 'note' }, icon('info', { size: 15 }), '这份聊天记录很长，这里只显示前面一部分；完整内容请在「文件」页下载。') : null,
+            list, more);
+    }
+
     // ---------- 内容 ----------
     function contentTab(it) {
         if (!hasFiles(it)) return emptyState('file', '没有文件', '这个条目只是一条记录，可以在「文件」页补充上传');
@@ -764,9 +867,12 @@ export function openDetail(id, { seq = null, onLeave = null, src = null } = {}) 
         if (content.kind === 'error') return emptyState('alert', '加载失败', content.error);
         if (content.kind === 'card') return cardView(it, content);
         if (content.kind === 'image') return h('img', { class: 'content-img', src: api.fileUrl(content.file.sha), alt: '', onclick: () => lightbox(api.fileUrl(content.file.sha)) });
+        if (it.type === 'chat' && content.kind === 'text') return chatView(it, content.text);
         if (content.kind === 'json') {
             const d = content.data;
-            if (it.type === 'worldbook') return worldbookView(d, names(it));
+            if (it.type === 'worldbook') return src || it.deletedAt ? worldbookView(d, names(it)) : h('div', {},
+                h('div', { class: 'reader-tools' }, h('span', { class: 'grow' }), btn('编辑条目', { icon: 'pencil', cls: 'sm', onclick: () => editBook(it, content) })),
+                worldbookView(d, names(it)));
             if (it.type === 'preset' && Array.isArray(d.prompts)) return presetView(d, it);
             if (it.type === 'regex') return regexView(Array.isArray(d) ? d : [d], { n: names(it) });
             if (it.type === 'quickreply' && Array.isArray(d.qrList)) return qrView(d);
@@ -817,7 +923,7 @@ export function openDetail(id, { seq = null, onLeave = null, src = null } = {}) 
         const bookN = entriesOf(book).length;
         // 拆出来单独用：存成卡匣里的条目，或者下载成文件。预览（不在卡匣里）和回收站里的不提供
         const takeOut = (part, what) => (src || it.deletedAt ? null : btn('拆出', { icon: 'external', cls: 'sm ghost', title: `把${what}拆出来单独使用`, onclick: () => extractFromCard(it, part, what) }));
-        if (bookN) secs.push({ key: 'book', title: '内嵌世界书', meta: [String(book.name || '').trim(), `${bookN} 条`].filter(Boolean).join(' · '), action: takeOut('book', '内嵌世界书'), node: worldbookView(book, n) });
+        if (bookN) secs.push({ key: 'book', title: '内嵌世界书', meta: [String(book.name || '').trim(), `${bookN} 条`].filter(Boolean).join(' · '), action: src || it.deletedAt ? null : h('span', { class: 'row-actions' }, btn('编辑', { icon: 'pencil', cls: 'sm ghost', onclick: () => editBook(it, c) }), takeOut('book', '内嵌世界书')), node: worldbookView(book, n) });
         if (regex.length) secs.push({ key: 'regex', title: '内嵌正则', meta: `${regex.length} 条`, action: takeOut('regex', '内嵌正则'), node: regexView(regex, { sample: String(greetings[0] || ''), n }) });
         const anchor = (k) => `sec-${id}-${k}`;
         return h('div', { class: 'reader' },
@@ -955,6 +1061,144 @@ export function openDetail(id, { seq = null, onLeave = null, src = null } = {}) 
     const codeView = (d) => h('pre', { class: 'code' }, JSON.stringify(d, null, 2));
 
     // ---------- 编辑角色卡 ----------
+    /**
+     * 编辑角色卡里内嵌的世界书：增删条目、改标题 / 关键词 / 内容、开关、调整先后。保存后生成新版本。
+     * 卡里的条目有两种写法（keys / enabled / insertion_order，或者 key / disable / order），原来用哪种就写回哪种，别的字段原样保留。
+     */
+    function editBook(it, c) {
+        // 角色卡：改 data.character_book；世界书文件：整份就是世界书
+        const inCard = c.kind === 'card';
+        const d = structuredClone(c.data || {});
+        const book = !inCard ? d : d.character_book && typeof d.character_book === 'object' ? d.character_book : { name: '', entries: [], extensions: {} };
+        const asMap = book.entries && !Array.isArray(book.entries) && typeof book.entries === 'object';
+        const list = entriesOf(book).filter((e) => e && typeof e === 'object').map((e) => structuredClone(e));
+        const stStyle = (e) => 'key' in e && !('keys' in e);
+        const get = {
+            title: (e) => String(e.comment ?? e.name ?? ''),
+            on: (e) => ('disable' in e ? !e.disable : e.enabled !== false),
+            order: (e) => Number(('insertion_order' in e ? e.insertion_order : e.order) ?? 100) || 0,
+        };
+        const set = {
+            title: (e, v) => { e.comment = v; if ('name' in e) e.name = v; },
+            keys: (e, v) => { if (stStyle(e)) e.key = v; else e.keys = v; },
+            keys2: (e, v) => { if ('keysecondary' in e) e.keysecondary = v; else e.secondary_keys = v; },
+            on: (e, v) => { if ('disable' in e) e.disable = !v; else e.enabled = v; },
+            order: (e, v) => { if ('insertion_order' in e || !('order' in e)) e.insertion_order = v; else e.order = v; },
+        };
+        const blank = () => {
+            const like = list[0];
+            const ids = list.map((e) => Number(e.id ?? e.uid)).filter(Number.isFinite);
+            const nextId = ids.length ? Math.max(...ids) + 1 : list.length;
+            return (like ? stStyle(like) : !inCard)
+                ? { uid: nextId, key: [], keysecondary: [], comment: '', content: '', constant: false, selective: true, order: 100, position: 0, disable: false }
+                : { id: nextId, keys: [], secondary_keys: [], comment: '', content: '', constant: false, selective: true, insertion_order: 100, enabled: true, position: 'before_char', extensions: {} };
+        };
+        const splitInput = (v) => v.split(/[,，]/).map((x) => x.trim()).filter(Boolean);
+        const snap = () => JSON.stringify([nameInput.value, list]);
+        const openSet = new Set();
+        const nameInput = h('input', { class: 'input', value: String(book.name || ''), placeholder: '世界书名称（可选）' });
+        const box = h('div', { class: 'book-edit' });
+        const count = h('span', { class: 'sub-label grow' });
+        const move = (i, dlt) => { [list[i], list[i + dlt]] = [list[i + dlt], list[i]]; draw(); };
+        function draw() {
+            count.textContent = `${list.length} 个条目 · ${list.filter(get.on).length} 个启用`;
+            clear(box, list.length ? list.map((e, i) => {
+                const open = openSet.has(e);
+                const keys = entryKeys(e);
+                const head = h('div', { class: 'book-edit-head' },
+                    h('button', { class: 'book-edit-toggle', title: open ? '收起' : '展开编辑', onclick: () => { if (open) openSet.delete(e); else openSet.add(e); draw(); } },
+                        icon(open ? 'chevronDown' : 'chevronRight', { size: 14 }),
+                        h('span', { class: 'book-edit-title' }, get.title(e) || keys[0] || `条目 ${i + 1}`),
+                        e.constant ? h('span', { class: 'chip-s info' }, '常驻') : null,
+                        keys.length ? h('span', { class: 'muted small book-edit-keys' }, keys.join('、')) : null),
+                    switchEl(get.on(e), (v) => { set.on(e, v); draw(); }),
+                    btn('', { icon: 'arrowUp', cls: 'sm ghost icon', title: '上移', disabled: i === 0, onclick: () => move(i, -1) }),
+                    btn('', { icon: 'arrowDown', cls: 'sm ghost icon', title: '下移', disabled: i === list.length - 1, onclick: () => move(i, 1) }),
+                    btn('', { icon: 'trash', cls: 'sm ghost icon danger', title: '删除这个条目', onclick: () => { list.splice(i, 1); openSet.delete(e); draw(); } }));
+                if (!open) return h('div', { class: `book-edit-item ${get.on(e) ? '' : 'off'}` }, head);
+                const field = (label, node, wide = true) => h('div', { class: `field ${wide ? 'wide' : ''}` }, h('label', {}, label), node);
+                return h('div', { class: `book-edit-item open ${get.on(e) ? '' : 'off'}` }, head, h('div', { class: 'fields' },
+                    field('标题', h('input', { class: 'input', value: get.title(e), placeholder: '给自己看的名字', oninput: (ev) => set.title(e, ev.target.value) })),
+                    field('关键词', h('input', { class: 'input', value: keys.join(', '), placeholder: '逗号分隔；聊天里出现任意一个就触发', oninput: (ev) => set.keys(e, splitInput(ev.target.value)) })),
+                    field('次要关键词', h('input', { class: 'input', value: entryKeys2(e).join(', '), placeholder: '可选，逗号分隔', oninput: (ev) => set.keys2(e, splitInput(ev.target.value)) })),
+                    field('内容', h('textarea', { class: 'textarea', value: String(e.content ?? ''), style: { minHeight: '160px' }, oninput: (ev) => { e.content = ev.target.value; } })),
+                    field('顺序', h('input', { class: 'input', type: 'number', value: get.order(e), title: '数字大的排在后面插入', oninput: (ev) => set.order(e, Number(ev.target.value) || 0) }), false),
+                    h('div', { class: 'field' }, h('label', {}, '常驻（不用关键词，一直生效）'), switchEl(Boolean(e.constant), (v) => { e.constant = v; draw(); }))));
+            }) : h('div', { class: 'muted small' }, '还没有条目。'));
+        }
+        const add = () => { const e = blank(); list.push(e); openSet.add(e); draw(); box.lastElementChild?.scrollIntoView({ block: 'nearest' }); };
+        let initial = '';
+        // 防丢稿：改动随手存成草稿（只在这台设备的浏览器里），意外关掉下次打开可以恢复
+        const baseSha = (it.files.find((f) => f.primary) || it.files[0])?.sha || '';
+        const draftKey = `tv_draft_book_${id}_${baseSha.slice(0, 16)}`;
+        const dropDraft = () => { try { localStorage.removeItem(draftKey); } catch { /* ignore */ } };
+        const saveDraft = debounce(() => {
+            try { const s = snap(); if (s === initial) localStorage.removeItem(draftKey); else localStorage.setItem(draftKey, JSON.stringify({ at: Date.now(), s })); } catch { /* 存不下就算了 */ }
+        }, 500);
+        const es = sheet({
+            title: `编辑世界书 · ${(inCard && d.name) || it.name}`, full: true,
+            beforeClose: async () => {
+                if (snap() === initial) { dropDraft(); return true; }
+                const ok = await confirmDialog('有还没保存的修改，确定放弃？', { ok: '放弃修改', danger: true });
+                if (ok) dropDraft();
+                return ok;
+            },
+            body: h('div', { class: 'stack' },
+                h('div', { class: 'note' }, icon('info', { size: 15 }), '保存后生成新版本，旧版本保留在「文件」页，可随时切回。上下箭头调整条目的先后。'),
+                inCard ? h('div', { class: 'field wide' }, h('label', {}, '世界书名称'), nameInput) : null,
+                h('div', { class: 'toolbar-row' }, count, btn('添加条目', { icon: 'plus', cls: 'sm', onclick: add })),
+                box),
+            foot: [
+                btn('取消', { onclick: () => es.tryClose() }),
+                btn('保存', { icon: 'check', cls: 'primary', onclick: async (ev) => {
+                    const b = ev.currentTarget;
+                    if (snap() === initial) { es.close(); return; }
+                    b.disabled = true;
+                    // 有「显示顺序」的按现在的先后重排
+                    list.forEach((e, i) => {
+                        if (e.extensions && typeof e.extensions === 'object' && 'display_index' in e.extensions) e.extensions.display_index = i;
+                        if ('displayIndex' in e) e.displayIndex = i;
+                    });
+                    const entries = asMap ? Object.fromEntries(list.map((e, i) => [i, e])) : list;
+                    try {
+                        if (inCard) {
+                            const next = list.length || nameInput.value.trim() || d.character_book ? { ...book, name: nameInput.value.trim(), entries } : undefined;
+                            if (next) d.character_book = next; else delete d.character_book;
+                            await api.put(`/api/items/${id}/card`, { card: { ...c.card, data: d } });
+                        } else {
+                            // 世界书文件的条目用 uid 当键；原来是数组的保持数组
+                            const out = asMap || !Array.isArray(book.entries) ? Object.fromEntries(list.map((e) => [e.uid ?? e.id ?? list.indexOf(e), e])) : list;
+                            await api.put(`/api/items/${id}/json`, { data: { ...book, entries: out } });
+                        }
+                        toast('已保存为新版本', 'ok');
+                        dropDraft();
+                        initial = snap();
+                        content = null;
+                        es.close();
+                    } catch (err) { toast(err.message, 'err'); b.disabled = false; }
+                } }),
+            ],
+        });
+        draw();
+        initial = snap();
+        es.body.addEventListener('input', saveDraft);
+        es.body.addEventListener('click', () => setTimeout(saveDraft, 0)); // 增删、开关、移动
+        let draft = null;
+        try { draft = JSON.parse(localStorage.getItem(draftKey) || 'null'); } catch { /* ignore */ }
+        if (draft?.s && draft.s !== initial) {
+            confirmDialog(`上次编辑这本世界书时有没保存的修改（${fmtDate(new Date(draft.at).toISOString(), true)}），要恢复吗？`, { ok: '恢复', title: '恢复草稿' }).then((ok) => {
+                if (!ok) { dropDraft(); return; }
+                try {
+                    const [name, saved] = JSON.parse(draft.s);
+                    nameInput.value = name;
+                    list.splice(0, list.length, ...saved);
+                    openSet.clear();
+                    draw();
+                } catch { dropDraft(); }
+            });
+        }
+    }
+
     function editCard(it, c) {
         const d = structuredClone(c.data || {});
         const FIELDS = [
