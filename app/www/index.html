@@ -118,7 +118,7 @@
   function connectSaved() {
     $('form').hidden = true;
     $('retry').hidden = true;
-    $('sub').textContent = saved.replace(/^https?:\/\//, '');
+    $('sub').textContent = '你的卡片收藏';
     say('正在连接…');
     check(saved).then(function () { open(saved); }, function (e) {
       say(e.message, true);
