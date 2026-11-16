@@ -207,6 +207,33 @@ export function findAllByName(type, name) {
     return n ? live().filter((i) => i.type === type && norm(i.name) === n) : [];
 }
 
+/**
+ * 这份聊天记录像是哪张角色卡的：按记录里的角色名找同名的卡。
+ * 记录里没写角色名时，用文件名「角色名 - 日期」前面那一段猜。
+ */
+export function chatCardGuess(it) {
+    const name = String(it?.meta?.character || '').trim() || (/^(.+?) - \d{4}-\d/.exec(String(it?.name || ''))?.[1] || '').trim();
+    if (!name) return { name: '', cards: [] };
+    const k = name.toLowerCase();
+    return { name, cards: live().filter((x) => x.type === 'character' && x.name.trim().toLowerCase() === k) };
+}
+
+/** 智能合集的条件：写了的每一条都要满足 */
+export function ruleMatch(it, r) {
+    if (r.type && it.type !== r.type) return false;
+    if (r.tagsIn?.length && !r.tagsIn.every((t) => it.tags.includes(t))) return false;
+    if (r.tagsOut?.length && r.tagsOut.some((t) => it.tags.includes(t))) return false;
+    if (r.minRating && (it.rating || 0) < r.minRating) return false;
+    if (r.fav && !it.favorite) return false;
+    if (r.text) { const k = r.text.toLowerCase(); if (!`${it.name}\n${it.author || ''}`.toLowerCase().includes(k)) return false; }
+    return true;
+}
+export const ruleEmpty = (r) => !r || !(r.type || r.tagsIn?.length || r.tagsOut?.length || r.minRating || r.fav || r.text);
+/** 条目在不在这个合集里：智能合集按条件算，普通合集看有没有手动放进去 */
+export const inCollection = (it, c) => (c.rule ? ruleMatch(it, c.rule) : it.collections.includes(c.id));
+/** 可以手动往里放东西的合集（智能合集不行） */
+export const manualCollections = () => state.collections.filter((c) => !c.rule);
+
 export function fieldsFor(type) {
     return state.fields.filter((f) => !f.hidden && (!f.types?.length || f.types.includes(type)));
 }

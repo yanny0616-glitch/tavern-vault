@@ -2,7 +2,7 @@
 // 遇到同名条目时可以选择：存为新版本 / 另存为新条目 / 跳过，支持一键应用到全部
 import { h, clear, sheet, toast, icon, btn, fmtBytes } from '../ui.js';
 import { api } from '../api.js';
-import { state, TYPE_META, typeMeta } from '../state.js';
+import { state, TYPE_META, typeMeta, chatCardGuess, subscribe } from '../state.js';
 import { openDetail } from './detail.js';
 import { openDiff } from './diff.js';
 import { filesFromDrop, filesFromInput, canPickFolder, topFolder } from '../files.js';
@@ -39,14 +39,14 @@ export function openImporter(initialFiles = []) {
     let running = 0;
     let finishedToast = false;
 
-    const s = sheet({ title: '添加藏品', body: h('div'), full: true });
+    const s = sheet({ title: '添加藏品', body: h('div'), full: true, onClose: () => unsub() });
 
     // ---------- 选项 ----------
     const typeSel = h('select', { class: 'select', onchange: () => { opts.type = typeSel.value; } },
         h('option', { value: '' }, '自动识别'), Object.entries(TYPE_META).map(([k, v]) => h('option', { value: k }, v.label)));
     const tagInput = h('input', { class: 'input', placeholder: '逗号分隔，可选', onchange: () => { opts.tags = tagInput.value.split(/[,，]/).map((x) => x.trim()).filter(Boolean); } });
     const colSel = h('select', { class: 'select', onchange: () => { opts.collections = colSel.value ? [colSel.value] : []; } },
-        h('option', { value: '' }, '不加入'), state.collections.map((c) => h('option', { value: c.id }, c.name)));
+        h('option', { value: '' }, '不加入'), state.collections.filter((c) => !c.rule).map((c) => h('option', { value: c.id }, c.name)));
     const matchSel = h('select', { class: 'select', onchange: () => { prefs.match = matchSel.value; savePrefs(prefs); optsBox.querySelector('.fold-count').textContent = `同名：${MATCH_LABEL[prefs.match]}`; } },
         Object.entries(MATCH_LABEL).map(([k, v]) => h('option', { value: k, selected: prefs.match === k }, v)));
     const check = (key, label) => {
@@ -162,6 +162,26 @@ export function openImporter(initialFiles = []) {
                 btn('仍保存', { cls: 'sm ghost', onclick: (e) => { e.stopPropagation(); resolveOne(r, 'new'); } }));
         } else if (st) right = h('span', { class: `chip-s ${st.cls}` }, st.icon ? icon(st.icon, { size: 11, stroke: 3 }) : null, st.text);
 
+        // 刚导入的聊天记录：仓库里有同名角色卡，问一句要不要绑定
+        if (it?.type === 'chat' && r.status === 'created' && !r.chatAsk?.done) {
+            const cur = state.byId.get(it.id);
+            const guess = cur && !cur.chatOf ? chatCardGuess(cur) : null;
+            if (guess?.cards.length) {
+                const pick = guess.cards.find((x) => x.id === r.chatAsk?.card) || guess.cards[0];
+                const bind = async (e) => {
+                    e.stopPropagation();
+                    try { await api.patch(`/api/items/${it.id}`, { chatOf: pick.id }); r.chatAsk = { done: true, bound: pick.name }; } catch (err) { toast(err.message, 'err'); }
+                    draw(r);
+                };
+                sub = guess.cards.length > 1 ? `像是「${guess.name}」的聊天记录，仓库里有 ${guess.cards.length} 张同名卡` : `像是「${guess.name}」的聊天记录`;
+                right = h('div', { class: 'row-actions wrap conflict-acts' },
+                    guess.cards.length > 1 ? h('select', { class: 'select sm review-type', title: '绑定到哪一张', onclick: (e) => e.stopPropagation(), onchange: (e) => { r.chatAsk = { card: e.target.value }; draw(r); } },
+                        guess.cards.map((x) => h('option', { value: x.id, selected: x.id === pick.id }, [x.name, x.author, x.version && `v${String(x.version).replace(/^v/i, '')}`].filter(Boolean).join(' · '))) ) : null,
+                    btn('绑定这张卡', { cls: 'sm primary', onclick: bind }),
+                    btn('不用', { cls: 'sm ghost', onclick: (e) => { e.stopPropagation(); r.chatAsk = { done: true }; draw(r); } }));
+            }
+        } else if (r.chatAsk?.bound) sub = `已绑定到角色卡「${r.chatAsk.bound}」`;
+
         const openable = it && state.byId.has(it.id) && ['created', 'version', 'duplicate'].includes(r.status);
         return h('div', { class: `row-item import-row ${r.status === 'conflict' ? 'is-conflict' : ''}`, style: { '--tc': tm.color }, onclick: () => openable && openDetail(it.id) },
             h('div', { class: 'row-thumb' }, it?.cover && r.status !== 'conflict' ? coverImg(it) : icon(r.isZip && !it ? 'archive' : tm.icon, { size: 20 })),
@@ -177,6 +197,17 @@ export function openImporter(initialFiles = []) {
         r.el = el;
         drawSummary();
     }
+
+    // 仓库数据刷新后，刚导入的聊天记录那几行重画一下（这时才知道有没有同名的角色卡）
+    const unsub = subscribe(() => {
+        for (const r of rows) {
+            if (r.state !== 'done' || r.status !== 'created' || r.result?.item?.type !== 'chat' || r.chatAsk?.done) continue;
+            if (!r.el?.isConnected || r.el.contains(document.activeElement)) continue;
+            const el = rowEl(r);
+            r.el.replaceWith(el);
+            r.el = el;
+        }
+    });
 
     function setResult(r, res) {
         r.result = res;

@@ -3,7 +3,7 @@ import { h, clear, toast, confirmDialog, promptDialog, debounce, downloadBlob, s
 import { api } from '../api.js';
 import { bridge } from '../bridge.js';
 import { tagCloud } from '../tagcloud.js';
-import { state, live, allTags, savePrefs, TYPE_META, reload, viewOf, setView, resetView } from '../state.js';
+import { state, live, allTags, savePrefs, TYPE_META, reload, viewOf, setView, resetView, inCollection, manualCollections } from '../state.js';
 import { topbar, ensureView, itemCard, itemRow, collectionName, applyHit, versionCount } from './common.js';
 import { openDetail } from './detail.js';
 import { openImporter } from './importer.js';
@@ -52,6 +52,7 @@ export const QUICK = {
     untagged: ['未打标签', (it) => !it.tags.length],
     unsorted: ['未整理', (it) => !it.tags.length && !it.notes && !it.rating && !it.favorite && !it.collections.length],
     multi: ['多个版本', (it) => versionCount(it) > 1],
+    unopened: ['没打开过', (it) => !it.openedAt],
     // 下面两个只在酒馆插件里打开时出现；酒馆不支持的类型两个都不算
     notInTavern: ['未导入酒馆', (it) => inTavern(it) === false, true],
     inTavern: ['已在酒馆', (it) => inTavern(it) === true, true],
@@ -84,12 +85,13 @@ function matcher() {
     const f = state.filter;
     const pq = parseQuery(f.q);
     const useDeep = pq.text && deepReady(pq.text);
+    const col = f.collection ? state.collections.find((c) => c.id === f.collection) : null;
     return (it) => {
         if (f.fav && !it.favorite) return false;
         if (f.tagsIn.length && !f.tagsIn.every((t) => it.tags.includes(t))) return false;
         if (f.tagsOut.length && f.tagsOut.some((t) => it.tags.includes(t))) return false;
         if (f.quick.length && !f.quick.every((k) => QUICK[k]?.[1](it))) return false;
-        if (f.collection && !it.collections.includes(f.collection)) return false;
+        if (f.collection && !(col ? inCollection(it, col) : it.collections.includes(f.collection))) return false;
         if (f.ai && (f.ai === 'no') === Boolean(it.ai?.at)) return false;
         const tags = it.tags.map((x) => x.toLowerCase());
         if (!pq.tags.every((t) => tags.includes(t)) || pq.notTags.some((t) => tags.includes(t))) return false;
@@ -546,7 +548,7 @@ export function pickCollection(onPick) {
     const s = sheet({
         title: '选择合集',
         body: h('div', { class: 'rows' },
-            state.collections.map((c) => h('div', { class: 'row-item', onclick: () => { s.close(); onPick(c.id); } },
+            manualCollections().map((c) => h('div', { class: 'row-item', onclick: () => { s.close(); onPick(c.id); } },
                 h('div', { class: 'row-thumb', style: { color: c.color || '' } }, icon(c.icon, { size: 20 })), h('div', { class: 'row-main' }, h('div', { class: 'row-title' }, c.name)))),
             h('div', { class: 'row-item', onclick: async () => {
                 const name = await promptDialog('', { title: '新建合集', placeholder: '合集名称' });
@@ -578,6 +580,13 @@ function batchMore(items, run) {
                 toast(`正在打包 ${n} 项…`);
                 try { downloadBlob(await api.req('POST', '/api/export', { ids: items.map((i) => i.id) }, { blob: true }), `Cardbox-${n}项.zip`); } catch (e) { toast(e.message, 'err'); }
             }),
+            item('pencil', '批量改名', () => batchRename(items, run)),
+            item('user', '改作者', async () => {
+                const authors = [...new Set(items.map((it) => it.author || ''))];
+                const v = await promptDialog(`把这 ${n} 项的作者都改成（留空就是清掉作者）：`, { title: '改作者', value: authors.length === 1 ? authors[0] : '', placeholder: '作者', ok: '修改' });
+                if (v == null) return;
+                await run('setAuthor', v.trim(), v.trim() ? `已把 ${n} 项的作者改成「${v.trim()}」` : `已清掉 ${n} 项的作者`);
+            }),
             item('blocks', '改类型', () => {
                 const s = sheet({
                     title: '改成哪种类型',
@@ -588,6 +597,43 @@ function batchMore(items, run) {
                 });
             })),
     });
+}
+
+/** 批量改名：查找替换、加前缀后缀，改之前先看到结果 */
+function batchRename(items, run) {
+    const input = (ph) => h('input', { class: 'input', placeholder: ph, oninput: () => draw() });
+    const find = input('要换掉的文字，比如「(1)」');
+    const replace = input('换成什么，留空就是删掉');
+    const prefix = input('加在最前面');
+    const suffix = input('加在最后面');
+    const preview = h('div', { class: 'rename-preview' });
+    const next = (name) => {
+        const base = find.value ? name.split(find.value).join(replace.value) : name;
+        return `${prefix.value}${base}${suffix.value}`.trim().slice(0, 200) || name;
+    };
+    const okBtn = btn('改名', { icon: 'check', cls: 'primary', onclick: async () => {
+        const n = items.filter((it) => next(it.name) !== it.name).length;
+        await run('rename', { find: find.value, replace: replace.value, prefix: prefix.value, suffix: suffix.value }, `已改名 ${n} 项`);
+        s.close();
+    } });
+    function draw() {
+        const changed = items.filter((it) => next(it.name) !== it.name);
+        okBtn.disabled = !changed.length;
+        clear(preview,
+            h('div', { class: 'sub-label' }, changed.length ? `会改 ${changed.length} 项${changed.length < items.length ? `，另外 ${items.length - changed.length} 项不变` : ''}` : '还没有会变的'),
+            changed.slice(0, 30).map((it) => h('div', { class: 'rename-row' }, h('span', { class: 'rename-old' }, it.name), icon('chevronRight', { size: 13 }), h('b', {}, next(it.name)))),
+            changed.length > 30 ? h('div', { class: 'muted small' }, `还有 ${changed.length - 30} 项没列出来`) : null);
+    }
+    const field = (label, node) => h('div', { class: 'field' }, h('label', {}, label), node);
+    const s = sheet({
+        title: `批量改名 · ${items.length} 项`,
+        body: h('div', { class: 'stack' },
+            h('div', { class: 'muted small' }, '只改卡匣里显示的名称，不改文件内容。'),
+            h('div', { class: 'fields' }, field('查找', find), field('替换成', replace), field('前缀', prefix), field('后缀', suffix)),
+            preview),
+        foot: [btn('取消', { onclick: () => s.close() }), okBtn],
+    });
+    draw();
 }
 
 /**
@@ -601,7 +647,7 @@ function batchPick(items, kind) {
     const has = (k) => items.filter((it) => it[kind].includes(k)).length;
     const keys = isTag
         ? [...new Set([...items.flatMap((it) => it.tags), ...allTags().map(([t]) => t)])]
-        : state.collections.map((c) => c.id);
+        : manualCollections().map((c) => c.id);
     const orig = new Map(keys.map((k) => [k, has(k) === n ? 'all' : has(k) ? 'some' : 'none']));
     const cur = new Map(orig);
     let q = '';

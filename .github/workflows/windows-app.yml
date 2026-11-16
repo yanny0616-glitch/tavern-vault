@@ -1,4 +1,4 @@
-# 编译 Windows 桌面版（免安装的单个 exe，没有代码签名）
+# 编译 Windows 桌面版（安装包，没有代码签名）
 # 触发：推送改动了 desktop/ 的提交；手动运行（Actions → Windows App → Run workflow）；
 #       打 desktop-v1.2.3 这样的 tag 会同时发布到 Releases
 name: Windows App
@@ -46,13 +46,13 @@ jobs:
       - name: 安装依赖
         run: npm ci
 
-      - name: 打包 exe
+      - name: 打包安装程序
         env:
           VERSION: ${{ steps.ver.outputs.version }}
           # 不签名：没有证书，也不要去找
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
         run: |
-          npx electron-builder --win portable --x64 --publish never -c.extraMetadata.version="$VERSION"
+          npx electron-builder --win nsis --x64 --publish never -c.extraMetadata.version="$VERSION"
           ls -lh dist/*.exe
 
       - uses: actions/upload-artifact@v4
@@ -77,4 +77,4 @@ jobs:
           VERSION: ${{ needs.build.outputs.version }}
         run: |
           gh release create "$GITHUB_REF_NAME" *.exe --repo "$GITHUB_REPOSITORY" --title "卡匣 Windows 桌面版 $VERSION" \
-            --notes "免安装，双击运行。没有代码签名，第一次打开时 Windows 可能提示「已保护你的电脑」，点「更多信息 → 仍要运行」。"
+            --notes "下载 Cardbox-Setup 安装程序，双击安装。已经装过旧版的直接运行新的安装程序就会覆盖升级，设置会保留。没有代码签名，Windows 可能提示「已保护你的电脑」，点「更多信息 → 仍要运行」。"

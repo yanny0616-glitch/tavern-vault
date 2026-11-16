@@ -2,7 +2,7 @@
 import { h, clear, sheet, toast, debounce, confirmDialog, choiceDialog, promptDialog, lightbox, fmtBytes, fmtDate, timeAgo, downloadBlob, downloadUrl, switchEl, icon, btn, starsEl, emptyState } from '../ui.js';
 import { api } from '../api.js';
 import { bridge } from '../bridge.js';
-import { state, typeMeta, TYPE_META, fieldsFor, subscribe, allTags, notify, savePrefs, applyAccent, readZoom, READ_ZOOM, detailTabOf, userLabel } from '../state.js';
+import { state, typeMeta, TYPE_META, fieldsFor, subscribe, allTags, notify, savePrefs, applyAccent, readZoom, READ_ZOOM, detailTabOf, userLabel, chatCardGuess, ruleMatch } from '../state.js';
 import { collectionName, typeBadge } from './common.js';
 import { pickCollection } from './library.js';
 import { importItemsToTavern, TAVERN_IMPORTABLE } from './tavern.js';
@@ -243,6 +243,14 @@ export function openDetail(id, { seq = null, onLeave = null, src = null } = {}) 
     const s = sheet({ title: '', body: h('div'), full: true, headExtra: headMore, onClose: () => { unsub(); document.removeEventListener('keydown', onNavKey); onLeave?.(id); } });
     s.el.classList.add('detail-sheet');
 
+    // 记一下打开过（统计页的「没打开过」靠这个）；失败了不要紧
+    function markOpened(x) {
+        const it = src ? null : state.byId.get(x);
+        if (!it || it.deletedAt) return;
+        api.post(`/api/items/${x}/opened`).then((r) => { it.openedAt = r.openedAt; it.opens = r.opens; }).catch(() => {});
+    }
+    markOpened(id);
+
     // ---- 上一项 / 下一项 ----
     function browse(dir) {
         if (!order) return;
@@ -254,6 +262,7 @@ export function openDetail(id, { seq = null, onLeave = null, src = null } = {}) 
     }
     function goTo(nid, dir) {
         id = nid;
+        markOpened(nid);
         content = null;
         contentSha = '';
         loading = false;
@@ -651,7 +660,8 @@ export function openDetail(id, { seq = null, onLeave = null, src = null } = {}) 
             if (isEmpty(v)) continue;
             rows.push([f.label, fieldDisplay(f, v)]);
         }
-        if (it.collections.length) rows.push(['合集', h('span', { class: 'info-tags' }, it.collections.map((cid) => h('span', { class: 'chip-s' }, collectionName(cid) || '（已删除）')))]);
+        const smart = state.collections.filter((c) => c.rule && ruleMatch(it, c.rule));
+        if (it.collections.length || smart.length) rows.push(['合集', h('span', { class: 'info-tags' }, it.collections.map((cid) => h('span', { class: 'chip-s' }, collectionName(cid) || '（已删除）')), smart.map((c) => h('span', { class: 'chip-s info', title: '按条件自动收录' }, c.name)))]);
         const p = primary(it);
         if (p) rows.push(['当前文件', h('span', { class: 'info-text' }, `${p.name} · ${fmtBytes(p.size)}`)]);
         rows.push(['收录', fmtDate(it.createdAt, true)], ['更新', `${fmtDate(it.updatedAt, true)}（${timeAgo(it.updatedAt)}）`]);
@@ -848,13 +858,17 @@ export function openDetail(id, { seq = null, onLeave = null, src = null } = {}) 
         };
         draw();
         const canEdit = !src && !it.deletedAt;
+        // 只有一张同名的卡时直接给出来，点一下就绑定
+        const same = canEdit && !(card && !card.deletedAt) ? chatCardGuess({ ...it, meta: { ...it.meta, character: charName } }).cards : [];
+        const guess = same.length === 1 ? same[0] : null;
         const bindRow = h('div', { class: 'chat-bind' },
             icon('user', { size: 15 }),
             card && !card.deletedAt
                 ? [h('span', { class: 'muted small' }, '角色卡'), h('button', { class: 'chat-card', onclick: () => openDetail(card.id) }, card.name, icon('chevronRight', { size: 13 })), h('span', { class: 'grow' }),
                     canEdit ? btn('解绑', { cls: 'sm ghost', onclick: async () => { try { await api.patch(`/api/items/${it.id}`, { chatOf: '' }); toast('已解绑', 'ok'); } catch (e) { toast(e.message, 'err'); } } }) : null]
                 : [h('span', { class: 'muted small grow' }, charName ? `和「${charName}」的聊天，还没绑定角色卡` : '还没绑定角色卡'),
-                    canEdit ? btn('绑定角色卡', { cls: 'sm', onclick: () => pickCardFor(it, charName) }) : null]);
+                    canEdit && guess ? btn(`绑定到「${guess.name}」`, { cls: 'sm primary', title: '仓库里只有这一张同名的角色卡', onclick: async () => { try { await api.patch(`/api/items/${it.id}`, { chatOf: guess.id }); toast(`已绑定到「${guess.name}」`, 'ok'); } catch (e) { toast(e.message, 'err'); } } }) : null,
+                    canEdit ? btn(guess ? '选别的' : '绑定角色卡', { cls: 'sm', onclick: () => pickCardFor(it, charName) }) : null]);
         return h('div', { class: 'stack' }, bindRow,
             String(text).length >= 2 * 1024 * 1024 ? h('div', { class: 'note' }, icon('info', { size: 15 }), '这份聊天记录很长，这里只显示前面一部分；完整内容请在「文件」页下载。') : null,
             list, more);
@@ -1077,6 +1091,13 @@ export function openDetail(id, { seq = null, onLeave = null, src = null } = {}) 
             title: (e) => String(e.comment ?? e.name ?? ''),
             on: (e) => ('disable' in e ? !e.disable : e.enabled !== false),
             order: (e) => Number(('insertion_order' in e ? e.insertion_order : e.order) ?? 100) || 0,
+            // 插入位置：世界书文件直接是数字；卡里的写法是 before_char / after_char，细的位置记在 extensions.position
+            pos: (e) => {
+                if (stStyle(e)) return Number(e.position) || 0;
+                const x = e.extensions?.position;
+                return Number.isInteger(x) ? x : e.position === 'after_char' ? 1 : 0;
+            },
+            depth: (e) => { const v = stStyle(e) ? e.depth : e.extensions?.depth; return Number.isFinite(Number(v)) && v !== null && v !== '' ? Number(v) : 4; },
         };
         const set = {
             title: (e, v) => { e.comment = v; if ('name' in e) e.name = v; },
@@ -1084,7 +1105,16 @@ export function openDetail(id, { seq = null, onLeave = null, src = null } = {}) 
             keys2: (e, v) => { if ('keysecondary' in e) e.keysecondary = v; else e.secondary_keys = v; },
             on: (e, v) => { if ('disable' in e) e.disable = !v; else e.enabled = v; },
             order: (e, v) => { if ('insertion_order' in e || !('order' in e)) e.insertion_order = v; else e.order = v; },
+            pos: (e, v) => {
+                if (stStyle(e)) { e.position = v; if (v === 4 && e.depth == null) e.depth = 4; return; }
+                if (!e.extensions || typeof e.extensions !== 'object') e.extensions = {};
+                e.extensions.position = v;
+                e.position = v === 0 ? 'before_char' : 'after_char';
+                if (v === 4 && e.extensions.depth == null) e.extensions.depth = 4;
+            },
+            depth: (e, v) => { if (stStyle(e)) e.depth = v; else { if (!e.extensions || typeof e.extensions !== 'object') e.extensions = {}; e.extensions.depth = v; } },
         };
+        const POS = [[0, '角色设定之前'], [1, '角色设定之后'], [5, '对话示例之前'], [6, '对话示例之后'], [2, '作者注释之前'], [3, '作者注释之后'], [4, '聊天记录里的指定深度']];
         const blank = () => {
             const like = list[0];
             const ids = list.map((e) => Number(e.id ?? e.uid)).filter(Number.isFinite);
@@ -1110,6 +1140,7 @@ export function openDetail(id, { seq = null, onLeave = null, src = null } = {}) 
                         icon(open ? 'chevronDown' : 'chevronRight', { size: 14 }),
                         h('span', { class: 'book-edit-title' }, get.title(e) || keys[0] || `条目 ${i + 1}`),
                         e.constant ? h('span', { class: 'chip-s info' }, '常驻') : null,
+                        get.pos(e) > 1 ? h('span', { class: 'chip-s' }, get.pos(e) === 4 ? `深度 ${get.depth(e)}` : (POS.find(([v]) => v === get.pos(e))?.[1] || '其它位置')) : null,
                         keys.length ? h('span', { class: 'muted small book-edit-keys' }, keys.join('、')) : null),
                     switchEl(get.on(e), (v) => { set.on(e, v); draw(); }),
                     btn('', { icon: 'arrowUp', cls: 'sm ghost icon', title: '上移', disabled: i === 0, onclick: () => move(i, -1) }),
@@ -1122,6 +1153,9 @@ export function openDetail(id, { seq = null, onLeave = null, src = null } = {}) 
                     field('关键词', h('input', { class: 'input', value: keys.join(', '), placeholder: '逗号分隔；聊天里出现任意一个就触发', oninput: (ev) => set.keys(e, splitInput(ev.target.value)) })),
                     field('次要关键词', h('input', { class: 'input', value: entryKeys2(e).join(', '), placeholder: '可选，逗号分隔', oninput: (ev) => set.keys2(e, splitInput(ev.target.value)) })),
                     field('内容', h('textarea', { class: 'textarea', value: String(e.content ?? ''), style: { minHeight: '160px' }, oninput: (ev) => { e.content = ev.target.value; } })),
+                    field('插入位置', h('select', { class: 'select book-pos', onchange: (ev) => { set.pos(e, Number(ev.target.value)); draw(); } },
+                        (POS.some(([v]) => v === get.pos(e)) ? POS : [...POS, [get.pos(e), `其它（${get.pos(e)}）`]]).map(([v, label]) => h('option', { value: v, selected: v === get.pos(e) }, label))), false),
+                    get.pos(e) === 4 ? field('深度', h('input', { class: 'input book-depth', type: 'number', min: 0, value: get.depth(e), title: '0 是最新一条消息之后，数字越大越靠前', oninput: (ev) => set.depth(e, Math.max(0, Math.round(Number(ev.target.value)) || 0)) }), false) : null,
                     field('顺序', h('input', { class: 'input', type: 'number', value: get.order(e), title: '数字大的排在后面插入', oninput: (ev) => set.order(e, Number(ev.target.value) || 0) }), false),
                     h('div', { class: 'field' }, h('label', {}, '常驻（不用关键词，一直生效）'), switchEl(Boolean(e.constant), (v) => { e.constant = v; draw(); }))));
             }) : h('div', { class: 'muted small' }, '还没有条目。'));

@@ -853,6 +853,15 @@ route('POST', '/api/import-url', async ({ req }) => {
     return result;
 });
 
+// 记一下这个条目被打开看过（统计页用来找「没打开过」的）。不算修改，不动更新时间，也不通知别的页面
+route('POST', '/api/items/:id/opened', ({ p }) => {
+    const it = getItem(p.id);
+    it.openedAt = new Date().toISOString();
+    it.opens = (Number(it.opens) || 0) + 1;
+    store.save();
+    return { ok: true, openedAt: it.openedAt, opens: it.opens };
+});
+
 route('PATCH', '/api/items/:id', async ({ req, p }) => {
     getItem(p.id);
     const body = await readJson(req);
@@ -1176,6 +1185,16 @@ route('POST', '/api/batch', async ({ req }) => {
             case 'removeCollection': it.collections = it.collections.filter((c) => c !== value); break;
             case 'favorite': it.favorite = Boolean(value); break;
             case 'setType': if (TYPES[value]) it.type = value; break;
+            case 'setAuthor': it.author = String(value ?? '').trim().slice(0, 200); break;
+            // 批量改名：先查找替换，再加前缀后缀；改完是空的就不动
+            case 'rename': {
+                const v = value && typeof value === 'object' ? value : {};
+                const find = String(v.find ?? '');
+                let name = find ? it.name.split(find).join(String(v.replace ?? '')) : it.name;
+                name = `${String(v.prefix ?? '')}${name}${String(v.suffix ?? '')}`.trim().slice(0, 200);
+                if (name) it.name = name;
+                break;
+            }
             case 'setField': if (store.db.fields.some((f) => f.id === value?.id)) it.fields[value.id] = value.value; break;
             case 'delete': it.deletedAt = stamp; break;
             case 'restore': it.deletedAt = null; break;
@@ -1424,9 +1443,28 @@ route('PUT', '/api/thumbs/:sha', async ({ req, p }) => {
 });
 
 // 合集
+// 智能合集的条件：写了的每一条都要满足。成员不存，网页按条件现算
+function cleanRule(v) {
+    if (!v || typeof v !== 'object' || Array.isArray(v)) return null;
+    const tags = (x) => [...new Set((Array.isArray(x) ? x : []).map((t) => String(t).trim().slice(0, 60)).filter(Boolean))].slice(0, 50);
+    const r = {};
+    if (TYPES[v.type]) r.type = v.type;
+    const tin = tags(v.tagsIn);
+    const tout = tags(v.tagsOut).filter((t) => !tin.includes(t));
+    if (tin.length) r.tagsIn = tin;
+    if (tout.length) r.tagsOut = tout;
+    const mr = Math.round(Number(v.minRating));
+    if (mr >= 1 && mr <= 5) r.minRating = mr;
+    if (v.fav === true) r.fav = true;
+    const text = String(v.text ?? '').trim().slice(0, 100);
+    if (text) r.text = text;
+    return Object.keys(r).length ? r : null;
+}
 route('POST', '/api/collections', async ({ req }) => {
     const body = await readJson(req);
+    const rule = cleanRule(body.rule);
     const c = { id: newId(), name: String(body.name || '新合集').slice(0, 60), icon: /^[a-zA-Z]+$/.test(body.icon || '') ? body.icon : 'folder', color: body.color || '', description: body.description || '', createdAt: new Date().toISOString() };
+    if (rule) c.rule = rule;
     store.db.collections[c.id] = c;
     store.save();
     broadcast('change', {});
@@ -1437,6 +1475,14 @@ route('PATCH', '/api/collections/:id', async ({ req, p }) => {
     if (!c) throw new HttpError(404, '合集不存在');
     const body = await readJson(req);
     for (const k of ['name', 'icon', 'color', 'description']) if (k in body) c[k] = body[k];
+    if ('rule' in body) {
+        const rule = cleanRule(body.rule);
+        if (rule) {
+            c.rule = rule;
+            // 改成按条件收录后，以前手动放进去的不再算数
+            for (const it of Object.values(store.db.items)) if (it.collections.includes(c.id)) it.collections = it.collections.filter((x) => x !== c.id);
+        } else delete c.rule;
+    }
     store.save();
     broadcast('change', {});
     return c;

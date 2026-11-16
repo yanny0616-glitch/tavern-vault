@@ -7,7 +7,7 @@
   "main": "main.js",
   "scripts": {
     "start": "electron .",
-    "dist": "electron-builder --win portable --x64 --publish never"
+    "dist": "electron-builder --win nsis --x64 --publish never"
   },
   "devDependencies": {
     "electron": "45.3.2",
@@ -18,7 +18,20 @@
     "productName": "卡匣",
     "files": ["main.js", "preload.js", "launcher.html", "build/icon.png"],
     "directories": { "output": "dist" },
-    "win": { "target": "portable", "icon": "build/icon.png" },
-    "portable": { "artifactName": "Cardbox-${version}.exe" }
+    "win": { "target": "nsis", "icon": "build/icon.png" },
+    "nsis": {
+      "artifactName": "Cardbox-Setup-${version}.exe",
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "installerLanguages": ["zh_CN"],
+      "language": "2052",
+      "shortcutName": "卡匣",
+      "uninstallDisplayName": "卡匣",
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "runAfterFinish": true,
+      "deleteAppDataOnUninstall": false
+    }
   }
 }

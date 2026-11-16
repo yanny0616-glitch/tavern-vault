@@ -44,7 +44,8 @@ const upload = async (name, text) => (await fetch(`${B}/api/items?filename=${enc
   await p.click('.chat-more .btn:has-text("再显示")'); await p.waitForTimeout(200);
   ok(await p.locator('.chat-log .dlg-turn').count() === 130, 'load more shows the rest');
   ok((await p.textContent('.chat-bind')).includes(`和「${chars[0].name}」的聊天`), 'shows who the chat is with');
-  await p.click('.chat-bind .btn:has-text("绑定角色卡")'); await p.waitForSelector('.sheet:has-text("绑定到哪张角色卡") .row-item');
+  ok(await p.locator(`.chat-bind .btn:has-text("绑定到「${chars[0].name}」")`).count() === 1, 'offers the one card with the same name directly');
+  await p.click('.chat-bind .btn:has-text("选别的")'); await p.waitForSelector('.sheet:has-text("绑定到哪张角色卡") .row-item');
   ok((await p.textContent('.sheet:has-text("绑定到哪张角色卡") .row-item >> nth=0')).includes(chars[0].name), 'the card with the same name comes first');
   await p.click('.sheet:has-text("绑定到哪张角色卡") .row-item >> nth=0'); await p.waitForTimeout(700);
   ok((await J('/api/state')).items.find((i) => i.id === up.item.id).chatOf === chars[0].id, 'bound to the card');
