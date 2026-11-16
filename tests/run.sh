@@ -3,14 +3,14 @@
 # 用法：tests/run.sh            跑全部
 #       tests/run.sh fold merge  只跑指定的几项
 # 需要：Node 22+、playwright（全局安装即可）、Chromium（默认 /usr/bin/chromium，可用 CHROMIUM 指定）
-# 端口：5199 测试服务，5198 模拟酒馆，5197 模拟 AI 接口，5189 生成测试数据时临时用
+# 端口：5199 测试服务，5198 模拟酒馆，5197 模拟 AI 接口，5196 模拟 Discord，5189 生成测试数据时临时用
 set -u
 T=$(cd "$(dirname "$0")" && pwd); ROOT=$(dirname "$T")
 WORK=${TV_TEST_WORK:-$T/.work}
 export NODE_PATH=${NODE_PATH:-$(npm root -g)}
 [ -z "${CHROMIUM:-}" ] && [ -x /usr/bin/chromium ] && export CHROMIUM=/usr/bin/chromium
 
-for port in 5199 5198 5197 5189; do
+for port in 5199 5198 5197 5196 5189; do
   if ss -ltn 2>/dev/null | grep -q ":$port "; then echo "端口 $port 被占用，先停掉占用它的程序"; exit 2; fi
 done
 
@@ -21,6 +21,7 @@ PIDS=()
 cleanup() { for p in "${PIDS[@]}"; do kill "$p" 2>/dev/null; done; wait 2>/dev/null; }
 trap cleanup EXIT
 node "$T/mock/ai.mjs" > "$WORK/logs/mock-ai.log" 2>&1 & PIDS+=($!)
+node "$T/mock/discord.mjs" > "$WORK/logs/mock-discord.log" 2>&1 & PIDS+=($!)
 
 want() { [ ${#ONLY[@]} -eq 0 ] && return 0; for o in "${ONLY[@]}"; do [ "$o" = "$1" ] && return 0; done; return 1; }
 wait_port() { for _ in $(seq 50); do ss -ltn | grep -q ":$1 " && return 0; sleep 0.1; done; return 1; }
@@ -34,7 +35,7 @@ run() {
   local out="$WORK/shots/$name" log="$WORK/logs/$name.log"; mkdir -p "$out"
   # 安全测试要读写数据目录本身，其它测试拿截图目录
   case $name in security|backups) out="$WORK/run" ;; esac
-  TV_DISCORD_API=http://127.0.0.1:5197/discord TV_DISCORD_GAP=0 TV_HOST=127.0.0.1 TV_PORT=5199 TV_DATA="$WORK/run" node "$ROOT/server/server.js" > "$WORK/logs/$name-server.log" 2>&1 & local sp=$!
+  TV_DISCORD_API=http://127.0.0.1:5196/discord TV_DISCORD_GATEWAY=ws://127.0.0.1:5196/gw TV_DISCORD_GAP=0 TV_HOST=127.0.0.1 TV_PORT=5199 TV_DATA="$WORK/run" node "$ROOT/server/server.js" > "$WORK/logs/$name-server.log" 2>&1 & local sp=$!
   local mp=""
   if [ "$tavern" = 1 ]; then node "$T/mock/tavern.mjs" > "$WORK/logs/$name-tavern.log" 2>&1 & mp=$!; wait_port 5198; fi
   wait_port 5199 || { echo "!! $name：测试服务没起来，见 $WORK/logs/$name-server.log"; }
@@ -90,7 +91,9 @@ run merge-smart-stats seed 0 merge-smart-stats.cjs
 run themes         seed 0 themes.cjs
 run editors        seed 0 editors.cjs
 run dropdown       seed 0 dropdown.cjs
+run marks-builtin  seed 0 marks-builtin.cjs
 run discord-track  seed 0 discord-track.cjs
+run discord-fetch  seed 0 discord-fetch.cjs
 run tavern-live    seed 1 tavern-live.cjs
 
 echo

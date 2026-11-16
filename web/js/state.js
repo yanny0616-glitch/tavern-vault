@@ -88,6 +88,7 @@ export function cardPrefOf(type) {
         showRating: own?.showRating ?? p.showRating !== false,
         showNo: own?.showNo ?? p.showNo !== false,
         marks: own?.marks ?? p.marks,
+        markOne: own?.markOne ?? Boolean(p.markOne),
         own: Boolean(own),
     };
 }

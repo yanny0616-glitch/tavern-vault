@@ -16,6 +16,7 @@ import { stripSyncEntries, DEFAULT_SYNC_EXCLUDE, SYNC_OPTIONS, PARTS_VERSION, sa
 import { diffFiles, diffSummary } from './lib/diff.js';
 import { AiConfig, listModels, chat, AiError } from './lib/ai.js';
 import { DiscordTrack, parseSource } from './lib/discord.js';
+import { BotSession } from './lib/discord-bot.js';
 import { cleanThemes } from '../web/js/themecore.js';
 import { createAiTasks } from './lib/ai-tasks.js';
 import { createAiChat } from './lib/ai-chat.js';
@@ -1650,6 +1651,7 @@ async function checkSource(it) {
 }
 
 let discordBusy = false;
+let discordProgress = null; // 正在查的这一轮：{ done, total }
 /** 把到期的查一遍（一次最多几个，一个一个来）。all 为真是用户点了「现在全部查一遍」 */
 async function discordTick(all = false) {
     if (discordBusy || !discord.ready) return 0;
@@ -1661,13 +1663,14 @@ async function discordTick(all = false) {
             .filter((it) => { const s = trackable(it); return s && (all || it.track?.ch !== s.channel || (it.track.checkedAt || 0) < stale); })
             .sort((a, b) => (a.track?.checkedAt || 0) - (b.track?.checkedAt || 0))
             .slice(0, all ? 300 : 5);
+        discordProgress = { done: 0, total: due.length };
         for (const it of due) {
             if (!discord.ready) break;
             if (n) await sleep(DISCORD_GAP + Math.random() * DISCORD_GAP);
-            try { await checkSource(it); n += 1; } catch (e) { console.log(`  [Discord] 已停止：${e.message}`); break; }
+            try { await checkSource(it); n += 1; discordProgress.done = n; } catch (e) { console.log(`  [Discord] 已停止：${e.message}`); break; }
         }
         if (n) { discord.data.lastRun = Date.now(); discord.save(); }
-    } finally { discordBusy = false; }
+    } finally { discordBusy = false; discordProgress = null; }
     return n;
 }
 setTimeout(() => discordTick().catch(() => {}), 90e3).unref();
@@ -1675,7 +1678,7 @@ setInterval(() => discordTick().catch(() => {}), 600e3).unref();
 
 const discordInfo = () => {
     const items = Object.values(store.db.items).filter(trackable);
-    return { ...discord.public(), busy: discordBusy, tracked: items.length, changed: items.filter((it) => it.track?.changed).length, failed: items.filter((it) => it.track?.error).length };
+    return { ...discord.public(), busy: discordBusy, progress: discordProgress, commands: discord.data.commands || {}, tracked: items.length, changed: items.filter((it) => it.track?.changed).length, failed: items.filter((it) => it.track?.error).length };
 };
 route('GET', '/api/discord', () => discordInfo());
 route('PUT', '/api/discord', async ({ req }) => {
@@ -1698,6 +1701,98 @@ route('POST', '/api/discord/check', async ({ req }) => {
     try { await checkSource(it); } catch (e) { throw new HttpError(409, e.message); }
     return slim(it);
 });
+// ---- 取新版本：替用户在来源帖里用一次 bot 的命令，每一步都由用户在网页上点 ----
+let botSession = null; // 同一时间只开一个
+const botEnd = () => { if (botSession) { botSession.s.close(); clearTimeout(botSession.timer); botSession = null; } };
+const botGet = (sid) => { if (!botSession || botSession.sid !== sid) throw new HttpError(410, '这次操作已经结束，重新开始一次'); clearTimeout(botSession.timer); botSession.timer = setTimeout(botEnd, 240e3); return botSession; };
+route('POST', '/api/discord/fetch', async ({ req }) => {
+    const body = await readJson(req);
+    if (!discord.data.token) throw new HttpError(400, '还没有填 Discord 令牌');
+    if (discord.paused) throw new HttpError(409, discord.paused.reason);
+    const it = getItem(String(body.id || ''));
+    const src = parseSource(it.source);
+    if (!src) throw new HttpError(400, '来源链接不是 Discord 的帖子链接');
+    const command = String(body.command || '').trim().replace(/^\//, '').slice(0, 40);
+    if (!command) throw new HttpError(400, '先填 bot 的命令名');
+    botEnd();
+    const s = new BotSession({ token: discord.data.token, guild: src.guild, channel: src.channel });
+    const sid = crypto.randomBytes(8).toString('hex');
+    botSession = { sid, s, item: it.id, timer: setTimeout(botEnd, 240e3) };
+    try {
+        await s.open();
+        await s.command(command);
+    } catch (e) {
+        botEnd();
+        if (e.status === 401) discord.pause('令牌失效或被 Discord 拒绝，已停止检查。重新填令牌后才会继续。');
+        throw new HttpError(e.status === 401 ? 409 : 502, e.message + (e.commands?.length ? `。这里能用的命令有：${e.commands.map((c) => `/${c}`).join('、')}` : ''));
+    }
+    // 记住这个社区用的命令名，下次不用再填
+    discord.data.commands = { ...(discord.data.commands || {}), [src.guild]: command };
+    discord.save();
+    await s.wait(0, 15000);
+    return { sid, ...s.view() };
+});
+// 等 bot 的消息有变化（最多等 20 秒）
+route('GET', '/api/discord/fetch/:sid', async ({ p, url }) => {
+    const b = botGet(p.sid);
+    await b.s.wait(Number(url.searchParams.get('rev')) || 0, 20000);
+    return { sid: b.sid, ...b.s.view() };
+});
+route('POST', '/api/discord/fetch/:sid/act', async ({ req, p }) => {
+    const b = botGet(p.sid);
+    const body = await readJson(req);
+    const v = b.s.view();
+    const c = v.components.find((x) => x.id && x.id === body.id && !x.disabled && x.kind !== 'link');
+    if (!c) throw new HttpError(400, '消息里没有这个按钮了，可能已经变了');
+    const values = c.kind === 'select' ? [String(body.value ?? '')] : undefined;
+    if (values && !c.options.some((o) => o.value === values[0])) throw new HttpError(400, '没有这个选项');
+    const rev = b.s.rev;
+    try { await b.s.act(c.id, values); } catch (e) { throw new HttpError(502, e.message); }
+    await b.s.wait(rev, 15000);
+    return { sid: b.sid, ...b.s.view() };
+});
+// 只下载 https 的公网地址（测试时指向本机的模拟服务除外）
+const fetchable = (u) => {
+    try {
+        const x = new URL(u);
+        if (process.env.TV_DISCORD_API && x.origin === new URL(process.env.TV_DISCORD_API).origin) return true;
+        return x.protocol === 'https:' && !x.username && !/^(localhost|127\.|10\.|192\.168\.|169\.254\.|172\.(1[6-9]|2\d|3[01])\.|\[|0\.)/.test(x.hostname) && x.hostname.includes('.');
+    } catch { return false; }
+};
+route('POST', '/api/discord/fetch/:sid/save', async ({ req, p }) => {
+    const b = botGet(p.sid);
+    const body = await readJson(req);
+    const it = getItem(b.item);
+    const offered = b.s.view().files;
+    const picks = (Array.isArray(body.files) ? body.files : []).slice(0, 10);
+    if (!picks.length) throw new HttpError(400, '先勾上要存的文件');
+    const out = [];
+    for (const pick of picks) {
+        const f = offered.find((x) => x.url === pick.url);
+        if (!f || !fetchable(f.url)) { out.push({ name: pick.name || '', error: '这个文件不在 bot 给的列表里' }); continue; }
+        try {
+            const res = await fetch(f.url, { signal: AbortSignal.timeout(60000), redirect: 'follow' });
+            if (!res.ok) throw new Error(`下载失败（${res.status}）`);
+            if (Number(res.headers.get('content-length')) > 80 * 1024 * 1024) throw new Error('文件超过 80 MB');
+            const buf = Buffer.from(await res.arrayBuffer());
+            if (!buf.length) throw new Error('下载到的是空文件');
+            if (buf.length > 80 * 1024 * 1024) throw new Error('文件超过 80 MB');
+            const asVersion = pick.as === 'version';
+            const r = ingestAny(buf, f.name, asVersion ? { target: it.id, match: 'version' } : { match: 'version' });
+            const ids = changedIds(r);
+            if (ids.length) broadcast('change', { ids });
+            out.push({ name: f.name, status: r.status, item: r.item?.id || '', itemName: r.item?.name || '' });
+        } catch (e) { out.push({ name: f.name, error: e.message || '下载失败' }); }
+    }
+    // 存成了这张卡的新版本（或内容一样）：这次更新算看过了
+    if (it.track?.title && out.some((x) => x.item === it.id && (x.status === 'version' || x.status === 'duplicate'))) {
+        it.track.seen = it.track.title; delete it.track.changed; delete it.track.changedAt;
+        store.save(); broadcast('change', { ids: [it.id] });
+    }
+    return { results: out };
+});
+route('DELETE', '/api/discord/fetch/:sid', ({ p }) => { if (botSession?.sid === p.sid) botEnd(); return { ok: true }; });
+
 // 看过了：把现在的标题记成「已看过」，提醒消掉
 route('POST', '/api/items/:id/track/seen', ({ p }) => {
     const it = getItem(p.id);

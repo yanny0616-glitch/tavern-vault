@@ -1,7 +1,7 @@
 // Discord 来源追踪：令牌只存服务器、读帖子标题、标题变了提醒、出错就停、设置页和详情页
 const { chromium } = require('playwright');
 const fs = require('fs');
-const B = 'http://127.0.0.1:5199'; const MOCK = 'http://127.0.0.1:5197/discord';
+const B = 'http://127.0.0.1:5199'; const MOCK = 'http://127.0.0.1:5196/discord';
 const ok = (c, m) => { console.log(c ? 'PASS' : 'FAIL', m); if (!c) process.exitCode = 1; };
 const send = async (method, p, body) => { const r = await fetch(B + p, { method, headers: body ? { 'Content-Type': 'application/json' } : {}, body: body ? JSON.stringify(body) : undefined }); let j = null; try { j = await r.json(); } catch { /* empty */ } return { status: r.status, j }; };
 const items = async () => (await send('GET', '/api/state')).j.items;
@@ -37,6 +37,8 @@ const T2 = 'https://discord.com/channels/111111111111111111/333333333333333333/4
   ok(r.j.track.changed === true && r.j.track.seen === '【角色卡】林雨眠 v1.0' && r.j.track.title.includes('v2.0') && r.j.track.changedAt, 'a changed title is flagged');
   r = await send('POST', '/api/discord/check', { all: true });
   ok(r.j.queued === 2, 'check everything queues both');
+  const mid = (await send('GET', '/api/discord')).j;
+  ok(!mid.busy || (mid.progress && mid.progress.total === 2), `progress is reported while it runs (${JSON.stringify(mid.progress)})`);
   for (let i = 0; i < 40 && !(await items()).find((x) => x.id === b.id).track?.title; i++) await new Promise((res) => setTimeout(res, 150));
   ok((await items()).find((x) => x.id === b.id).track?.title === '白夜 初版', 'a message link is tracked by its thread');
   r = await send('GET', '/api/discord');

@@ -139,7 +139,7 @@ const putSettings = (o) => fetch(`${V}/api/settings`, { method: 'PUT', headers: 
   await frame.click('text=浏览');
   const rules = frame.locator('.mark-rule');
   await rules.first().waitFor();
-  ok(await rules.count() === 3, `default 3 mark rules (${await rules.count()})`);
+  ok(await rules.count() === 6, `default mark rules, built-ins included (${await rules.count()})`);
   await frame.click('.btn:has-text("添加角标")');
   await frame.click('.menu-item:has-text("标签（这张卡自己的）")');
   await frame.locator('.mark-rule:has-text("标签（这张卡自己的）")').waitFor();
@@ -236,9 +236,9 @@ const putSettings = (o) => fetch(`${V}/api/settings`, { method: 'PUT', headers: 
   await frame.click('.set-row:has-text("编号") .switch');
   await frame.locator(".panel-head:has-text(\"封面角标 · 世界书\")").first().waitFor();
   await frame.locator('.mark-rule:has-text("酒馆里已有") .btn[title="不显示这个角标"]').click();
-  ok(await frame.locator('.mark-rule').count() === 3, `worldbook marks edited separately (${await frame.locator('.mark-rule').count()})`);
+  ok(await frame.locator('.mark-rule').count() === 6, `worldbook marks edited separately (${await frame.locator('.mark-rule').count()})`);
   await frame.selectOption('.set-row:has-text("设置给") select', 'character');
-  ok(await frame.locator('.mark-rule').count() === 4, `character marks unchanged (${await frame.locator('.mark-rule').count()})`);
+  ok(await frame.locator('.mark-rule').count() === 7, `character marks unchanged (${await frame.locator('.mark-rule').count()})`);
   await tab('仓库');
   await pick('世界书');
   const wbCard = frame.locator('.grid .card[data-type="worldbook"]').first();

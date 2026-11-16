@@ -7,7 +7,7 @@ import { themesPanel } from './themes.js';
 import { state, savePrefs, applyAccent, reload, TYPE_META, SKINS, uiFont, readZoom, UI_FONT, READ_ZOOM, notify, allTags, resetView, cardPrefOf, setCardPref, resetCardPref, userNameOn, tagGroups } from '../state.js';
 import { CARD_PARTS, ENTRY_FLAGS } from '../sig.js';
 import { SORTS } from './library.js';
-import { topbar, ensureView, MARK_POS, DEFAULT_MARKS, MARK_FIELD_KINDS, markRules, markName } from './common.js';
+import { topbar, ensureView, MARK_POS, DEFAULT_MARKS, MARK_FIELD_KINDS, markRules, markName, allMarkRules, BUILTIN_MARKS } from './common.js';
 import { aiSettings, aiReady } from './ai.js';
 import { findDuplicates, openDuplicates } from './dupes.js';
 
@@ -247,7 +247,7 @@ function cardShowPanel() {
 
 /** 封面角标：每种标记选一个角显示（列表视图里排在名字下面）。跟着上面「设置给」选的类型 */
 function marksPanel() {
-    const rules = markRules(cardScope);
+    const rules = allMarkRules(cardScope);
     const save = (list) => setCard({ marks: list });
     const has = (src) => rules.some((r) => r.src === src);
     const add = (src) => { if (!has(src)) save([...rules, { src, pos: 'br' }]); };
@@ -264,25 +264,40 @@ function marksPanel() {
         const fields = state.fields.filter((f) => !f.hidden && MARK_FIELD_KINDS.has(f.kind) && !has(`field:${f.id}`));
         const s = sheet({ title: '添加角标', body: h('div', { class: 'menu' },
             !has('tavern') ? opt('beer', '酒馆里已有', '在酒馆插件里打开时，酒馆里已经有同名内容的条目', () => add('tavern')) : null,
+            !has('track') ? opt('refresh', '来源有更新', '来源帖标题变了的条目（要先开 Discord 来源追踪）', () => add('track')) : null,
             !has('ver') ? opt('layers', '版本数', '有多个版本时显示「3 版」', () => add('ver')) : null,
             !has('dupe') ? opt('copy', '可能重复', '和别的条目可能重复时显示', () => add('dupe')) : null,
             !has('tags') ? opt('tag', '标签（这张卡自己的）', '把卡片自己的标签显示在封面上，最多 3 个，多的显示「+数量」', () => add('tags')) : null,
             opt('tag', '指定标签', '只在带有某个标签（比如「推荐」）的卡片上显示', pickTag),
             fields.map((f) => opt('fileText', `字段：${f.label}`, f.kind === 'checkbox' ? '勾选了就显示' : '填了就显示填的内容', () => add(`field:${f.id}`)))) });
     };
+    const builtin = (r) => BUILTIN_MARKS.includes(r.src);
+    const setPos = (i, pos) => save(rules.map((x, j) => (j === i ? { ...x, pos } : x)));
+    const move = (i, d) => { const list = [...rules]; const [x] = list.splice(i, 1); list.splice(i + d, 0, x); save(list); };
     const posPick = (r, i) => h('div', { class: 'pos-pick', title: '显示在哪个角' }, Object.entries(MARK_POS).map(([k, label]) =>
-        h('button', { class: `pos-cell ${r.pos === k ? 'on' : ''}`, title: label, 'aria-label': label, onclick: () => save(rules.map((x, j) => (j === i ? { ...x, pos: k } : x))) })));
+        h('button', { class: `pos-cell ${r.pos === k ? 'on' : ''}`, title: label, 'aria-label': label, onclick: () => setPos(i, k) })));
+    // 同一个角有几个角标时，写出它排第几：上面的先显示
+    const where = (r, i) => {
+        if (r.pos === 'skin') return '跟随风格';
+        if (r.pos === 'hide') return '不显示';
+        const same = rules.filter((x) => x.pos === r.pos);
+        return same.length > 1 ? `${MARK_POS[r.pos]} · 第 ${rules.slice(0, i + 1).filter((x) => x.pos === r.pos).length} 个` : MARK_POS[r.pos];
+    };
     return panel(scopeLabel() ? `封面角标 · ${scopeLabel()}` : '封面角标', 'tag', null,
-        help((scopeLabel() ? `只对「${scopeLabel()}」生效，在上面「设置给」里切换。` : '') + '选择卡片封面四个角上显示什么。每个角最多显示 3 个，多的显示「+数量」；列表视图里排在名字下面。已有的收藏星标、多选勾、评分会自动让开。'),
-        rules.length ? h('div', { class: 'mark-rules' }, rules.map((r, i) => h('div', { class: 'mark-rule' },
-            h('span', { class: 'grow mark-rule-name' }, markName(r.src)),
-            h('span', { class: 'muted small' }, MARK_POS[r.pos]),
+        help((scopeLabel() ? `只对「${scopeLabel()}」生效，在上面「设置给」里切换。` : '') + '选择卡片封面四个角上显示什么，列表视图里排在名字下面。同一个角有几个时，排在上面的先显示，用左边的箭头调先后。「类型」和「收藏星标」是界面风格自带的，默认跟着风格走；也可以放到某个角和别的角标一起排，或者不显示。'),
+        h('div', { class: 'mark-rules' }, rules.map((r, i) => h('div', { class: `mark-rule ${r.pos === 'hide' ? 'off' : ''}`, dataset: { src: r.src } },
+            h('span', { class: 'mark-rule-ord' },
+                h('button', { title: '往前排', 'aria-label': '往前排', disabled: i === 0, onclick: () => move(i, -1) }, icon('chevronUp', { size: 13 })),
+                h('button', { title: '往后排', 'aria-label': '往后排', disabled: i === rules.length - 1, onclick: () => move(i, 1) }, icon('chevronDown', { size: 13 }))),
+            h('span', { class: 'grow mark-rule-name' }, markName(r.src), builtin(r) ? h('span', { class: 'muted small' }, '  风格自带') : null),
+            h('span', { class: 'muted small mark-rule-pos' }, where(r, i)),
+            builtin(r) ? btn('跟随风格', { cls: `sm ghost mark-skin ${r.pos === 'skin' ? 'on' : ''}`, title: '用界面风格原来的样子和位置', onclick: () => setPos(i, 'skin') }) : null,
             posPick(r, i),
-            btn('', { icon: 'x', cls: 'sm ghost icon', title: '不显示这个角标', onclick: () => save(rules.filter((_, j) => j !== i)) }))))
-            : h('div', { class: 'muted small' }, '现在封面上不显示任何角标'),
+            btn('', { icon: 'x', cls: 'sm ghost icon', title: '不显示这个角标', disabled: r.pos === 'hide', onclick: () => (builtin(r) ? setPos(i, 'hide') : save(rules.filter((_, j) => j !== i))) })))),
+        setRow('每个角只显示排最前的一个', '同一个角有几个角标都符合时，只显示排在最上面的那个；它不符合才轮到下一个。关着的时候每个角最多叠 3 个。', switchEl(cardPrefOf(cardScope).markOne, (v) => setCard({ markOne: v }))),
         h('div', { class: 'row-actions' },
             btn('添加角标', { icon: 'plus', cls: 'sm', onclick: pickSource }),
-            btn('恢复默认', { cls: 'sm ghost', onclick: () => save(DEFAULT_MARKS.map((x) => ({ ...x }))) })));
+            btn('恢复默认', { cls: 'sm ghost', onclick: () => setCard({ marks: DEFAULT_MARKS.map((x) => ({ ...x })), markOne: false }) })));
 }
 
 function importPrefs() {
@@ -797,7 +812,18 @@ function desktopApp() {
 function discordPanel() {
     const box = h('div', { class: 'stack-s' }, h('span', { class: 'muted small' }, '正在读取…'));
     const put = async (body, okMsg) => { try { draw(await api.put('/api/discord', body)); if (okMsg) toast(okMsg, 'ok'); } catch (e) { toast(e.message, 'err'); } };
+    let timer = 0;
     const draw = (d) => {
+        clearTimeout(timer);
+        // 正在查：每 3 秒看一次进度；输入框里正在填令牌时不重画
+        if (d.busy) {
+            const poll = async () => {
+                if (!box.isConnected) return;
+                if (box.contains(document.activeElement) && document.activeElement.tagName === 'INPUT') { timer = setTimeout(poll, 3000); return; }
+                try { draw(await api.get('/api/discord')); } catch { timer = setTimeout(poll, 3000); }
+            };
+            timer = setTimeout(poll, 3000);
+        }
         const token = h('input', { class: 'input', type: 'password', autocomplete: 'off', spellcheck: false, placeholder: d.hasToken ? '已保存，要换就填新的' : '粘贴 Discord 账号令牌' });
         const saveTok = () => { const v = token.value.trim(); if (!v) { toast('先填令牌', 'err'); return; } put({ token: v }, '令牌已保存'); };
         clear(box,
@@ -809,9 +835,9 @@ function discordPanel() {
             d.paused ? h('div', { class: 'note warn' }, icon('alert', { size: 15 }), h('span', { class: 'grow' }, d.paused.reason, d.paused.until ? `（${fmtDate(new Date(d.paused.until).toISOString())} 之后恢复）` : '')) : null,
             h('div', { class: 'row-actions wrap' },
                 h('span', { class: 'muted small grow track-stat' }, d.tracked ? `${d.tracked} 个条目填了 Discord 帖子链接${d.changed ? ` · ${d.changed} 个有更新` : ''}${d.failed ? ` · ${d.failed} 个检查失败` : ''}${d.lastRun ? ` · 上次检查 ${timeAgoOf(d.lastRun)}` : ''}` : '还没有条目的来源链接是 Discord 帖子。'),
-                d.enabled && d.hasToken && !d.paused && d.tracked ? btn(d.busy ? '正在检查…' : '现在全部查一遍', { icon: 'refresh', cls: 'sm', disabled: d.busy, onclick: async (e) => {
+                d.enabled && d.hasToken && !d.paused && d.tracked ? btn(d.busy ? `正在检查 ${d.progress ? `${d.progress.done} / ${d.progress.total}` : '…'}` : '现在全部查一遍', { icon: 'refresh', cls: 'sm', disabled: d.busy, onclick: async (e) => {
                     e.currentTarget.disabled = true;
-                    try { const r = await api.post('/api/discord/check', { all: true }); toast(`开始检查 ${r.queued} 个帖子，一个一个来，要等一会儿`, 'ok'); } catch (err) { toast(err.message, 'err'); }
+                    try { const r = await api.post('/api/discord/check', { all: true }); toast(`开始检查 ${r.queued} 个帖子，每个隔十来秒，大约要 ${Math.max(1, Math.round(r.queued * 12 / 60))} 分钟`, 'ok'); draw(await api.get('/api/discord')); } catch (err) { toast(err.message, 'err'); }
                 } }) : null),
             help('用法：在条目的「来源链接」里填 Discord 帖子的链接（在帖子上右键 → 复制链接）。第一次检查时记下标题，之后标题变了就提醒。只读帖子标题，不下载文件。'));
     };

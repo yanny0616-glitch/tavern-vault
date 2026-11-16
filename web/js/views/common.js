@@ -94,7 +94,17 @@ export const versionCount = (it) => it.files.filter((x) => x.primary || x.sig).l
  * src：ver 版本数 · dupe 可能重复 · tavern 酒馆里已有 · tag:<标签> · field:<字段 id>；pos：tl / tr / bl / br
  */
 export const MARK_POS = { tl: '左上', tr: '右上', bl: '左下', br: '右下' };
-export const DEFAULT_MARKS = [{ src: 'ver', pos: 'bl' }, { src: 'dupe', pos: 'bl' }, { src: 'tavern', pos: 'br' }];
+export const DEFAULT_MARKS = [{ src: 'ver', pos: 'bl' }, { src: 'dupe', pos: 'bl' }, { src: 'tavern', pos: 'br' }, { src: 'track', pos: 'tr' }];
+// 风格自带的两个标记：类型和收藏星标。默认跟着风格走（位置 skin），也可以当普通角标放到某个角，或者不显示（hide）
+export const BUILTIN_MARKS = ['type', 'fav'];
+/** 设置页用的完整规则：自带的两个没出现在规则里时补在最前面（跟随风格） */
+export const allMarkRules = (type) => {
+    const m = cardPrefOf(type).marks;
+    const list = (Array.isArray(m) ? m : DEFAULT_MARKS).filter((x) => x && (MARK_POS[x.pos] || (BUILTIN_MARKS.includes(x.src) && (x.pos === 'skin' || x.pos === 'hide'))));
+    return [...BUILTIN_MARKS.filter((b) => !list.some((x) => x.src === b)).map((src) => ({ src, pos: 'skin' })), ...list];
+};
+/** 自带标记现在怎么显示：skin 跟随风格 | hide 不显示 | 某个角 */
+export const builtinPos = (type, src) => allMarkRules(type).find((x) => x.src === src)?.pos || 'skin';
 /** type 不传或是 'all' 就是默认规则 */
 export const markRules = (type) => { const m = cardPrefOf(type).marks; return (Array.isArray(m) ? m : DEFAULT_MARKS).filter((x) => x && MARK_POS[x.pos]); };
 // 能当角标的字段：值短、一眼能看懂的
@@ -105,6 +115,9 @@ const maxPerCorner = () => (viewOf().dense ? 2 : 3);
 
 /** 规则的名字（设置页里显示） */
 export function markName(src) {
+    if (src === 'type') return '类型';
+    if (src === 'fav') return '收藏星标';
+    if (src === 'track') return '来源有更新';
     if (src === 'ver') return '版本数';
     if (src === 'dupe') return '可能重复';
     if (src === 'tavern') return '酒馆里已有';
@@ -133,21 +146,27 @@ function marksOf(it, dupe) {
         let label = null;
         let k = src;
         let title = '';
-        if (src === 'ver') { const n = versionCount(it); if (n > 1) label = `${n} 版`; } else if (src === 'dupe') { if (dupe) label = '可能重复'; } else if (src === 'tavern') { if (inTavern(it)) { label = '酒馆'; title = '酒馆里已经有同名的'; } } else if (src === 'tags') { for (const t of it.tags) if (!rules.some((r) => r.src === `tag:${t}`)) out.push({ k: 'tag', label: t, pos, title: '标签' }); } else if (src.startsWith('tag:')) { k = 'tag'; if (it.tags.includes(src.slice(4))) label = src.slice(4); } else if (src.startsWith('field:')) { k = 'field'; label = fieldMark(it, src.slice(6)); title = markName(src); }
+        if (src === 'type') label = typeMeta(it.type).label; else if (src === 'fav') { if (it.favorite) label = '收藏'; } else if (src === 'track') { if (it.track?.changed) { label = '有更新'; title = '来源帖的标题变了，可能有更新'; } }
+        else if (src === 'ver') { const n = versionCount(it); if (n > 1) label = `${n} 版`; } else if (src === 'dupe') { if (dupe) label = '可能重复'; } else if (src === 'tavern') { if (inTavern(it)) { label = '酒馆'; title = '酒馆里已经有同名的'; } } else if (src === 'tags') { for (const t of it.tags) if (!rules.some((r) => r.src === `tag:${t}`)) out.push({ k: 'tag', label: t, pos, title: '标签' }); } else if (src.startsWith('tag:')) { k = 'tag'; if (it.tags.includes(src.slice(4))) label = src.slice(4); } else if (src.startsWith('field:')) { k = 'field'; label = fieldMark(it, src.slice(6)); title = markName(src); }
         if (label) out.push({ k, label, pos, title });
     }
+    // 自带标记的显示方式、是不是每个角只留一个：卡片要跟着重画
+    out.one = cardPrefOf(it.type).markOne;
+    out.mode = `${builtinPos(it.type, 'type')}/${builtinPos(it.type, 'fav')}/${out.one ? 1 : 0}`;
     return out;
 }
-const marksKey = (marks) => `${maxPerCorner()}|${marks.map((m) => `${m.pos}:${m.k}:${m.label}`).join(',')}`;
+const marksKey = (marks) => `${maxPerCorner()}|${marks.mode}|${marks.map((m) => `${m.pos}:${m.k}:${m.label}`).join(',')}`;
 
 function markEl(m) {
-    return h('span', { class: `badge-${m.k}`, title: m.title || null }, m.k === 'tavern' ? icon('beer', { size: 11 }) : null, m.label);
+    const ic = { tavern: 'beer', fav: 'star', track: 'refresh' }[m.k];
+    return h('span', { class: `badge-${m.k}`, title: m.title || null }, ic ? icon(ic, { size: 11, fill: m.k === 'fav' }) : null, m.k === 'fav' ? null : m.label);
 }
 
 /** 卡片：四个角各一组，每组最多 3 个（紧凑视图 2 个），多的显示「+n」 */
 function cornerEls(marks) {
     return Object.keys(MARK_POS).map((pos) => {
-        const list = marks.filter((m) => m.pos === pos);
+        // 「每个角只显示排最前的一个」：同一个角有几个都符合时只留第一个，没有才轮到下一个
+        const list = marks.filter((m) => m.pos === pos).slice(0, marks.one ? 1 : undefined);
         if (!list.length) return null;
         const max = maxPerCorner();
         const el = h('span', { class: `card-corner corner-${pos}`, dataset: { extra: Math.max(0, list.length - max) } }, list.slice(0, max).map(markEl));
@@ -228,8 +247,8 @@ function buildCard(it, { selected, selecting, index, marks }) {
         h('div', { class: 'card-media' },
             h('div', { class: 'card-frame' }, media, cornerEls(marks)),
             h('span', { class: 'card-no' }, cardNo(index)),
-            h('span', { class: 'card-type' }, icon(tm.icon, { size: 11 }), h('span', {}, tm.label)),
-            it.favorite ? h('span', { class: 'card-fav' }, icon('star', { size: 13, fill: true })) : null,
+            builtinPos(it.type, 'type') === 'skin' ? h('span', { class: 'card-type' }, icon(tm.icon, { size: 11 }), h('span', {}, tm.label)) : null,
+            it.favorite && builtinPos(it.type, 'fav') === 'skin' ? h('span', { class: 'card-fav' }, icon('star', { size: 13, fill: true })) : null,
             it.rating ? h('span', { class: 'card-rank' }, icon('star', { size: 10, fill: true }), String(it.rating)) : null,
             h('span', { class: 'card-check' }, icon('check', { size: 14, stroke: 3 })),
             it.cover ? h('div', { class: 'card-overlay' }, h('div', { class: 'card-title' }, it.name), sub ? h('div', { class: 'card-sub' }, sub) : null) : null),
@@ -321,7 +340,7 @@ function aiLine(it, cls) {
 
 /** 列表行没有封面，角标排在名字下面 */
 function badgeEls(it, dupe) {
-    const list = marksOf(it, dupe);
+    const list = marksOf(it, dupe).filter((m) => m.k !== 'type' && m.k !== 'fav');
     return list.length ? h('span', { class: 'row-badges' }, list.map(markEl)) : null;
 }
 

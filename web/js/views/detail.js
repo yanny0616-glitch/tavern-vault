@@ -19,7 +19,7 @@ import { runRegex, vetScripts, applyScripts, displayScripts, looksHtml, stView, 
 import { cardPng } from '../pngcard.js';
 import { discordAppUrl, sourceLinkProps } from '../source-links.js';
 import { tagCloud } from '../tagcloud.js';
-import { trackNote } from './track.js';
+import { trackNote, isDiscordSource, openSourceFetch } from './track.js';
 import { entriesOf, entryKeys, entryKeys2, effectivePrompts, presetRegex } from '../cardfmt.js';
 import { inTavern } from '../tavern-index.js';
 
@@ -456,6 +456,7 @@ export function openDetail(id, { seq = null, onLeave = null, src = null } = {}) 
             title: it.name,
             body: h('div', { class: 'menu' },
                 !it.deletedAt ? item('pencil', '编辑资料', () => editItem(it)) : null,
+                !it.deletedAt && isDiscordSource(it) ? item('download', '从 Discord 来源帖取新版本', () => openSourceFetch(it)) : null,
                 aiReady() && !it.deletedAt ? item('sparkles', 'AI 整理（标签、简介、字段）', () => startOrganize([it.id])) : null,
                 aiReady() && !it.deletedAt ? item('message', '问 AI（把这一项发给 AI 一起看）', () => openAiChat({ refs: [it.id] })) : null,
                 it.type === 'character' && p && !it.deletedAt ? item('user', '编辑角色卡内容（保存为新版本）', () => withCard((c) => editCard(it, c))) : null,

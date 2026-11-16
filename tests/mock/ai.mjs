@@ -1,7 +1,6 @@
 // 模拟 AI 服务：OpenAI 兼容 + Claude 两种格式
 import http from 'node:http';
 const log = [];
-const discord = {}; const discordLog = [];
 // 对话：回显收到了几轮、参考了哪些条目，方便测试检查发出去的内容
 function chatReply(system, turns) {
     const refs = [...system.matchAll(/<item id="\d+" type="[^"]*" name="([^"]*)">/g)].map((m) => m[1]);
@@ -57,19 +56,6 @@ http.createServer((req, res) => {
     req.on('end', () => {
         const u = req.url.split('?')[0];
         const send = (st, o) => { res.writeHead(st, { 'content-type': 'application/json' }); res.end(JSON.stringify(o)); };
-        // 模拟 Discord：/discord/channels/<id> 返回帖子标题；/discord/__set 改标题或状态
-        if (u.startsWith('/discord/')) {
-            if (u === '/discord/__set') { Object.assign(discord, JSON.parse(body || '{}')); return send(200, { ok: true }); }
-            if (u === '/discord/__log') return send(200, discordLog);
-            const id = u.split('/')[3];
-            discordLog.push({ id, auth: req.headers.authorization || '', method: req.method });
-            if (req.headers.authorization !== 'good-token') return send(401, { message: '401: Unauthorized' });
-            const c = discord[id];
-            if (c === 429) return send(429, { message: 'You are being rate limited.', retry_after: 5 });
-            if (c === 403) return send(403, { message: 'Missing Access' });
-            if (!c) return send(404, { message: 'Unknown Channel' });
-            return send(200, { id, name: c, type: 11 });
-        }
         // 流式返回：每次几个字。SLOWME 慢慢吐（用来测停止），CUTME 吐一半断开连接
         const stream = (text, { anthropic = false, model = 'mock', gap = 40, cut = false } = {}) => {
             res.writeHead(200, { 'content-type': 'text/event-stream' });
