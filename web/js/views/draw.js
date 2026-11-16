@@ -112,6 +112,7 @@ export function openDraw(list) {
         } finally { askBtn.disabled = false; }
     }
 
+    s.body.classList.add('stack');
     clear(s.body,
         h('div', { class: 'muted small' }, `从仓库里现在看到的 ${pool.length} 个${label}里挑。想换范围，先在仓库里筛选或搜索。`),
         out,

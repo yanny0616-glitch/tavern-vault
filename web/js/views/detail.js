@@ -955,7 +955,7 @@ export function openDetail(id, { seq = null, onLeave = null, src = null } = {}) 
         if (regex.length) secs.push({ key: 'regex', title: '内嵌正则', meta: `${regex.length} 条`, action: src || it.deletedAt ? null : h('span', { class: 'row-actions' }, btn('编辑', { icon: 'pencil', cls: 'sm ghost', onclick: () => editRegex(it, c, dropContent) }), takeOut('regex', '内嵌正则')), node: regexView(regex, { sample: String(greetings[0] || ''), n }) });
         const anchor = (k) => `sec-${id}-${k}`;
         return h('div', { class: 'reader' },
-            h('div', { class: 'reader-tools' },
+            h('div', { class: 'reader-tools card-tools' },
                 c.spec ? h('span', { class: 'chip-s' }, c.spec.replace('chara_card_', '').toUpperCase()) : null,
                 d.character_version ? h('span', { class: 'muted small' }, `v${d.character_version}`) : null,
                 h('span', { class: 'grow' }),

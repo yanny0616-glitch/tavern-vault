@@ -1408,3 +1408,20 @@ div.bar-row { cursor: default; }
   .stats-flow > * { grid-column: 1 / -1; min-width: 0; }
   .stats-flow > .stat-types, .stats-flow > .stat-new, .stats-flow > .stat-clean, .stats-flow > .stat-toptags { grid-column: auto; }
 }
+
+/* 步骤列表里不带序号的行不占序号（原来会数成 1、2、5） */
+.steps li.plain { display: block; }
+/* 阅读页小节标题：标题不折行，后面的说明太长就省略 */
+.read-head h3 { white-space: nowrap; flex: none; }
+.read-head .fold-count { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+@media (max-width: 480px) {
+  /* 统计页的数字格：手机上一行三个，不用两个一行排五行 */
+  .kpis { grid-template-columns: repeat(3, 1fr); gap: 8px; }
+  .kpi { padding: 10px; }
+  .kpi b { font-size: calc(18px * var(--fs)); }
+  .kpi-ic { margin-bottom: 3px; }
+  /* 角色卡内容页的工具按钮：版本一行，四个按钮平分一行 */
+  .card-tools > .grow { flex-basis: 100%; height: 0; }
+  .card-tools > .btn { flex: 1; padding-left: 6px; padding-right: 6px; }
+  .card-tools > .btn > svg { display: none; }
+}
