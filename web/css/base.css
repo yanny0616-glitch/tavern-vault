@@ -1376,3 +1376,11 @@ div.bar-row { cursor: default; }
 @media (max-width: 480px) { .st-theme-frame { height: 560px; } .bookset-row { flex-wrap: wrap; } .bookset-row > .grow { flex-basis: 100%; } }
 .st-theme-frame.phone { max-width: 400px; }
 .st-theme-opts { margin-bottom: 10px; }
+
+/* ---------- 酒馆联动：带按钮的提示条、抽卡直接开聊 ---------- */
+.toast.act { pointer-events: auto; border-radius: var(--radius-sm); padding: 8px 8px 8px 14px; max-width: min(92vw, 460px); }
+.toast-btn { border: 0; border-radius: 999px; padding: 5px 12px; background: var(--accent); color: var(--on-accent); font: inherit; font-weight: 600; cursor: pointer; white-space: nowrap; }
+.toast-x { border: 0; background: none; color: inherit; opacity: .7; cursor: pointer; display: inline-flex; padding: 4px; }
+.draw-item { display: flex; flex-direction: column; gap: 6px; }
+.draw-item .draw-chat { align-self: flex-end; }
+.bookset-tavern { padding: 2px 2px 0; }

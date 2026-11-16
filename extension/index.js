@@ -2,8 +2,12 @@
 // 作用：1) 全屏内嵌卡匣网页；2) 作为桥，替卡匣页面读写酒馆本地数据（角色卡、世界书、预设、正则、快速回复、主题、背景）
 
 const EXT_KEY = 'tavernVault';
-const VERSION = '1.2.3';
-const DEFAULTS = { url: '', token: '', fab: true, fabPos: null };
+const VERSION = '1.3.0';
+// jump：打开卡匣时跳到正在聊的角色卡
+// sync：酒馆里改了卡或世界书 → ask 提醒我 / auto 自动存成新版本 / off 不管
+// updates：卡匣里有新版本时提醒
+// chats：聊天记录自动存进卡匣 → off 不存 / idle 聊天停下来后存一份
+const DEFAULTS = { url: '', token: '', fab: true, fabPos: null, jump: true, sync: 'ask', updates: true, chats: 'off' };
 const isTT = () => Boolean(window.__TAURITAVERN__);
 
 const ctx = () => SillyTavern.getContext();
@@ -104,10 +108,29 @@ async function backgroundList() {
     return list.map((x) => (typeof x === 'string' ? x : x.filename || x.name)).filter(Boolean);
 }
 
+/** 酒馆里一张角色卡的完整内容 */
+async function charData(avatar) {
+    const ch = (ctx().characters || []).find((x) => x.avatar === avatar);
+    const parse = (x) => { if (x && typeof x.json_data === 'string') { try { return JSON.parse(x.json_data); } catch { /* ignore */ } } return x; };
+    if (ch && !ch.shallow) return parse(ch);
+    return parse(await (await stPost('/api/characters/get', { avatar_url: avatar })).json());
+}
+
+/** 现在正在聊的角色卡。群聊、没开聊天时是 null */
+function current() {
+    const c = ctx();
+    if (c.groupId || c.characterId == null || c.characterId === '') return null;
+    const ch = (c.characters || [])[c.characterId];
+    if (!ch?.avatar) return null;
+    let chatId = '';
+    try { chatId = String(c.getCurrentChatId?.() || ''); } catch { /* ignore */ }
+    return { avatar: ch.avatar, name: ch.name, chatId };
+}
+
 const jsonFile = (name, obj) => ({ filename: `${String(name).replace(/[\\/:*?"<>|]/g, '_')}.json`, data: new TextEncoder().encode(JSON.stringify(obj, null, 2)).buffer });
 
 const handlers = {
-    hello: async () => ({ host: isTT() ? 'TauriTavern' : 'SillyTavern', version: VERSION, features: ['raw', 'replace', 'theme', 'insets', 'image'] }),
+    hello: async () => ({ host: isTT() ? 'TauriTavern' : 'SillyTavern', version: VERSION, features: ['raw', 'replace', 'theme', 'insets', 'image', 'current', 'openChat', 'applyTheme', 'linkWorld'] }),
 
     /** 卡匣告诉插件当前风格的颜色：面板顶部（状态栏那一条）和标题栏跟着变，不再是固定的深色 */
     async theme({ bg, fg, line } = {}) {
@@ -138,6 +161,73 @@ const handlers = {
         return { top: measure('top'), bottom: measure('bottom'), left: measure('left'), right: measure('right') };
     },
 
+    /** 现在正在和谁聊（群聊、没开聊天时是 null），以及要不要一打开就跳过去 */
+    async current() {
+        return { current: current(), jump: settings().jump !== false };
+    },
+
+    /** 关掉卡匣，打开和这张卡的聊天 */
+    async openChat({ avatar = '', name = '' } = {}) {
+        const c = ctx();
+        const find = () => (c.characters || []).findIndex((x) => (avatar ? x.avatar === avatar : x.name === name));
+        let i = find();
+        if (i < 0) { try { await c.getCharacters?.(); } catch { /* ignore */ } i = find(); }
+        if (i < 0) throw new Error('酒馆里没找到这张卡');
+        closePanel();
+        if (c.selectCharacterById) await c.selectCharacterById(i);
+        else document.querySelector(`.character_select[chid="${i}"]`)?.click();
+        return { ok: true };
+    },
+
+    /**
+     * 在酒馆里换上一套主题。酒馆里没有同名的：走酒馆自己的「导入主题」再选中；
+     * 已经有同名的：直接选中它，不覆盖（酒馆的导入不允许重名）
+     */
+    async applyTheme({ name, data }) {
+        const sel = document.getElementById('themes');
+        const input = document.getElementById('ui_preset_import_file');
+        const n = String(name || data?.name || '').trim();
+        if (!sel || !n) throw new Error('这个版本的酒馆不支持从插件切换主题');
+        const has = () => [...sel.options].some((o) => o.value === n);
+        const existed = has();
+        closePanel(); // 让出屏幕：主题带 @import 时酒馆会先弹窗确认，换上以后也能马上看到
+        if (!existed) {
+            if (!input) throw new Error('这个版本的酒馆不支持从插件导入主题');
+            const dt = new DataTransfer();
+            dt.items.add(new File([JSON.stringify({ ...data, name: n })], `${n}.json`, { type: 'application/json' }));
+            input.files = dt.files;
+            input.dispatchEvent(new Event('change', { bubbles: true }));
+            for (let i = 0; i < 300 && !has(); i++) await new Promise((r) => setTimeout(r, 200));
+            if (!has()) throw new Error('酒馆没有导入这套主题（可能在确认的弹窗里点了取消）');
+        }
+        if (window.jQuery?.fn) window.jQuery(sel).val(n).trigger('change');
+        else { sel.value = n; sel.dispatchEvent(new Event('change', { bubbles: true })); }
+        settingsCache = null;
+        return { existed, message: existed ? `酒馆里已经有同名主题「${n}」，直接换上了它，没有覆盖` : `已导入并换上主题「${n}」` };
+    },
+
+    /** 把一本世界书存进酒馆，并绑到这张角色卡上（酒馆里角色卡用的是绑定的世界书文件） */
+    async linkWorld({ avatar, name, world }) {
+        const c = ctx();
+        const i = (c.characters || []).findIndex((x) => x.avatar === avatar);
+        if (i < 0) throw new Error('酒馆里没找到这张卡');
+        const n = String(name || '').replace(/[\\/:*?"<>|]/g, '_').trim();
+        if (!n) throw new Error('世界书没有名字');
+        await stUpload('/api/worldinfo/import', new File([JSON.stringify(world)], `${n}.json`, { type: 'application/json' }));
+        try { (await import('/scripts/world-info.js')).updateWorldInfoList?.(); } catch { /* ignore */ }
+        if (c.writeExtensionField) await c.writeExtensionField(i, 'world', n);
+        else await stPost('/api/characters/merge-attributes', { avatar, data: { extensions: { world: n } } });
+        // 正开着这张卡：界面上绑定的世界书也跟着换
+        if (String(c.characterId) === String(i)) {
+            const el = document.getElementById('character_world');
+            if (el) el.value = n;
+            document.querySelectorAll('#set_character_world, #world_button').forEach((b) => b.classList.add('world_set'));
+        }
+        settingsCache = null;
+        told.delete(avatar);
+        return { message: `酒馆里「${c.characters[i].name}」绑定的世界书换成了「${n}」` };
+    },
+
     /** 返回酒馆里条目的原始内容（JSON），卡匣用它计算内容指纹，判断两边是否一致 */
     async raw({ kind, ids = [] }) {
         const c = ctx();
@@ -153,12 +243,7 @@ const handlers = {
         };
         switch (kind) {
             case 'character':
-                await pool(ids, async (id) => {
-                    const ch = (c.characters || []).find((x) => x.avatar === id);
-                    const parse = (x) => { if (x && typeof x.json_data === 'string') { try { return JSON.parse(x.json_data); } catch { /* ignore */ } } return x; };
-                    if (ch && !ch.shallow) return parse(ch);
-                    return parse(await (await stPost('/api/characters/get', { avatar_url: id })).json());
-                });
+                await pool(ids, charData);
                 break;
             case 'worldbook':
                 await pool(ids, async (id) => (await stPost('/api/worldinfo/get', { name: id })).json());
@@ -290,9 +375,10 @@ const handlers = {
         switch (kind) {
             case 'character': {
                 const ext = (filename.split('.').pop() || 'png').toLowerCase();
-                await stUpload('/api/characters/import', file, replace ? { file_type: ext, preserved_name: replace } : { file_type: ext });
+                const up = await stUpload('/api/characters/import', file, replace ? { file_type: ext, preserved_name: replace } : { file_type: ext });
                 try { await c.getCharacters?.(); } catch { /* ignore */ }
-                return { message: replace ? '已覆盖酒馆里的角色卡（聊天记录保留）' : '已导入角色卡' };
+                const avatar = replace || (up?.file_name ? `${up.file_name}.png` : '');
+                return { message: replace ? '已覆盖酒馆里的角色卡（聊天记录保留）' : '已导入角色卡', avatar };
             }
             case 'worldbook': {
                 let n = clean(name || filename.replace(/\.json$/i, ''));
@@ -369,6 +455,121 @@ const handlers = {
         }
     },
 };
+
+// ---------------- 不打开面板也在做的事：改动提醒、新版本提醒、聊天归档 ----------------
+/** 直接请求卡匣服务 */
+async function vault(path, { method = 'GET', json, body } = {}) {
+    const h = {};
+    if (settings().token) h.Authorization = `Bearer ${settings().token}`;
+    if (json !== undefined) { h['Content-Type'] = 'application/json'; body = JSON.stringify(json); }
+    const res = await fetch(baseUrl() + path, { method, headers: h, body, cache: 'no-store' });
+    if (!res.ok) {
+        let msg = `HTTP ${res.status}`;
+        try { msg = (await res.json()).error || msg; } catch { /* ignore */ }
+        throw new Error(msg);
+    }
+    return res;
+}
+const postEvent = (event, data) => iframe?.contentWindow?.postMessage({ tv: 1, kind: 'event', event, data }, vaultOrigin() || '*');
+
+/** 一条可以点的提醒：点了才做事，不点过一会儿自己消失 */
+function notice(msg, onclick) {
+    const t = window.toastr;
+    if (t?.info) t.info(msg, '卡匣', { timeOut: 15000, extendedTimeOut: 5000, closeButton: true, onclick: () => { Promise.resolve(onclick()).catch((e) => toast(e.message, 'error')); } });
+    else console.log('[Cardbox]', msg);
+}
+
+// 同一份内容只提醒一次：角色卡按头像文件名记，世界书按「w:名字」记
+const told = new Map();
+let checking = false;
+
+/** 把酒馆里的这张卡存成卡匣里的新版本 */
+async function pushCard(cur, r) {
+    const buf = await (await stPost('/api/characters/export', { format: 'png', avatar_url: cur.avatar })).arrayBuffer();
+    const q = new URLSearchParams({ filename: `${cur.name}.png`, origin: 'tavern', target: r.itemId, match: 'version', label: '酒馆里改的' });
+    const out = await (await vault(`/api/items?${q}`, { method: 'POST', body: buf })).json();
+    toast(out.duplicate ? `「${cur.name}」卡匣里已经是这个内容了` : `已把「${cur.name}」存成卡匣里的新版本`, 'success');
+    postEvent('tavern-changed');
+}
+/** 用卡匣里的当前版本覆盖酒馆里的这张卡 */
+async function pullCard(cur, r) {
+    const data = await (await vault(`/api/files/${r.sha}`)).arrayBuffer();
+    await handlers.import({ kind: 'character', filename: r.fileName || `${cur.name}.png`, data, replace: cur.avatar });
+    toast(`已把「${cur.name}」更新成卡匣里的版本，聊天记录保留。重新打开这个角色后生效`, 'success');
+    postEvent('tavern-changed');
+}
+
+/** 正在聊的这张卡和卡匣里的比一下：酒馆里改过 → 提醒存进卡匣；卡匣里更新 → 提醒更新酒馆 */
+async function checkCurrent() {
+    const s = settings();
+    if (!baseUrl() || (s.sync === 'off' && !s.updates) || checking) return;
+    const cur = current();
+    if (!cur) return;
+    checking = true;
+    try {
+        const data = await charData(cur.avatar);
+        if (!data) return;
+        const r = await (await vault('/api/tavern/status', { method: 'POST', json: { kind: 'character', name: cur.name, data } })).json();
+        if (!r.mark || told.get(cur.avatar) === r.mark) return;
+        if (r.status === 'changed' && s.sync !== 'off') {
+            told.set(cur.avatar, r.mark);
+            if (s.sync === 'auto') await pushCard(cur, r);
+            else notice(`「${cur.name}」在酒馆里改过了，和卡匣里的不一样。点这里存成卡匣里的新版本`, () => pushCard(cur, r));
+        } else if (r.status === 'older' && s.updates) {
+            told.set(cur.avatar, r.mark);
+            notice(`卡匣里有「${cur.name}」的新版本。点这里更新酒馆里的这张卡（聊天记录保留）`, () => pullCard(cur, r));
+        }
+    } catch (e) {
+        console.debug('[Cardbox] 比对失败', e);
+    } finally { checking = false; }
+}
+
+/** 世界书在酒馆里改了：和卡匣里同名的比一下 */
+async function checkWorld(name, data) {
+    const s = settings();
+    if (!baseUrl() || s.sync === 'off' || !name) return;
+    try {
+        data ||= await (await stPost('/api/worldinfo/get', { name })).json();
+        const r = await (await vault('/api/tavern/status', { method: 'POST', json: { kind: 'worldbook', name, data } })).json();
+        if (r.status !== 'changed' || told.get(`w:${name}`) === r.mark) return;
+        told.set(`w:${name}`, r.mark);
+        const push = async () => {
+            const q = new URLSearchParams({ filename: `${name}.json`, origin: 'tavern', target: r.itemId, match: 'version', label: '酒馆里改的' });
+            await vault(`/api/items?${q}`, { method: 'POST', body: JSON.stringify(data, null, 2) });
+            toast(`已把世界书「${name}」存成卡匣里的新版本`, 'success');
+            postEvent('tavern-changed');
+        };
+        if (s.sync === 'auto') await push();
+        else notice(`世界书「${name}」在酒馆里改过了。点这里存成卡匣里的新版本`, push);
+    } catch (e) { console.debug('[Cardbox] 比对失败', e); }
+}
+
+// 聊天归档：每来一条消息记下当时的整段聊天，停下来一会儿后存进卡匣；切走聊天时马上存
+const CHAT_IDLE = 45000;
+let chatSnap = null;
+let chatTimer = 0;
+function snapChat() {
+    if (settings().chats === 'off' || !baseUrl()) return;
+    const c = ctx();
+    const cur = current();
+    const msgs = c.chat || [];
+    // 只有开场白、还没聊的不存
+    if (!cur?.chatId || msgs.filter((m) => !m.is_system).length < 2) return;
+    const head = { user_name: c.name1, character_name: c.name2, create_date: msgs[0]?.send_date || '', chat_metadata: c.chatMetadata || {} };
+    chatSnap = { key: `${cur.avatar}/${cur.chatId}`, filename: `${cur.name} - ${cur.chatId}.jsonl`, char: cur.name, text: [head, ...msgs].map((x) => JSON.stringify(x)).join('\n') };
+    clearTimeout(chatTimer);
+    chatTimer = setTimeout(flushChat, CHAT_IDLE);
+}
+async function flushChat() {
+    clearTimeout(chatTimer);
+    const snap = chatSnap;
+    chatSnap = null;
+    if (!snap) return null;
+    try {
+        const q = new URLSearchParams({ key: snap.key, filename: snap.filename, char: snap.char });
+        return await (await vault(`/api/tavern/chat?${q}`, { method: 'POST', body: snap.text })).json();
+    } catch (e) { console.debug('[Cardbox] 聊天归档失败', e); return null; }
+}
 
 // ---------------- 面板 & 消息桥 ----------------
 let panel;
@@ -450,6 +651,8 @@ async function openPanel() {
     const q = new URLSearchParams({ embed: 'tavern', po });
     if (settings().token) q.set('token', settings().token);
     const src = `${baseUrl()}/#/library?${q}`;
+    // 页面已经开着：告诉它面板又被打开了，好跳到现在正在聊的卡
+    if (loadedSrc === src) postEvent('opened', await handlers.current());
     if (loadedSrc !== src) {
         loadedSrc = src;
         iframe.src = src;
@@ -543,6 +746,13 @@ function buildSettings() {
           </div>
           <div id="tv-status" class="tv-status"></div>
           <label class="checkbox_label"><input id="tv-fab-toggle" type="checkbox"> 显示悬浮按钮（可拖动）</label>
+          <label class="checkbox_label"><input id="tv-jump" type="checkbox"> 打开卡匣时，跳到正在聊的角色卡</label>
+          <div class="tv-row"><label>酒馆里改了卡或世界书</label><select id="tv-sync" class="text_pole">
+            <option value="ask">提醒我，点一下存成新版本</option><option value="auto">自动存成卡匣里的新版本</option><option value="off">不管</option></select></div>
+          <label class="checkbox_label"><input id="tv-updates" type="checkbox"> 卡匣里有新版本时提醒我更新酒馆里的卡</label>
+          <div class="tv-row"><label>聊天记录</label><select id="tv-chats" class="text_pole">
+            <option value="off">不自动存</option><option value="idle">聊天停下来后自动存进卡匣</option></select></div>
+          <small style="opacity:.7">改动和新版本只比对正在聊的这张卡（要卡匣里有同名的卡）。自动存的聊天每段只留最新的一份，会绑到卡匣里同名的角色卡上；群聊不存。</small>
           <small style="opacity:.7">也可以从左下角「魔棒」扩展菜单里打开。密码只用于换取访问令牌，不会保存明文。</small>
         </div>
       </div>
@@ -556,6 +766,14 @@ function buildSettings() {
     status(s.url ? (s.token ? '已保存连接信息' : '已保存地址') : '尚未配置');
     $('tv-url').addEventListener('change', () => { s.url = $('tv-url').value.trim().replace(/\/+$/, ''); save(); loadedSrc = ''; });
     $('tv-fab-toggle').addEventListener('change', () => { s.fab = $('tv-fab-toggle').checked; save(); renderFab(); });
+    $('tv-jump').checked = s.jump !== false;
+    $('tv-updates').checked = s.updates !== false;
+    $('tv-sync').value = ['ask', 'auto', 'off'].includes(s.sync) ? s.sync : 'ask';
+    $('tv-chats').value = s.chats === 'idle' ? 'idle' : 'off';
+    $('tv-jump').addEventListener('change', () => { s.jump = $('tv-jump').checked; save(); });
+    $('tv-updates').addEventListener('change', () => { s.updates = $('tv-updates').checked; save(); told.clear(); });
+    $('tv-sync').addEventListener('change', () => { s.sync = $('tv-sync').value; save(); told.clear(); });
+    $('tv-chats').addEventListener('change', () => { s.chats = $('tv-chats').value; save(); if (s.chats === 'off') { clearTimeout(chatTimer); chatSnap = null; } });
     $('tv-open').addEventListener('click', openPanel);
     $('tv-connect').addEventListener('click', async () => {
         s.url = $('tv-url').value.trim().replace(/\/+$/, '');
@@ -617,6 +835,22 @@ async function init() {
     for (const ev of ['CHARACTER_EDITED', 'CHARACTER_DELETED', 'CHARACTER_PAGE_LOADED', 'WORLDINFO_UPDATED', 'SETTINGS_UPDATED']) {
         if (c.event_types?.[ev]) c.eventSource.on(c.event_types[ev], () => { settingsCache = null; notify(); });
     }
+    const on = (ev, fn) => { if (c.event_types?.[ev]) c.eventSource.on(c.event_types[ev], fn); };
+    const later = (fn, ms) => { let t = 0; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; };
+    // 换了聊天：上一段没存的先存掉，再看看这张卡两边是不是一样
+    const checkSoon = later(checkCurrent, 1500);
+    on('CHAT_CHANGED', () => { flushChat(); checkSoon(); });
+    // 编辑角色卡时每改一个字段都会触发，等停手了再比
+    on('CHARACTER_EDITED', later(checkCurrent, 8000));
+    const worldSoon = new Map();
+    on('WORLDINFO_UPDATED', (name, data) => {
+        if (typeof name !== 'string') return;
+        if (!worldSoon.has(name)) worldSoon.set(name, later((d) => checkWorld(name, d), 8000));
+        worldSoon.get(name)(data);
+    });
+    for (const ev of ['MESSAGE_RECEIVED', 'MESSAGE_SENT', 'MESSAGE_EDITED', 'MESSAGE_DELETED', 'MESSAGE_SWIPED']) on(ev, snapChat);
+    // 给测试和排查用
+    window.__cardbox = { checkCurrent, checkWorld, snapChat, flushChat, current };
 }
 
 jQuery(() => { init().catch((e) => console.error('[Cardbox] init failed', e)); });

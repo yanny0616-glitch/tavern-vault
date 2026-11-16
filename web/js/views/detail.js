@@ -12,6 +12,7 @@ import { openAiChat } from './aichat.js';
 import { editPreset, editRegex, openBookSets } from './editors.js';
 import { stThemePreview } from '../stthemeview.js';
 import { externalHosts } from '../themecore.js';
+import { applyStTheme } from './nowchat.js';
 import { richText, dialogView } from '../richtext.js';
 import { coverImg, coverSrc } from '../thumbs.js';
 import { runRegex, vetScripts, applyScripts, displayScripts, looksHtml, stView, hasHtmlFence, hasScript, PLACEMENT } from '../stview.js';
@@ -1096,7 +1097,8 @@ export function openDetail(id, { seq = null, onLeave = null, src = null } = {}) 
         drawPv();
         return h('div', { class: 'stack' },
             h('section', { class: 'panel' },
-                h('div', { class: 'panel-head' }, icon('eye', { size: 16 }), h('h3', {}, '预览')),
+                h('div', { class: 'panel-head' }, icon('eye', { size: 16 }), h('h3', {}, '预览'), h('span', { class: 'grow' }),
+                    bridge.has('applyTheme') && !src && !it.deletedAt ? btn('在酒馆里用这套', { icon: 'beer', cls: 'sm primary st-theme-apply', title: '关掉卡匣，把酒馆换成这套主题；酒馆里没有会先导入', onclick: async (e) => { const b = e.currentTarget; b.disabled = true; await applyStTheme(it, d); b.disabled = false; } }) : null),
                 h('div', { class: 'check-grid st-theme-opts' },
                     check('手机宽度', state.prefs.stThemePhone !== false, (v) => { state.prefs.stThemePhone = v; savePrefs(); }),
                     hasCss ? check('套上自定义 CSS', true, (v) => { withCss = v; }) : null,

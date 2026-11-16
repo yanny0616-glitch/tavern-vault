@@ -5,6 +5,8 @@ import { state, typeMeta, savePrefs } from '../state.js';
 import { coverImg } from '../thumbs.js';
 import { openDetail } from './detail.js';
 import { aiReady } from './ai.js';
+import { bridge } from '../bridge.js';
+import { startChat } from './nowchat.js';
 
 
 // 抽卡记录：只存在这台设备的浏览器里。[{ id, at, ai }]，新的在前
@@ -54,7 +56,11 @@ export function openDraw(list) {
     const out = h('div', { class: 'draw-out' });
     const s = sheet({ title: '抽一张', body: h('div', { class: 'stack' }) });
 
-    const card = (it, reason) => h('button', { class: 'draw-card', style: { '--tc': typeMeta(it.type).color }, onclick: () => { s.close(); setTimeout(() => openDetail(it.id), 200); } },
+    // 在酒馆里打开时，角色卡可以直接开聊（酒馆里还没有就先导入）
+    const canChat = (it) => it.type === 'character' && bridge.has('openChat') && it.files.length > 0;
+    const card = (it, reason) => h('div', { class: 'draw-item' }, cardBtn(it, reason),
+        canChat(it) ? btn('直接开聊', { icon: 'message', cls: 'sm primary draw-chat', title: '关掉卡匣，在酒馆里打开和它的聊天；酒馆里还没有这张卡会先导入', onclick: async (e) => { e.currentTarget.disabled = true; await startChat(it); } }) : null);
+    const cardBtn = (it, reason) => h('button', { class: 'draw-card', style: { '--tc': typeMeta(it.type).color }, onclick: () => { s.close(); setTimeout(() => openDetail(it.id), 200); } },
         h('div', { class: 'draw-cover' }, it.cover ? coverImg(it) : icon(typeMeta(it.type).icon, { size: 26 })),
         h('div', { class: 'draw-info' },
             h('b', {}, it.name),

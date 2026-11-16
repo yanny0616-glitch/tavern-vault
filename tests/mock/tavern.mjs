@@ -36,9 +36,26 @@ function multipart(req, body) {
 }
 const page = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><link rel="stylesheet" href="/ext/style.css"></head><body>
 <div id="extensionsMenu"></div><div id="extensions_settings2"></div>
+<select id="themes"><option value="酒馆暗色">酒馆暗色</option></select><input type="file" id="ui_preset_import_file" hidden><input id="character_world">
 <script>
 window.jQuery = (fn) => (document.readyState === 'loading' ? document.addEventListener('DOMContentLoaded', fn) : fn());
-window.toastr = { info: console.log, warning: console.log, error: console.log, success: console.log };
+// 提醒都记下来；带 onclick 的可以用 __click(i) 点
+window.__notices = [];
+const note = (kind) => (msg, title, opts) => { window.__notices.push({ kind, msg, click: opts?.onclick || null }); };
+window.toastr = { info: note('info'), warning: note('warning'), error: note('error'), success: note('success') };
+window.__click = (i) => window.__notices[i].click();
+// 酒馆自己的主题导入和切换
+window.__themes = ['酒馆暗色']; window.__theme = '';
+document.getElementById('ui_preset_import_file').addEventListener('change', async (e) => {
+  const t = JSON.parse(await e.target.files[0].text());
+  window.__themes.push(t.name); window.__imported = t;
+  document.getElementById('themes').append(new Option(t.name, t.name));
+});
+document.getElementById('themes').addEventListener('change', (e) => { window.__theme = e.target.value; });
+// 事件：测试里用 __emit('CHAT_CHANGED') 触发
+const evs = {};
+window.__emit = (ev, ...a) => (evs[ev] || []).forEach((fn) => fn(...a));
+window.__st = { characterId: undefined, chatId: '', chat: [], selected: [], fields: [] };
 const es = { regex: [{ id: 'r1', scriptName: '酒馆正则', findRegex: '/a/g', replaceString: 'b' }] };
 window.__saved = 0;
 let chars = [];
@@ -49,7 +66,12 @@ window.SillyTavern = { getContext: () => ({
   extensionSettings: es, saveSettingsDebounced: () => { window.__saved++; },
   getRequestHeaders: () => ({ 'Content-Type': 'application/json', 'X-CSRF-Token': 'x' }),
   getCharacters: async () => { window.__refreshed = true; await loadChars(); },
-  eventSource: { on() {} }, event_types: {},
+  eventSource: { on(ev, fn) { (evs[ev] ||= []).push(fn); } },
+  event_types: Object.fromEntries(['CHAT_CHANGED', 'CHARACTER_EDITED', 'WORLDINFO_UPDATED', 'MESSAGE_RECEIVED', 'MESSAGE_SENT', 'MESSAGE_EDITED', 'MESSAGE_DELETED', 'MESSAGE_SWIPED'].map((k) => [k, k])),
+  characterId: window.__st.characterId, groupId: null, chat: window.__st.chat, name1: '我', name2: chars[window.__st.characterId]?.name || '', chatMetadata: {},
+  getCurrentChatId: () => window.__st.chatId,
+  selectCharacterById: async (i) => { window.__st.selected.push(chars[i].avatar); window.__st.characterId = i; },
+  writeExtensionField: async (i, key, value) => { window.__st.fields.push([chars[i].avatar, key, value]); },
 }) };
 </script>
 <script type="module" src="/ext/index.js"></script></body></html>`;

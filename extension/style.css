@@ -101,3 +101,4 @@ body #tv-panel.tv-edge.open {
 .tv-settings .tv-status { font-size: 0.9em; opacity: 0.85; margin: 4px 0; }
 .tv-settings .tv-status.ok { color: #30a46c; }
 .tv-settings .tv-status.err { color: #e5484d; }
+.tv-settings .tv-row select { flex: 1; min-width: 160px; }

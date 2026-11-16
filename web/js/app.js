@@ -2,6 +2,7 @@
 import { h, clear, toast, icon, emptyState, btn } from './ui.js';
 import { api } from './api.js';
 import { bridge } from './bridge.js';
+import { onTavernOpen } from './views/nowchat.js';
 import { state, reload, subscribe, applyAccent, live } from './state.js';
 import { renderLibrary } from './views/library.js';
 import { renderCollections } from './views/collections.js';
@@ -226,6 +227,11 @@ async function start() {
         initNative({ onFiles: openImporter, notify: toast });
         // 酒馆里已有哪些内容：卡匣卡片上的「酒馆」角标和「未导入酒馆」筛选要用
         if (bridge.host) loadTavernIndex();
+        // 正在聊的角色卡：打开卡匣就跳过去（插件设置里可以关）
+        if (bridge.has('current')) {
+            bridge.call('current', {}, [], 8000).then(onTavernOpen).catch(() => {});
+            bridge.on((ev, data) => { if (ev === 'opened') onTavernOpen(data); });
+        }
         const m = location.hash.match(/[?&]item=([a-f0-9]+)/);
         if (m && state.byId.has(m[1])) setTimeout(() => openDetail(m[1]), 100);
     }

@@ -1,9 +1,12 @@
 // 预设条目、正则的编辑器，和「一张卡挂多套世界书」的管理面板。保存都是生成新版本，旧的留在「文件」页。
 import { h, clear, sheet, toast, icon, btn, switchEl, confirmDialog, choiceDialog, promptDialog, fmtDate, fmtBytes } from '../ui.js';
 import { api } from '../api.js';
-import { state, userLabel } from '../state.js';
+import { state, userLabel, savePrefs } from '../state.js';
 import { effectivePrompts, promptOrderOf, estTokens } from '../cardfmt.js';
 import { parseRegex, runRegex, PLACEMENT } from '../stview.js';
+import { bridge } from '../bridge.js';
+import { inTavern } from '../tavern-index.js';
+import { linkBookSet } from './nowchat.js';
 
 const uuid = () => (crypto.randomUUID ? crypto.randomUUID() : `${Date.now().toString(16)}-${Math.random().toString(16).slice(2, 10)}`);
 const field = (label, node, wide = true) => h('div', { class: `field ${wide ? 'wide' : ''}` }, h('label', {}, label), node);
@@ -294,8 +297,12 @@ export async function openBookSets(it, done = () => {}) {
                 keep = name.trim() || '原来的一套';
             }
         } else if (!set && !(await confirmDialog('把世界书从这张卡里去掉？存着的几套不受影响，随时可以换回来。', { ok: '去掉' }))) return;
-        run(() => api.post(`${base}/${set ? set.id : 'none'}/use`, { keep }), set ? `卡里现在是「${set.name}」，已存为新版本` : '卡里现在不带世界书，已存为新版本');
+        await run(() => api.post(`${base}/${set ? set.id : 'none'}/use`, { keep }), set ? `卡里现在是「${set.name}」，已存为新版本` : '卡里现在不带世界书，已存为新版本');
+        // 在酒馆里打开、酒馆里也有这张卡：那边绑定的世界书跟着换
+        if (set && canLink() && state.prefs.bookSetTavern !== false && info.sets.find((x) => x.id === set.id)?.same) await linkBookSet(it, set.id);
     };
+    // 酒馆里的角色卡用的是它绑定的世界书文件，不是卡里内嵌的那份，所以要另外换
+    const canLink = () => bridge.has('linkWorld') && inTavern(it) === true;
     const rename = async (set) => {
         const name = await promptDialog('', { value: set.name, title: '改名' });
         if (name == null || !name.trim() || name.trim() === set.name) return;
@@ -329,6 +336,7 @@ export async function openBookSets(it, done = () => {}) {
                     cur ? btn('去掉', { cls: 'sm ghost', title: '卡里不带世界书', onclick: () => use(null) }) : null),
                 cur ? h('div', {}, h('b', {}, curSet?.name || cur.name || '（没有名字）'), h('span', { class: 'muted' }, ` · ${cur.count} 条`), curSet ? null : h('span', { class: 'chip-s warn bookset-unsaved' }, '还没存成一套'))
                     : h('div', { class: 'muted' }, '这张卡里现在没有世界书。')),
+            canLink() ? h('label', { class: 'check-line bookset-tavern' }, switchEl(state.prefs.bookSetTavern !== false, (v) => { state.prefs.bookSetTavern = v; savePrefs(); }), h('span', {}, '换的时候，酒馆里这张卡绑定的世界书也一起换')) : null,
             h('div', { class: 'toolbar-row' }, h('span', { class: 'sub-label grow' }, `存着的 · ${info.sets.length} 套`),
                 btn('从卡匣里选', { icon: 'archive', cls: 'sm', onclick: fromLibrary }), btn('上传文件', { icon: 'upload', cls: 'sm', onclick: () => file.click() }), file),
             info.sets.length ? h('div', { class: 'bookset-list' }, info.sets.map((set) => h('div', { class: `bookset-row ${set.same ? 'active' : ''}` },
@@ -336,6 +344,7 @@ export async function openBookSets(it, done = () => {}) {
                     h('div', { class: 'bookset-name' }, h('b', {}, set.name), set.same ? h('span', { class: 'chip-s ok' }, '正在用') : null),
                     h('div', { class: 'muted small' }, `${set.count} 条 · ${fmtBytes(set.size)} · ${fmtDate(set.addedAt, true)}`)),
                 set.same ? null : btn('用这套', { icon: 'check', cls: 'sm primary', onclick: () => use(set) }),
+                canLink() ? btn('', { icon: 'beer', cls: 'sm ghost icon bookset-link', title: '只把酒馆里这张卡绑定的世界书换成这一套（卡匣里的卡不动）', onclick: () => linkBookSet(it, set.id) }) : null,
                 btn('', { icon: 'pencil', cls: 'sm ghost icon', title: '改名', onclick: () => rename(set) }),
                 btn('', { icon: 'trash', cls: 'sm ghost icon danger', title: '删除这一套', onclick: () => remove(set) }))))
                 : h('div', { class: 'muted small' }, '还没有存着的。可以把卡里现在这套存起来，或者从卡匣、文件里加。'));

@@ -89,6 +89,7 @@ run compare-draw-chat seed 0 compare-draw-chat.cjs
 run merge-smart-stats seed 0 merge-smart-stats.cjs
 run themes         seed 0 themes.cjs
 run editors        seed 0 editors.cjs
+run tavern-live    seed 1 tavern-live.cjs
 
 echo
 if [ ${#FAILED[@]} -eq 0 ]; then echo "全部通过（$PASS 项）"; exit 0; fi

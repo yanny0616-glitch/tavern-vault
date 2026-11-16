@@ -12,7 +12,7 @@ import { extractCardFromPng, isPng, writeCardToPng } from './lib/png.js';
 import { buildZip, readZip, isJunkPath } from './lib/zip.js';
 import { fileSig, fileParts, parseFile } from './lib/content.js';
 import { entriesOf, entryKeys, entryKeys2, effectivePrompts } from '../web/js/cardfmt.js';
-import { stripSyncEntries, DEFAULT_SYNC_EXCLUDE, SYNC_OPTIONS, PARTS_VERSION, sameParts, mergeParts } from '../web/js/sig.js';
+import { stripSyncEntries, DEFAULT_SYNC_EXCLUDE, SYNC_OPTIONS, PARTS_VERSION, sameParts, mergeParts, sigOf, syncParts, partsDiff } from '../web/js/sig.js';
 import { diffFiles, diffSummary } from './lib/diff.js';
 import { AiConfig, listModels, chat, AiError } from './lib/ai.js';
 import { cleanThemes } from '../web/js/themecore.js';
@@ -1092,6 +1092,75 @@ route('PUT', '/api/items/:id/json', async ({ req, p }) => {
     return slim(store.db.items[it.id]);
 });
 
+// ---------- 酒馆插件直接问的两件事（不用打开卡匣页面）----------
+const tvName = (v) => String(v || '').trim().toLowerCase().replace(/\.(png|jpe?g|webp|gif|avif|bmp|json)$/, '');
+
+/**
+ * 酒馆里的这份内容，和卡匣里同名条目是什么关系：
+ * new 卡匣里没有 · synced 和当前版本一致 · older 是卡匣的某个旧版本（卡匣有更新的）
+ * other 是卡匣的另一个版本 · changed 和卡匣哪个版本都不一样（酒馆里改过）
+ * 比对规则和「酒馆」页一样：去掉排除规则里的世界书条目，「不算差异」的部分不算
+ */
+route('POST', '/api/tavern/status', async ({ req }) => {
+    const { kind, name, data } = await readJson(req);
+    if (!['character', 'worldbook'].includes(kind) || !data || typeof data !== 'object') throw new HttpError(400, '只能比对角色卡和世界书');
+    const obj = stripSyncEntries(kind, data, syncExclude()).obj;
+    const t = { sig: sigOf(kind, obj), parts: syncParts(kind, obj) };
+    const ignore = kind === 'character' ? syncIgnore() : syncIgnore().filter((k) => ['entryState', 'entryConst', 'entryTitle'].includes(k));
+    const same = (f) => Boolean(f?.sig && t.sig) && (f.sig === t.sig || (ignore.length > 0 && sameParts(f.parts, t.parts, ignore)));
+    const all = Object.values(store.db.items).filter((i) => !i.deletedAt && i.type === kind && tvName(i.name) === tvName(name) && i.files.length);
+    if (!all.length) return { status: 'new' };
+    const it = all.find((i) => i.files.some(same)) || all[0];
+    const cur = store.primaryFile(it);
+    const base = { itemId: it.id, name: it.name, sha: cur.sha, fileName: cur.name, mark: `${t.sig}|${cur.sha}` };
+    if (!t.sig || !cur.sig) return { ...base, status: 'unknown' };
+    if (same(cur)) return { ...base, status: 'synced' };
+    const hit = it.files.find((f) => !f.bookset && same(f));
+    if (hit) return { ...base, status: hit.addedAt < cur.addedAt ? 'older' : 'other' };
+    // 同名的有好几个、又没有一个对得上：分不清是哪张卡改的，不乱提醒
+    if (all.length > 1) return { ...base, status: 'unknown' };
+    return { ...base, status: 'changed', parts: partsDiff(cur.parts, t.parts, ignore) };
+});
+
+/**
+ * 酒馆里的一段聊天自动存进卡匣。同一段聊天（key 相同）只留最新的一份，不攒版本；
+ * 第一次存的时候，卡匣里有同名的角色卡（只有一张）就自动绑上。
+ */
+route('POST', '/api/tavern/chat', async ({ req, url }) => {
+    const sp = url.searchParams;
+    const key = String(sp.get('key') || '').slice(0, 300);
+    const filename = safeFilename(sp.get('filename') || 'chat.jsonl').replace(/(\.jsonl)?$/i, '.jsonl');
+    const buf = await readBody(req);
+    if (!key || !buf.length) throw new HttpError(400, '缺少聊天内容');
+    const det = detectFile(buf, filename);
+    if (det.type !== 'chat') throw new HttpError(400, '这不是聊天记录');
+    let it = Object.values(store.db.items).find((i) => i.tavernChat === key && i.type === 'chat');
+    if (it?.deletedAt) return { status: 'skipped', reason: 'deleted' }; // 自己删掉的不再存回来
+    const sha = store.putBlob(buf);
+    if (it) {
+        const cur = store.primaryFile(it);
+        if (cur?.sha === sha) return { status: 'same', itemId: it.id };
+        // 换掉上一次自动存的那份；手动加的别的文件不动
+        it.files = it.files.filter((f) => !f.autoChat);
+        const file = store.addFile(it.id, { sha, name: filename, size: buf.length, mime: mimeOf(filename), label: '酒馆自动存档', primary: true });
+        file.autoChat = true;
+        applyDetection(it, det, sha);
+        store.save();
+        store.gcBlobs();
+        broadcast('change', { ids: [it.id] });
+        return { status: 'updated', itemId: it.id };
+    }
+    const r = ingest(buf, filename, { mode: 'new', origin: 'tavern', label: '酒馆自动存档' });
+    it = store.db.items[r.item.id];
+    it.tavernChat = key;
+    it.files.forEach((f) => { f.autoChat = true; });
+    const cards = Object.values(store.db.items).filter((i) => !i.deletedAt && i.type === 'character' && tvName(i.name) === tvName(sp.get('char')));
+    if (cards.length === 1) it.chatOf = cards[0].id;
+    store.save();
+    broadcast('change', { ids: [it.id] });
+    return { status: 'created', itemId: it.id, bound: cards.length === 1 };
+});
+
 // ---------- 一张卡挂多套世界书 ----------
 // 每一套存成这张卡名下的一个附件（file.bookset），不算版本。换用时写进卡里，生成一个新版本。
 const MAX_BOOKSETS = 20;
@@ -1129,6 +1198,18 @@ function bookSetList(it) {
     };
 }
 route('GET', '/api/items/:id/booksets', ({ p }) => bookSetList(getItem(p.id)));
+// 把某一套（fid=current：卡里现在这套）换成酒馆的世界书文件格式，给插件挂到酒馆里的角色上
+route('GET', '/api/items/:id/booksets/:fid/world', ({ p }) => {
+    const it = getItem(p.id);
+    const { data } = bookCardOf(it);
+    const f = p.fid === 'current' ? null : it.files.find((x) => x.id === p.fid && x.bookset);
+    if (p.fid !== 'current' && !f) throw new HttpError(404, '这一套不存在');
+    const book = f ? readBookSet(f) : data.character_book;
+    const out = extractPart({ character_book: book }, 'book', it.name);
+    if (!out) throw new HttpError(400, '这一套里没有条目');
+    const set = f ? f.label || f.name : String(book.name || '').trim() || '世界书';
+    return { name: safeFilename(`${it.name} - ${set}`).slice(0, 80), world: { ...out.obj, name: undefined }, count: out.count };
+});
 
 // 加一套：from=current 把卡里现在这套存起来；itemId 用卡匣里的一本世界书；book 直接给内容（上传的文件）
 route('POST', '/api/items/:id/booksets', async ({ req, p }) => {
