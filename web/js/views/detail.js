@@ -11,6 +11,7 @@ import { startOrganize, aiReady, aiStamp } from './ai.js';
 import { openAiChat } from './aichat.js';
 import { editPreset, editRegex, openBookSets } from './editors.js';
 import { stThemePreview } from '../stthemeview.js';
+import { externalHosts } from '../themecore.js';
 import { richText, dialogView } from '../richtext.js';
 import { coverImg, coverSrc } from '../thumbs.js';
 import { runRegex, vetScripts, applyScripts, displayScripts, looksHtml, stView, hasHtmlFence, hasScript, PLACEMENT } from '../stview.js';
@@ -1081,16 +1082,26 @@ export function openDetail(id, { seq = null, onLeave = null, src = null } = {}) 
     function themeView(d, it) {
         const colors = Object.entries(d).filter(([, v]) => typeof v === 'string' && /^(#|rgba?\()/.test(v));
         const hasCss = Boolean(String(d.custom_css || '').trim());
-        const withCss = h('input', { type: 'checkbox', checked: true, onchange: () => drawPv() });
+        const hosts = externalHosts(d.custom_css);
+        const check = (label, on, set) => { const box = h('input', { type: 'checkbox', checked: on, onchange: () => { set(box.checked); drawPv(); } }); return h('label', { class: 'check-line' }, box, h('span', {}, label)); };
+        let withCss = true;
         const pv = h('div', { class: 'st-theme-pv' });
-        const drawPv = () => clear(pv, stThemePreview(d, { css: withCss.checked, names: names(it) }));
+        const note = h('div', { class: 'muted small' });
+        const drawPv = () => {
+            const remote = Boolean(state.prefs.stThemeRemote) && hosts.length > 0;
+            clear(pv, stThemePreview(d, { css: withCss, remote, phone: state.prefs.stThemePhone !== false, names: names(it) }));
+            note.textContent = `照着酒馆聊天界面的结构搭的示意页面，套上了这套主题的颜色、字号、头像和气泡样式${hasCss ? '、自定义 CSS' : ''}。图标用简单符号代替，装了别的扩展才有的部件这里没有，细节会和酒馆里有出入。`
+                + (hosts.length && withCss && !remote ? `这套主题用了外部的图片或字体（${hosts.join('、')}），现在没有加载，所以背景、图标可能是空的；勾上「加载外部图片和字体」再看。` : '');
+        };
         drawPv();
         return h('div', { class: 'stack' },
             h('section', { class: 'panel' },
-                h('div', { class: 'panel-head' }, icon('eye', { size: 16 }), h('h3', {}, '预览'), h('span', { class: 'grow' }),
-                    hasCss ? h('label', { class: 'check-line' }, withCss, h('span', {}, '套上自定义 CSS')) : null),
-                pv,
-                h('div', { class: 'muted small' }, '按主题里的颜色、字号、头像和气泡样式搭的一个示意聊天界面，和酒馆里的实际效果大致相同。主题要加载的外部图片、字体这里不会去取。')),
+                h('div', { class: 'panel-head' }, icon('eye', { size: 16 }), h('h3', {}, '预览')),
+                h('div', { class: 'check-grid st-theme-opts' },
+                    check('手机宽度', state.prefs.stThemePhone !== false, (v) => { state.prefs.stThemePhone = v; savePrefs(); }),
+                    hasCss ? check('套上自定义 CSS', true, (v) => { withCss = v; }) : null,
+                    hosts.length ? check('加载外部图片和字体', Boolean(state.prefs.stThemeRemote), (v) => { state.prefs.stThemeRemote = v; savePrefs(); }) : null),
+                pv, note),
             colors.length ? h('section', { class: 'panel' }, h('div', { class: 'swatch-list' }, colors.map(([k, v]) => h('div', { class: 'swatch-item' }, h('i', { style: { background: v } }), h('span', {}, k))))) : null,
             d.custom_css ? fold('自定义 CSS', h('pre', { class: 'code' }, d.custom_css), { ic: 'braces', count: `${d.custom_css.length} 字` }) : null,
             fold('原始 JSON', () => codeView(d), { ic: 'braces' }));

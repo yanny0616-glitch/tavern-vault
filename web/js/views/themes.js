@@ -3,9 +3,11 @@
 import { h, clear, sheet, toast, icon, btn, confirmDialog, downloadBlob, debounce } from '../ui.js';
 import { api } from '../api.js';
 import { state, SKINS, applyAccent, reload } from '../state.js';
-import { BASE_SKINS, COLOR_VARS, SHAPE_VARS, FONT_PRESETS, RATIOS, MAX_THEMES, cleanTheme, cssProblems, contrastIssues, packTheme, parseThemeText } from '../themecore.js';
+import { BASE_SKINS, COLOR_VARS, SHAPE_VARS, FONT_PRESETS, RATIOS, MAX_THEMES, cleanTheme, cssProblems, externalHosts, contrastIssues, packTheme, parseThemeText } from '../themecore.js';
 
 const themes = () => (Array.isArray(state.settings.themes) ? state.settings.themes : []);
+/** 底稿的名字和说明。素底不是一套内置风格，只能给主题当底稿 */
+const baseInfo = (k) => (k === 'plain' ? { name: '素底', desc: '不带任何装饰，只有最基本的结构，样子全由主题决定' } : SKINS[k] || { name: k, desc: '' });
 const newId = () => Math.random().toString(36).slice(2, 12);
 const blank = (base = 'atelier') => ({ id: newId(), name: '我的主题', base: BASE_SKINS.includes(base) ? base : 'atelier', light: {}, dark: {}, vars: {}, css: '' });
 
@@ -14,7 +16,7 @@ async function saveThemes(list, active) {
     state.settings.themes = list;
     state.settings.theme = active;
     const t = list.find((x) => x.id === active);
-    if (t) state.settings.skin = t.base;
+    if (t && SKINS[t.base]) state.settings.skin = t.base;
     applyAccent();
     reload().catch(() => {});
 }
@@ -58,7 +60,7 @@ export function themeBrief({ name, base, wish }) {
         '「卡匣」是一个收藏管理工具，用来存放和整理角色卡、世界书、预设等文件。界面有：顶部标题栏和搜索框、类型分段、封面卡片组成的网格、列表、设置面板、从底部或中间弹出的面板。电脑上左边有导航栏，手机上导航在底部。',
         '',
         '【主题怎么生效】',
-        `主题建立在一套内置风格之上，这次的底稿是「${SKINS[base]?.name || base}」（${SKINS[base]?.desc || ''}）。底稿决定版式和结构，主题在它上面改三样东西：`,
+        `主题建立在一份底稿之上，这次的底稿是「${baseInfo(base).name}」（${baseInfo(base).desc}）。底稿决定版式和结构，主题在它上面改三样东西：`,
         '1. 颜色变量：浅色、深色各一套，两套都要给。',
         '2. 形状和字体变量：浅色深色共用。',
         '3. 高级样式：一段 CSS，可以改任何部件的外观。',
@@ -79,7 +81,7 @@ export function themeBrief({ name, base, wish }) {
         '写高级样式时，颜色尽量用上面的变量（如 var(--accent)），这样浅色深色都能跟着变。只在深色下生效的规则，前面加 html[data-mode="dark"]。',
         '',
         '【不能做的事】',
-        '- 不能用 @import、url()、@font-face，不能加载任何图片、字体、网络资源。要图案就用渐变（linear-gradient、radial-gradient）画。',
+        '- 可以用 url()、@font-face、@import 加载外部的图片和字体，但地址必须是完整的 https:// 地址，并且确实存在、允许外站引用；拿不准就不要用，改用渐变（linear-gradient、radial-gradient）画图案、用系统里常见的字体。不能带任何脚本。',
         '- 不要改部件的排列方式和尺寸：不要写 display、position、float、width、height、grid、flex 相关的属性，也不要隐藏任何部件。可以改的是颜色、背景、边框、圆角、阴影、字体、字重、字距、内边距的小幅调整、过渡动画。',
         '- 正文和背景的对比度至少 4.5:1，强调色和它上面的文字至少 3:1，浅色深色都要满足。',
         '- 不要用 !important，除非不用就盖不过底稿。',
@@ -105,6 +107,8 @@ async function importTheme(raw, fallbackName = '') {
     if (!Object.keys(t.light).length && !Object.keys(t.dark).length && !Object.keys(t.vars).length && !t.css.trim()) { toast('这份主题里没有可以用的内容', 'err'); return false; }
     const bad = contrastIssues(t);
     if (bad.length && !(await confirmDialog(`这套主题有 ${bad.length} 处可能看不清：\n${bad.map((b) => `${b.mode === 'dark' ? '深色' : '浅色'}：${b.what}，对比度 ${b.ratio}`).join('\n')}\n\n可以先导入，在编辑器里调。`, { title: '对比度偏低', ok: '还是导入' }))) return false;
+    const hosts = externalHosts(t.css);
+    if (hosts.length && !(await confirmDialog(`这套主题会从下面的网站加载图片或字体。用它的时候，每次打开卡匣都会访问这些网站，对方能看到你的 IP 和访问时间：\n\n${hosts.join('\n')}\n\n信得过再导入。`, { title: '主题要加载外部资源', ok: '导入' }))) return false;
     editTheme(t, { isNew: true });
     return true;
 }
@@ -118,7 +122,7 @@ export function openThemeBrief() {
     const answer = h('textarea', { class: 'textarea code brief-in', spellcheck: false, placeholder: '把 AI 的整段回答粘贴到这里（带着说明文字也行，会自动找出里面的主题数据）' });
     const baseBox = h('div', { class: 'opts' });
     const draw = () => {
-        clear(baseBox, BASE_SKINS.map((k) => h('button', { class: `opt ${base === k ? 'active' : ''}`, title: SKINS[k].desc, onclick: () => { base = k; draw(); } }, SKINS[k].name)));
+        clear(baseBox, BASE_SKINS.map((k) => h('button', { class: `opt ${base === k ? 'active' : ''}`, title: baseInfo(k).desc, onclick: () => { base = k; draw(); } }, baseInfo(k).name)));
         out.value = themeBrief({ name: name.value, base, wish: wish.value });
     };
     const s = sheet({
@@ -133,7 +137,7 @@ export function openThemeBrief() {
                         try { await navigator.clipboard.writeText(out.value); toast('已复制，去贴给 AI 吧', 'ok'); } catch { out.select(); toast('自动复制没成功，已经帮你全选了，按 Ctrl+C 或长按复制', 'err'); }
                     } }))),
                 h('div', { class: 'field wide' }, h('label', {}, '4. 把 AI 的回答贴回来'), answer,
-                    h('div', { class: 'muted small' }, '导入前会检查：不允许加载外部资源，看不清的配色会提醒。导入后先看效果，满意再保存。')))),
+                    h('div', { class: 'muted small' }, '导入前会检查：要加载外部图片或字体的会列出网站让你确认，看不清的配色会提醒。导入后先看效果，满意再保存。')))),
         foot: [btn('关闭', { onclick: () => s.close() }),
             btn('导入这套主题', { icon: 'check', cls: 'primary', onclick: async () => {
                 if (!answer.value.trim()) { toast('先把 AI 的回答贴进来', 'err'); answer.focus(); return; }
@@ -172,6 +176,7 @@ export function editTheme(orig = null, { isNew = !orig } = {}) {
         const css = cssProblems(t.css);
         clear(warn,
             css.length ? h('div', { class: 'note warn' }, icon('alert', { size: 15 }), h('span', {}, `高级样式有问题，改好才能保存：${css.join('；')}`)) : null,
+            externalHosts(t.css).length ? h('div', { class: 'note theme-hosts' }, icon('globe', { size: 15 }), h('span', {}, `会从这些网站加载图片或字体：${externalHosts(t.css).join('、')}`)) : null,
             bad.length ? h('div', { class: 'note' }, icon('eye', { size: 15 }), h('span', {}, `可能看不清：${bad.map((b) => `${b.mode === 'dark' ? '深色' : '浅色'}的${b.what}（对比度 ${b.ratio}）`).join('；')}`)) : null);
     };
     const changed = () => { applySoon(); drawWarn(); };
@@ -232,7 +237,7 @@ export function editTheme(orig = null, { isNew = !orig } = {}) {
         const ta = h('textarea', { class: 'textarea code theme-css', spellcheck: false, value: t.css, placeholder: '/* 例：卡片加一圈描边，标题换个颜色 */\n.card { border: 2px solid var(--accent); }\n.tb-title { color: var(--accent); letter-spacing: .08em; }\n\n/* 只在深色下生效 */\nhtml[data-mode="dark"] .card { box-shadow: 0 0 18px -6px var(--accent); }',
             oninput: () => { t.css = ta.value; if (!cssProblems(t.css).length) applySoon(); drawWarn(); } });
         return [
-            h('div', { class: 'muted small' }, '这里写的 CSS 只在用这套主题时生效，想改哪个部件就写它的选择器。颜色尽量用变量（var(--accent) 这样），浅色深色都能跟着变。不能加载外部的图片和字体。'),
+            h('div', { class: 'muted small' }, '这里写的 CSS 只在用这套主题时生效，想改哪个部件就写它的选择器。颜色尽量用变量（var(--accent) 这样），浅色深色都能跟着变。可以用 url()、@font-face、@import 加载外部的图片和字体，地址要写完整的 https://。'),
             ta,
             h('details', { class: 'fold' }, h('summary', {}, icon('chevronRight', { size: 14, cls: 'fold-chev' }), h('span', { class: 'fold-title' }, '常用部件的选择器')),
                 h('div', { class: 'fold-body theme-parts' }, PARTS.map(([sel, what]) => h('div', { class: 'theme-part' }, h('code', {}, sel), h('span', { class: 'muted' }, what))))),
@@ -249,7 +254,7 @@ export function editTheme(orig = null, { isNew = !orig } = {}) {
             btn('看整页', { icon: 'eye', cls: 'sm', onclick: peek }));
     const nameInput = h('input', { class: 'input', value: t.name, maxlength: 30, placeholder: '主题名称', oninput: () => { t.name = nameInput.value; } });
     function draw() {
-        const baseSel = h('select', { class: 'select theme-base', onchange: () => { t.base = baseSel.value; apply(); draw(); } }, BASE_SKINS.map((k) => h('option', { value: k, selected: t.base === k }, `${SKINS[k].name} · ${SKINS[k].desc}`)));
+        const baseSel = h('select', { class: 'select theme-base', onchange: () => { t.base = baseSel.value; apply(); draw(); } }, BASE_SKINS.map((k) => h('option', { value: k, selected: t.base === k }, `${baseInfo(k).name} · ${baseInfo(k).desc}`)));
         clear(body,
             h('div', { class: 'fields' },
                 h('div', { class: 'field' }, h('label', {}, '名称'), nameInput),
@@ -310,7 +315,7 @@ export function themesPanel({ preview, rerender }) {
             const vars = { ...t.vars, ...t.light, ...(mode === 'dark' ? t.dark : {}) };
             for (const [k, v] of Object.entries(vars)) pv.style.setProperty(`--${k}`, v);
             return h('div', { class: `skin-opt theme-opt ${active === t.id ? 'active' : ''}`, role: 'button', tabindex: 0, onclick: () => use(t.id) },
-                pv, h('div', { class: 'skin-name' }, h('b', {}, t.name), h('span', {}, `底稿：${SKINS[t.base]?.name || t.base}${t.css.trim() ? ' · 有高级样式' : ''}`)),
+                pv, h('div', { class: 'skin-name' }, h('b', {}, t.name), h('span', {}, `底稿：${baseInfo(t.base).name}${t.css.trim() ? ' · 有高级样式' : ''}`)),
                 active === t.id ? h('span', { class: 'skin-check' }, icon('check', { size: 13, stroke: 3 })) : null,
                 h('button', { class: 'btn sm ghost icon theme-edit-btn', title: '编辑这套主题', onclick: (e) => { e.stopPropagation(); editTheme(t); } }, icon('pencil', { size: 14 })));
         })) : h('div', { class: 'muted small' }, '还没有自己的主题。可以拿一套内置风格当底稿改，也可以让 AI 帮你设计。'),

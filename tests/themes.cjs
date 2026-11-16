@@ -15,7 +15,7 @@ const settings = async () => (await J('/api/state')).settings;
   ok(t.name === '雨夜' && t.base === 'ink' && !('junk' in t.light) && !('accent' in t.light) && t.light.bg === '#101820', `colors cleaned (${JSON.stringify(t.light)})`);
   ok(t.vars.radius === '40px' && t.vars['title-weight'] === '700' && t.vars['cover-ratio'] === '1 / 1' && !('nope' in t.vars), `shape values clamped (${JSON.stringify(t.vars)})`);
   ok(s.theme === 'themeaaa1' && s.skin === 'ink', 'the active theme is stored and the skin follows its base');
-  for (const css of ['@import "x.css";', '.a { background: url(http://x/y.png) }', '@font-face { font-family: x }', '.a { color: red', '</style><script>1</script>']) {
+  for (const css of ['@import "x.css";', '.a { background: url(http://x/y.png) }', '.a { background: url(/api/state) }', '.a { color: red', '</style><script>1</script>']) {
     r = await put({ themes: [{ ...good, css }], theme: 'themeaaa1' });
     ok(r.status === 400, `rejected: ${css.slice(0, 24)}`);
   }
@@ -87,7 +87,7 @@ const settings = async () => (await J('/api/state')).settings;
   await p.click('.theme-tabs .opt:has-text("高级样式")');
   await p.fill('.theme-css', '.panel { outline: 3px solid var(--accent); }\n@import "evil.css";');
   await p.waitForSelector('.theme-warn .note.warn');
-  ok(/@import/.test(await p.locator('.theme-warn').innerText()), 'a forbidden rule is named');
+  ok(/https:\/\//.test(await p.locator('.theme-warn').innerText()) && /evil\.css/.test(await p.locator('.theme-warn').innerText()), 'a bad address is named');
   await p.click('.theme-sheet .btn.primary:has-text("保存并使用")');
   await p.waitForSelector('.toast');
   ok((await settings()).themes[0].css === good.css, 'and it cannot be saved');
@@ -132,7 +132,7 @@ const settings = async () => (await J('/api/state')).settings;
   await p.fill('.sheet textarea[placeholder*="想要什么感觉"]', '暖黄的灯和木头');
   const brief = await p.locator('.brief-out').inputValue();
   ok(/暖黄的灯和木头/.test(brief) && /--accent/.test(brief) && /\.card/.test(brief) && /"kind": "theme"/.test(brief) && /咖啡馆/.test(brief), 'the brief carries the wish, variables, parts and answer format');
-  ok(/不能用 @import/.test(brief) && /4\.5/.test(brief), 'and the rules');
+  ok(/https:\/\//.test(brief) && /不能带任何脚本/.test(brief) && /4\.5/.test(brief) && /素底/.test(await p.locator('.sheet .opts').first().innerText()), 'and the rules; the plain base is offered');
   await p.click('.btn:has-text("复制任务书")');
   await p.waitForFunction(() => navigator.clipboard.readText().then((x) => x.includes('暖黄的灯和木头')));
   ok(true, 'the brief is copied');
@@ -152,13 +152,31 @@ const settings = async () => (await J('/api/state')).settings;
   await p.waitForFunction(() => document.querySelectorAll('.theme-opt').length === 2);
   await shot('two-themes');
 
-  // ---- 带外部资源的回答导不进来
+  // ---- 带外部资源的主题：先列出要访问的网站，同意才导入
   await p.click('.btn:has-text("让 AI 设计")');
   await p.waitForSelector('.brief-in');
-  await p.fill('.brief-in', JSON.stringify({ name: '坏', light: { bg: '#fff' }, css: '.card { background: url(https://example.com/a.png); }' }));
+  const ext = { name: '外链', base: 'plain', light: { bg: '#ffffff', text: '#111111' }, css: '@import "https://fonts.example.org/css?family=X";\n@font-face { font-family: "Y"; src: url("https://cdn.example.net/y.woff2"); }\nbody { background-image: url(https://img.example.com/a.png); }\n.card { outline: 1px solid red; }' };
+  await p.fill('.brief-in', JSON.stringify(ext));
   await p.click('.btn.primary:has-text("导入这套主题")');
-  await p.waitForSelector('.toast');
-  ok(!(await p.locator('.theme-sheet').count()) && (await settings()).themes.length === 2, 'an answer that loads outside resources is refused');
+  await p.waitForSelector('.dialog:has-text("外部资源")');
+  const asked = await p.locator('.dialog').innerText();
+  ok(/fonts\.example\.org/.test(asked) && /cdn\.example\.net/.test(asked) && /img\.example\.com/.test(asked), 'importing a theme with outside resources lists every site first');
+  await p.click('.dialog .btn:has-text("取消")');
+  await p.waitForFunction(() => !document.querySelector('.dialog'));
+  ok(!(await p.locator('.theme-sheet').count()) && (await settings()).themes.length === 2, 'saying no imports nothing');
+  await p.click('.btn.primary:has-text("导入这套主题")');
+  await p.click('.dialog .btn.primary');
+  await p.waitForSelector('.theme-sheet .theme-hosts');
+  ok(/img\.example\.com/.test(await p.locator('.theme-hosts').innerText()), 'the editor keeps showing which sites a theme reaches');
+  ok(await p.evaluate(() => document.documentElement.dataset.skin) === 'plain' && await p.evaluate(() => getComputedStyle(document.body).backgroundImage.includes('img.example.com')), 'the plain base and the outside image are applied');
+  ok(await p.evaluate(() => document.getElementById('tv-theme').textContent.trimStart().startsWith('@import')), '@import is moved to the top so it takes effect');
+  await p.click('.theme-sheet .btn.primary:has-text("保存并使用")');
+  await p.waitForFunction(() => !document.querySelector('.theme-sheet'));
+  s = await settings();
+  ok(s.themes.length === 3 && s.themes[2].base === 'plain' && /@font-face/.test(s.themes[2].css) && s.skin === 'atelier', 'saved; the plain base is not stored as a built-in skin');
+  await p.evaluate(() => { document.documentElement.dataset.mode = 'dark'; });
+  ok(await p.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--surface').trim()) === '#1e1e22', 'the plain base has its own dark colors');
+  await shot('plain');
 
   // ---- 手机宽度
   await p.setViewportSize({ width: 390, height: 780 });

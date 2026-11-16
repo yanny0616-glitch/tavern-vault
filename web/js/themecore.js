@@ -5,7 +5,8 @@
 //   vars          形状和字体（圆角、标题字号、字体……），浅色深色共用
 //   css           高级样式：直接写 CSS，想改哪里改哪里
 
-export const BASE_SKINS = ['atelier', 'minimal', 'sakura', 'ink', 'neon'];
+// plain 是「素底」：不带任何一套风格的装饰，只有最基本的结构
+export const BASE_SKINS = ['atelier', 'minimal', 'sakura', 'ink', 'neon', 'plain'];
 
 /** 颜色变量：[名字, 说明]。浅色、深色各一套 */
 export const COLOR_VARS = [
@@ -59,14 +60,29 @@ export function cleanValue(v) {
     return s;
 }
 
+/** 高级样式里引用的外部地址：url(...) 和 @import 的目标 */
+function cssRefs(css) {
+    const s = String(css ?? '').replace(/\/\*[\s\S]*?\*\//g, '');
+    const out = [];
+    for (const m of s.matchAll(/url\(\s*(?:"([^"]*)"|'([^']*)'|([^)]*))\s*\)/gi)) out.push((m[1] ?? m[2] ?? m[3] ?? '').trim());
+    for (const m of s.matchAll(/@import\s+(?:"([^"]*)"|'([^']*)')/gi)) out.push((m[1] ?? m[2] ?? '').trim());
+    return out;
+}
+/** 主题会去访问哪些外部网站（图片、字体、样式），去重后的域名列表 */
+export function externalHosts(css) {
+    const hosts = new Set();
+    for (const u of cssRefs(css)) { try { if (/^https:/i.test(u)) hosts.add(new URL(u).host); } catch { /* 写错的地址在 cssProblems 里报 */ } }
+    return [...hosts];
+}
+
 /** 高级样式里不允许的东西。返回问题列表，空的就是可以用 */
 export function cssProblems(css) {
     const s = String(css ?? '');
     const out = [];
     if (s.length > MAX_CSS) out.push(`样式太长了（${s.length} 字），最多 ${MAX_CSS} 字`);
-    if (/@import/i.test(s)) out.push('不能用 @import 引入别的样式');
-    if (/url\s*\(/i.test(s)) out.push('不能用 url() 加载图片、字体等资源');
-    if (/@font-face/i.test(s)) out.push('不能用 @font-face 加载字体');
+    // 外部图片、字体、样式可以用，但地址要写完整的 https://（或者内嵌的 data:），别的写法加载不出来
+    const bad = cssRefs(s).filter((u) => { if (/^data:/i.test(u)) return false; try { return new URL(u).protocol !== 'https:'; } catch { return true; } });
+    if (bad.length) out.push(`外部资源的地址要以 https:// 开头，这${bad.length > 1 ? '几' : ''}个不行：${bad.slice(0, 3).map((u) => u.slice(0, 60) || '（空的）').join('、')}`);
     if (/expression\s*\(|javascript:|behavior\s*:|-moz-binding/i.test(s)) out.push('不能带脚本');
     if (/<\s*\/?\s*(style|script)/i.test(s)) out.push('不能带 <style> 或 <script> 标签');
     let depth = 0;
@@ -130,10 +146,14 @@ export function cleanThemes(list) {
 export function themeCss(t) {
     const decl = (o) => Object.entries(o || {}).map(([k, v]) => `--${k}: ${v};`).join(' ');
     const sel = `html[data-theme="${t.id}"]`;
+    // @import 只有写在最前面才生效，所以从高级样式里提出来放到开头
+    const imports = [];
+    const css = String(t.css || '').replace(/@import\s[^;]*;/gi, (m) => { imports.push(m); return ''; });
     return [
+        ...imports,
         `${sel} { ${decl(t.vars)} ${decl(t.light)} }`,
         Object.keys(t.dark || {}).length ? `${sel}[data-mode="dark"] { ${decl(t.dark)} }` : '',
-        t.css || '',
+        css,
     ].filter(Boolean).join('\n');
 }
 

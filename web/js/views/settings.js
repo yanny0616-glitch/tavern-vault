@@ -124,7 +124,7 @@ const deviceNote = () => help('这一页的设置只对这台设备生效，手�
 function skinPreview(key) {
     const mode = document.documentElement.dataset.mode;
     return h('div', { class: 'skin-pv', dataset: { skin: key, mode } },
-        h('div', { class: 'pv-top' }, h('span', { class: 'pv-kicker' }, SKINS[key].en), h('span', { class: 'pv-title' }, '卡匣')),
+        h('div', { class: 'pv-top' }, h('span', { class: 'pv-kicker' }, SKINS[key]?.en || 'Plain'), h('span', { class: 'pv-title' }, '卡匣')),
         h('div', { class: 'pv-tabs' }, h('i', { class: 'on' }), h('i'), h('i')),
         h('div', { class: 'pv-cards' },
             h('div', { class: 'pv-card' }, h('div', { class: 'pv-img' }), h('b')),

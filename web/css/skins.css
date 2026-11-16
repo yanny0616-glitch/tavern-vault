@@ -719,3 +719,13 @@ html[data-skin] .opt.tag-opt.active.out { background: transparent; color: var(--
   html[data-skin="minimal"] .tabbar button { margin: 4px 0; border-radius: 23px; }
   html[data-skin="minimal"] .fab { bottom: calc(var(--sb) + 72px); }
 }
+
+/* ---------- 素底：只给自定义主题当底稿，不带装饰。浅色用 base.css 的默认值，这里补深色 ---------- */
+[data-skin="plain"][data-mode="dark"] {
+  --bg: #141416; --surface: #1e1e22; --surface-2: #2a2a30;
+  --text: #f2f2f5; --text-2: #c2c2cc; --text-3: #8a8a96;
+  --line: rgba(255, 255, 255, .09); --line-2: rgba(255, 255, 255, .16);
+  --accent: #6f95ff; --danger: #ff5a52; --ok: #3dc27f; --warn: #e5a53a;
+  --shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 4px 14px rgba(0, 0, 0, .35);
+  --shadow-lg: 0 20px 50px rgba(0, 0, 0, .6);
+}

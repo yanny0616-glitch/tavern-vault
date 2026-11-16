@@ -1643,7 +1643,7 @@ route('PUT', '/api/settings', async ({ req }) => {
     if (typeof body.theme === 'string') store.db.settings.theme = (store.db.settings.themes || []).some((t) => t.id === body.theme) ? body.theme : '';
     if (store.db.settings.theme && !(store.db.settings.themes || []).some((t) => t.id === store.db.settings.theme)) store.db.settings.theme = '';
     // 用自定义主题时，风格跟着它的底稿走
-    { const t = (store.db.settings.themes || []).find((x) => x.id === store.db.settings.theme); if (t) store.db.settings.skin = t.base; }
+    { const t = (store.db.settings.themes || []).find((x) => x.id === store.db.settings.theme); if (t && SKIN_IDS.includes(t.base)) store.db.settings.skin = t.base; }
     if ([0, 7, 14, 30, 90].includes(body.trashDays)) store.db.settings.trashDays = body.trashDays;
     if (body.autoBackup && typeof body.autoBackup === 'object') {
         const cur = autoBackupCfg();
