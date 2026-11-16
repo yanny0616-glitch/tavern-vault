@@ -18,7 +18,9 @@ const saveCfg = () => { try { fs.mkdirSync(path.dirname(cfgFile()), { recursive:
 const originOf = (url) => { try { const u = new URL(String(url)); return /^https?:$/.test(u.protocol) ? u.origin : ''; } catch { return ''; } };
 const isLauncher = (url) => { try { const u = new URL(String(url)); return u.protocol === 'file:' && path.resolve(decodeURIComponent(u.pathname).replace(/^\/([a-zA-Z]:)/, '$1')) === path.resolve(LAUNCHER); } catch { return false; } };
 const isServer = (url) => Boolean(cfg.server) && originOf(url) === cfg.server;
-const openOutside = (url) => { if (originOf(url)) shell.openExternal(url); };
+/** 来源链接的「在 Discord 中打开」：只放行 discord://-/channels/数字… 这一种，交给系统去唤起 Discord */
+const isDiscordLink = (url) => /^discord:\/\/(?:-|discord\.com)\/channels\/(?:\d+|@me)\/\d+(?:\/\d+)?$/.test(String(url));
+const openOutside = (url) => { if (originOf(url) || isDiscordLink(url)) shell.openExternal(url); };
 
 let win = null;
 const showLauncher = (change = false) => win?.loadFile(LAUNCHER, change ? { query: { change: '1' } } : {});

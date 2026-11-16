@@ -51,6 +51,7 @@ run() {
 }
 
 run detail         seed 0 detail.cjs
+run source-link    seed 0 source-link.cjs
 run settings       perf 0 settings.cjs
 run fold           perf 0 fold.cjs
 run import         seed 0 import.cjs
