@@ -1743,7 +1743,7 @@ route('POST', '/api/discord/fetch', async ({ req }) => {
 function passHints(text) {
     const KEY = '口令|密码|暗号|提取码|密钥|password|passcode';
     const hints = [];
-    const push = (x) => { const v = String(x || '').replace(/^[\s:：=>＞\-—·•*_~`|「『“"'（(【\[]+|[\s*_~`|」』”"'）)】\]。，,.;；!！]+$/g, ''); if (v && v.length <= 60 && !new RegExp(`^(${KEY}|是|为|在|见|看)`, 'i').test(v) && !hints.includes(v)) hints.push(v); };
+    const push = (x) => { const v = String(x || '').replace(/^[\s:：=>＞\-—·•*_~`|「『“"'（(【\[]+|[\s*_~`|」』”"'）)】\]。，,.;；!！]+$/g, ''); if (v && v.length <= 100 && !new RegExp(`^(${KEY}|是|为|在|见|看)`, 'i').test(v) && !hints.includes(v)) hints.push(v); };
     const lines = String(text).split(/\n/).map((x) => x.trim()).filter(Boolean);
     lines.forEach((ln, i) => {
         const m = new RegExp(`(?:${KEY})[^:：=是为\\n]{0,8}(?:是|为|[:：=])\\s*(.+)$`, 'i').exec(ln);
@@ -1751,7 +1751,10 @@ function passHints(text) {
         const rest = m[1].trim();
         // 被 || 或 ` 包起来的优先；否则取到第一个空格或标点
         const wrapped = /\|\|(.+?)\|\||`(.+?)`|[「『“"](.+?)[」』”"]|\*\*(.+?)\*\*/.exec(rest);
-        push(wrapped ? wrapped.slice(1).find(Boolean) : rest.split(/[\s，。,；;（(]/)[0]);
+        if (wrapped) { push(wrapped.slice(1).find(Boolean)); return; }
+        // 口令可能是一整句话（中间带逗号）：整句和「到第一个标点为止」都给，整句里没有空格时整句排前面
+        const short = rest.split(/[\s，。,；;（(]/)[0];
+        if (/\s/.test(rest)) { push(short); push(rest); } else { push(rest); push(short); }
     });
     return hints.slice(0, 6);
 }

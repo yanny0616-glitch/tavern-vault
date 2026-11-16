@@ -149,13 +149,15 @@ export async function openSourceFetch(it) {
             if (view.modal) {
                 const m = view.modal;
                 if (!post && !finding && !findErr && alive) setTimeout(findPost, 0);
+                // 表单再次弹出（比如上次填错了）时，帖子已经读过，直接把找到的填上
+                if (post?.hints.length && m.fields[0] && !filled.has(m.fields[0].id) && !m.fields[0].value) filled.set(m.fields[0].id, post.hints[0]);
                 kids.push(h('div', { class: 'bot-embed bot-modal' },
                     h('b', {}, m.title || 'bot 要你填一下'),
                     m.other ? h('div', { class: 'note warn' }, icon('alert', { size: 15 }), h('span', {}, '这个表单里有这里填不了的内容，请到 Discord 里操作。')) : null,
                     m.fields.map((f) => h('div', { class: 'field' }, h('label', {}, f.label || '内容'),
                         h(f.long ? 'textarea' : 'input', { class: f.long ? 'textarea' : 'input', 'data-modal': f.id, value: filled.get(f.id) ?? f.value, placeholder: f.placeholder, maxlength: f.max, spellcheck: false, rows: f.long ? 3 : null, oninput: (e) => filled.set(f.id, e.target.value) }))),
                     post ? h('div', { class: 'stack' },
-                        post.hints.length ? h('div', { class: 'bot-used' }, h('span', { class: 'muted small' }, post.hints.length > 1 ? '帖子里找到几个像口令的，已填第一个，不对就点别的：' : '已从帖子里找到并填好，确认后点提交：'), post.hints.map((x) => h('button', { class: 'btn sm ghost bot-hint', type: 'button', title: '点一下填进去', onclick: () => { if (m.fields[0]) { filled.set(m.fields[0].id, x); draw(); } } }, x))) : h('div', { class: 'muted small' }, '没找到像口令的内容，自己在下面楼主写的原文里找一下。'),
+                        post.hints.length ? h('div', { class: 'bot-used' }, h('span', { class: 'muted small' }, post.hints.length > 1 ? '帖子里找到的，已填第一个，不对就点别的：' : '已从帖子里找到并填好，确认后点提交：'), post.hints.map((x) => h('button', { class: 'btn sm ghost bot-hint', type: 'button', title: '点一下填进去', onclick: () => { if (m.fields[0]) { filled.set(m.fields[0].id, x); draw(); } } }, x))) : h('div', { class: 'muted small' }, '没找到像口令的内容，自己在下面楼主写的原文里找一下。'),
                         h('details', { class: 'bot-post', open: !post.hints.length || null }, h('summary', {}, `楼主写的内容（首楼、前几楼、标注，共 ${post.posts.length} 条）`), post.posts.length ? post.posts.map((x) => h('div', { class: 'bot-text' }, h('b', {}, `${x.where}  `), times(x.text))) : h('div', { class: 'muted small' }, '没读到文字'))) : null,
                     h('div', { class: 'row-actions wrap' },
                         btn('提交', { cls: 'primary sm', disabled: busy || m.other, onclick: submit }),
