@@ -722,8 +722,8 @@ export function openDetail(id, { seq = null, onLeave = null, src = null } = {}) 
         const drawTags = () => {
             clear(tagBox, d.tags.map((t) => h('span', { class: 'tag' }, t, h('button', { class: 'tag-x', title: '移除', onclick: () => { d.tags = d.tags.filter((x) => x !== t); mark(); drawTags(); } }, icon('x', { size: 11 })))), tagInput);
             const pool = allTags().filter(([t]) => !d.tags.includes(t)).slice(0, 14);
-            clear(suggest, pool.length ? [h('span', { class: 'muted small' }, '常用：'), pool.map(([t]) => h('button', { class: 'tag-sug', onclick: () => addTags(t) }, icon('plus', { size: 10 }), t))] : null,
-                allTags().length > 14 ? h('button', { class: 'tag-sug', onclick: pickFromAll }, icon('tag', { size: 10 }), '全部标签…') : null);
+            clear(suggest, pool.length ? [h('span', { class: 'muted small' }, '常用：'), pool.map(([t]) => h('button', { class: 'tag-quick', onclick: () => addTags(t) }, icon('plus', { size: 10 }), t))] : null,
+                allTags().length > 14 ? h('button', { class: 'tag-quick', onclick: pickFromAll }, icon('tag', { size: 10 }), '全部标签…') : null);
         };
         drawTags();
 
@@ -889,16 +889,16 @@ export function openDetail(id, { seq = null, onLeave = null, src = null } = {}) 
         if (it.type === 'chat' && content.kind === 'text') return chatView(it, content.text);
         if (content.kind === 'json') {
             const d = content.data;
-            if (it.type === 'worldbook') return src || it.deletedAt ? worldbookView(d, names(it)) : h('div', {},
+            if (it.type === 'worldbook') return src || it.deletedAt ? worldbookView(d, names(it)) : h('div', { class: 'stack' },
                 h('div', { class: 'reader-tools' }, h('span', { class: 'grow' }), btn('编辑条目', { icon: 'pencil', cls: 'sm', onclick: () => editBook(it, content) })),
                 worldbookView(d, names(it)));
             const canEdit = !src && !it.deletedAt;
             // 保存后重新读取的那一小会儿 content 是空的，这时候点编辑会拿到旧内容，所以等读完
             const edit = (fn) => () => (content ? fn(it, content, dropContent) : toast('正在读取刚保存的内容，稍等一下'));
-            if (it.type === 'preset' && Array.isArray(d.prompts)) return h('div', {},
+            if (it.type === 'preset' && Array.isArray(d.prompts)) return h('div', { class: 'stack' },
                 canEdit ? h('div', { class: 'reader-tools' }, h('span', { class: 'grow' }), btn('编辑条目', { icon: 'pencil', cls: 'sm', onclick: edit(editPreset) }), btn('正则', { icon: 'terminal', cls: 'sm', title: '编辑预设里附带的正则', onclick: edit(editRegex) })) : null,
                 presetView(d, it));
-            if (it.type === 'regex') return h('div', {},
+            if (it.type === 'regex') return h('div', { class: 'stack' },
                 canEdit ? h('div', { class: 'reader-tools' }, h('span', { class: 'grow' }), btn('编辑', { icon: 'pencil', cls: 'sm', onclick: edit(editRegex) })) : null,
                 regexView(Array.isArray(d) ? d : [d], { n: names(it) }));
             if (it.type === 'quickreply' && Array.isArray(d.qrList)) return qrView(d);
@@ -1003,7 +1003,7 @@ export function openDetail(id, { seq = null, onLeave = null, src = null } = {}) 
         const rx = presetRegex(d);
         const params = ['temperature', 'top_p', 'top_k', 'frequency_penalty', 'presence_penalty', 'repetition_penalty', 'openai_max_context', 'openai_max_tokens'].filter((k) => d[k] !== undefined);
         return h('div', { class: 'stack' },
-            params.length ? h('section', { class: 'panel facts-panel' }, h('div', { class: 'facts' }, params.map((k) => h('div', { class: 'fact' }, h('b', {}, String(d[k])), h('span', {}, k))))) : null,
+            params.length ? h('section', { class: 'panel facts-panel' }, h('div', { class: 'facts wide' }, params.map((k) => h('div', { class: 'fact' }, h('b', {}, String(d[k])), h('span', { title: k }, k))))) : null,
             h('div', { class: 'muted small' }, `按酒馆里的实际顺序排列，启用 ${list.filter((x) => x.enabled).length} / ${list.length} 条`),
             h('div', { class: 'stack-s' }, list.map(({ p, enabled, used }) => lazyDetails({ class: `fold entry ${enabled ? '' : 'off'}` },
                 h('summary', {}, icon('chevronRight', { size: 14, cls: 'fold-chev' }), h('span', { class: 'entry-dot' }), h('span', { class: 'fold-title' }, p.name || p.identifier), p.role ? h('span', { class: 'chip-s' }, p.role) : null, p.marker ? h('span', { class: 'chip-s' }, '占位') : null,

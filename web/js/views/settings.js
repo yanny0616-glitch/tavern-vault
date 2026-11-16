@@ -567,7 +567,7 @@ function tagsSection() {
     const all = [...counts.entries()];
     const splittable = all.filter(([t]) => TAG_SPLIT.test(t));
     const mode = state.settings.cardTags || 'all';
-    const list = h('div', { class: 'rows tag-admin' });
+    const list = h('div', { class: 'rows tag-admin tag-admin-grid' });
     const search = h('input', { class: 'input search-input', type: 'search', placeholder: `在 ${all.length} 个标签里找`, value: tagQuery, oninput: () => { tagQuery = search.value.trim(); draw(); } });
     const sortSeg = h('div');
 

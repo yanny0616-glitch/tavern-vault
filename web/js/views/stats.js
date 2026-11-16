@@ -6,7 +6,7 @@ import { openDetail } from './detail.js';
 
 export function renderStats(root, { go }) {
     const refs = ensureView(root, 'stats', () => {
-        const content = h('div', { class: 'stack' });
+        const content = h('div', { class: 'stack stats-flow' });
         root.append(topbar('统计', { kicker: 'Overview', sub: '藏品概况' }), h('div', { class: 'page' }, content));
         return { content };
     });
@@ -52,7 +52,7 @@ export function renderStats(root, { go }) {
     ];
     clear(refs.content,
         h('div', { class: 'kpis' }, kpis.map(([k, v, ic]) => h('div', { class: 'kpi' }, h('div', { class: 'kpi-ic' }, icon(ic, { size: 16 })), h('b', {}, String(v)), h('span', {}, k)))),
-        h('section', { class: 'panel' }, h('div', { class: 'panel-head' }, icon('chart', { size: 16 }), h('h3', {}, '类型分布')),
+        h('section', { class: 'panel stat-types' }, h('div', { class: 'panel-head' }, icon('chart', { size: 16 }), h('h3', {}, '类型分布')),
             byType.length ? h('div', { class: 'bars' }, byType.map(([t, n]) => h('button', { class: 'bar-row', style: { '--tc': TYPE_META[t]?.color }, onclick: () => { Object.assign(state.filter, { type: t }); go('library'); } },
                 h('span', { class: 'bar-label' }, icon(TYPE_META[t]?.icon || 'box', { size: 14 }), TYPE_META[t]?.label || t),
                 h('span', { class: 'bar' }, h('i', { style: { width: `${(n / max) * 100}%` } })),
@@ -72,7 +72,7 @@ export function renderStats(root, { go }) {
                 h('span', { class: 'bar-label' }, t), h('span', { class: 'bar' }, h('i', { style: { width: `${(n / maxTag) * 100}%` } })), h('span', { class: 'bar-n' }, n)))),
             h('div', { class: 'muted small' }, `一共 ${everyTag.length} 个标签${onceTags ? `，其中 ${onceTags} 个只用过一次` : ''}。`)) : null,
         tags.length ? h('section', { class: 'panel' }, h('div', { class: 'panel-head' }, icon('tag', { size: 16 }), h('h3', {}, '标签')),
-            h('div', { class: 'tag-cloud' }, tags.map(([t, n]) => h('button', { class: 'tag', style: { fontSize: `calc(${12 + Math.round((n / maxTag) * 5)}px * var(--fs))` }, onclick: () => { Object.assign(state.filter, { tagsIn: [t], tagsOut: [], quick: [], type: 'all' }); go('library'); } }, t, h('small', {}, n))))) : null,
+            h('div', { class: 'tag-wall' }, tags.map(([t, n]) => h('button', { class: 'tag', style: { fontSize: `calc(${12 + Math.round((n / maxTag) * 5)}px * var(--fs))` }, onclick: () => { Object.assign(state.filter, { tagsIn: [t], tagsOut: [], quick: [], type: 'all' }); go('library'); } }, t, h('small', {}, n))))) : null,
         recent.length ? h('section', { class: 'panel' }, h('div', { class: 'panel-head' }, icon('clock', { size: 16 }), h('h3', {}, '最近收录')),
             h('div', { class: 'rows' }, recent.map((it) => itemRow(it, { onClick: () => openDetail(it.id), right: h('span', { class: 'muted small nowrap' }, timeAgo(it.createdAt)) })))) : null);
 }

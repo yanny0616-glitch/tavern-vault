@@ -21,7 +21,7 @@ const item = async (n) => (await (await fetch(B + '/api/state')).json()).items.f
   await p.waitForSelector('.edit-sheet');
   await p.fill('.edit-sheet textarea[placeholder^="一句话"]', '新的简介');
   await p.fill('.edit-sheet input[placeholder="输入标签，回车添加"]', '测试标签'); await p.keyboard.press('Enter');
-  await p.locator('.edit-sheet .tag-sug').first().click();
+  await p.locator('.edit-sheet .tag-quick').first().click();
   ok(JSON.stringify(await item('白夜')) === JSON.stringify(before), 'nothing saved before 保存');
   // 取消时提示
   await p.click('.edit-sheet .sheet-foot button:has-text("取消")');

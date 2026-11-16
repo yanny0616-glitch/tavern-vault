@@ -559,8 +559,8 @@ html body .overlay .sheet { border-bottom-left-radius: var(--sheet-r, var(--radi
 .bar { height: 8px; border-radius: 4px; background: var(--surface-2); overflow: hidden; }
 .bar i { display: block; height: 100%; border-radius: inherit; background: var(--tc, var(--accent)); }
 .bar-n { text-align: right; font-variant-numeric: tabular-nums; color: var(--text-3); }
-.tag-cloud { display: flex; flex-wrap: wrap; gap: 6px; }
-.tag-cloud .tag { cursor: pointer; height: auto; padding: 4px 10px; }
+.tag-wall { display: flex; flex-wrap: wrap; gap: 6px; }
+.tag-wall .tag { cursor: pointer; height: auto; padding: 4px 10px; }
 
 /* ---------------- 设置 ---------------- */
 .skin-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
@@ -848,8 +848,8 @@ html.embed-edge .tb-close { display: inline-flex; }
 .edit-form .field > .row-between { display: flex; align-items: center; justify-content: space-between; }
 .edit-sec { display: flex; flex-direction: column; gap: 10px; padding-top: 4px; }
 .tag-suggest { display: flex; flex-wrap: wrap; gap: 5px; align-items: center; margin-top: 6px; }
-.tag-sug { display: inline-flex; align-items: center; gap: 3px; padding: 3px 9px; border-radius: 999px; border: 1px dashed var(--line-2); background: none; font-size: calc(12px * var(--fs)); color: var(--text-2); }
-.tag-sug:hover { border-color: var(--accent); color: var(--accent); }
+.tag-quick { display: inline-flex; align-items: center; gap: 3px; padding: 3px 9px; border-radius: 999px; border: 1px dashed var(--line-2); background: none; font-size: calc(12px * var(--fs)); color: var(--text-2); }
+.tag-quick:hover { border-color: var(--accent); color: var(--accent); }
 @media (min-width: 900px) { .sheet.edit-sheet { max-width: 720px; } }
 
 /* 每行固定数量 */
@@ -1394,3 +1394,17 @@ div.bar-row { cursor: default; }
 .dd-item.sel::after { content: ""; margin-left: auto; width: 6px; height: 10px; border: solid var(--accent); border-width: 0 2px 2px 0; transform: rotate(45deg) translateY(-2px); flex: none; }
 .dd-item.off { opacity: .45; cursor: default; }
 .dd-group { padding: 8px 10px 3px; font-size: calc(12px * var(--fs)); color: var(--text-3); }
+
+/* 标签管理：宽屏上一行排几个，不用一个标签占一整行 */
+.tag-admin-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); }
+.tag-admin-grid > :not(.row-item) { grid-column: 1 / -1; }
+
+/* 数字格下面的小字：太长就省略，不压到旁边一格；预设的参数名长，格子放宽 */
+.fact span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.facts.wide { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
+/* 统计页：宽屏上条形图的几块两两并排，不用一条拉满整屏 */
+@media (min-width: 1180px) {
+  .stats-flow { display: grid; grid-template-columns: 1fr 1fr; align-items: start; }
+  .stats-flow > * { grid-column: 1 / -1; min-width: 0; }
+  .stats-flow > .stat-types, .stats-flow > .stat-new, .stats-flow > .stat-clean, .stats-flow > .stat-toptags { grid-column: auto; }
+}
