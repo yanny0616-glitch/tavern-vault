@@ -35,9 +35,14 @@ export function parseQuery(q) {
     return out;
 }
 
-// 全文搜索的结果（服务端按文件内容搜）；列表变了或搜索词变了就作废
-export const deep = { text: '', items: null, hits: null, pending: '' };
-const deepReady = (text) => deep.hits && deep.text === text && deep.items === state.items;
+// 搜索范围（每台设备记住）：一个都不选就是全部都搜
+export const SEARCH_IN = { name: '名称', info: '作者、标签、资料', desc: '简介、笔记', persona: '角色设定', greet: '开场白、对话示例', book: '世界书', other: '其它内容' };
+export const searchIn = () => (Array.isArray(state.prefs.searchIn) ? state.prefs.searchIn.filter((k) => k in SEARCH_IN) : []);
+const scopeKey = () => Object.keys(SEARCH_IN).filter((k) => searchIn().includes(k)).join(',');
+
+// 全文搜索的结果（服务端按文件内容搜）；列表变了、搜索词或搜索范围变了就作废
+export const deep = { text: '', scope: '', items: null, hits: null, pending: '' };
+const deepReady = (text) => deep.hits && deep.text === text && deep.scope === scopeKey() && deep.items === state.items;
 
 // 快捷筛选
 export const QUICK = {
@@ -88,7 +93,10 @@ function matcher() {
         if (!pq.text) return true;
         if (useDeep) return Boolean(deep.hits[it.id]);
         // 全文结果回来之前先按列表里已有的资料搜
-        const hay = `${it.name}\n${it.description}\n${it.author}\n${it.tags.join(' ')}\n${it.notes}\n${it.searchText}\n${Object.values(it.fields || {}).join(' ')}`.toLowerCase();
+        const sc = searchIn();
+        const on = (k) => !sc.length || sc.includes(k);
+        const hay = [on('name') && it.name, on('desc') && `${it.description}\n${it.notes}`, on('info') && `${it.author}\n${it.tags.join(' ')}\n${Object.values(it.fields || {}).join(' ')}`, !sc.length && it.searchText]
+            .filter(Boolean).join('\n').toLowerCase();
         return pq.pos.every((t) => hay.includes(t)) && !pq.neg.some((t) => hay.includes(t));
     };
 }
@@ -162,14 +170,15 @@ export function renderLibrary(root) {
 
     const items = live();
     const pq = parseQuery(state.filter.q);
-    if (pq.text && !deepReady(pq.text) && deep.pending !== `${pq.text}|${state.items.length}`) {
-        const key = `${pq.text}|${state.items.length}`;
+    const scope = scopeKey();
+    if (pq.text && !deepReady(pq.text) && deep.pending !== `${pq.text}|${scope}|${state.items.length}`) {
+        const key = `${pq.text}|${scope}|${state.items.length}`;
         const items0 = state.items;
         deep.pending = key;
-        api.get(`/api/search?q=${encodeURIComponent(pq.text)}`).then((r) => {
+        api.get(`/api/search?q=${encodeURIComponent(pq.text)}${scope ? `&in=${scope}` : ''}`).then((r) => {
             if (deep.pending !== key) return;
-            Object.assign(deep, { text: pq.text, items: items0, hits: r.hits || {}, pending: '' });
-            if (parseQuery(state.filter.q).text === pq.text && state.items === items0) renderLibrary(root);
+            Object.assign(deep, { text: pq.text, scope, items: items0, hits: r.hits || {}, pending: '' });
+            if (parseQuery(state.filter.q).text === pq.text && scopeKey() === scope && state.items === items0) renderLibrary(root);
         }).catch(() => { if (deep.pending === key) deep.pending = ''; });
     }
     const hitOf = (it) => (pq.pos.length ? { terms: pq.pos, ...(deepReady(pq.text) ? deep.hits[it.id] : null) } : null);
@@ -201,6 +210,8 @@ export function renderLibrary(root) {
 
     // 已生效的筛选
     const pills = [];
+    // 搜索范围收窄了：搜的时候提醒一下，免得以为没搜到
+    if (pq.text && searchIn().length) pills.push([`只搜：${searchIn().map((k) => SEARCH_IN[k]).join('、')}`, () => { state.prefs.searchIn = []; savePrefs(); renderLibrary(root); }, 'scope']);
     if (state.filter.fav) pills.push(['收藏', () => setFilter(root, { fav: false })]);
     for (const k of state.filter.quick) pills.push([QUICK[k]?.[0] || k, () => setFilter(root, { quick: state.filter.quick.filter((x) => x !== k) })]);
     for (const t of state.filter.tagsIn) pills.push([`#${t}`, () => setFilter(root, { tagsIn: state.filter.tagsIn.filter((x) => x !== t) })]);
@@ -401,12 +412,21 @@ function openFilters(root) {
                     const q = state.filter.quick;
                     state.filter.quick = q.includes(k) ? q.filter((x) => x !== k) : [...q, k];
                 })))),
+            h('div', { class: 'form-group' }, h('div', { class: 'form-label' }, '搜索范围'),
+                h('div', { class: 'opts' }, opt(!searchIn().length, '全部', () => { state.prefs.searchIn = []; savePrefs(); }),
+                    Object.entries(SEARCH_IN).map(([k, label]) => opt(searchIn().includes(k), label, () => {
+                        const cur = searchIn();
+                        const next = cur.includes(k) ? cur.filter((x) => x !== k) : [...cur, k];
+                        state.prefs.searchIn = next.length === Object.keys(SEARCH_IN).length ? [] : next;
+                        savePrefs();
+                    }))),
+                h('div', { class: 'muted small' }, '搜到的东西太多时，只选要搜的几类。这台设备会记住。')),
             tags.length ? tagSection(tags) : null,
             h('div', { class: 'muted small' }, '搜索会查到开场白、对话示例、世界书条目、预设提示词等全部文字。多个词用空格分开表示都要包含；「-词」表示不能出现；「#标签」只看带这个标签的，「-#标签」排除这个标签。'));
     };
     draw();
     s.foot = h('div', { class: 'sheet-foot' },
-        btn('重置', { onclick: () => { Object.assign(state.filter, CLEAR_FILTERS()); state.prefs.sort = 'updated'; state.prefs.groupTime = false; savePrefs(); draw(); renderLibrary(root); } }),
+        btn('重置', { onclick: () => { Object.assign(state.filter, CLEAR_FILTERS()); state.prefs.searchIn = []; state.prefs.sort = 'updated'; state.prefs.groupTime = false; savePrefs(); draw(); renderLibrary(root); } }),
         btn('完成', { cls: 'primary', onclick: () => s.close() }));
     s.el.append(s.foot);
 }

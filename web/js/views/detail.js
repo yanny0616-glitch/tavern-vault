@@ -1,5 +1,5 @@
 // 条目详情：介绍（预览）/ 内容（阅读排版）/ 文件；资料在单独的编辑面板里修改
-import { h, clear, sheet, toast, debounce, confirmDialog, promptDialog, lightbox, fmtBytes, fmtDate, timeAgo, downloadBlob, downloadUrl, switchEl, icon, btn, starsEl, emptyState } from '../ui.js';
+import { h, clear, sheet, toast, debounce, confirmDialog, choiceDialog, promptDialog, lightbox, fmtBytes, fmtDate, timeAgo, downloadBlob, downloadUrl, switchEl, icon, btn, starsEl, emptyState } from '../ui.js';
 import { api } from '../api.js';
 import { bridge } from '../bridge.js';
 import { state, typeMeta, TYPE_META, fieldsFor, subscribe, allTags, notify, savePrefs, applyAccent, readZoom, READ_ZOOM, detailTabOf, userLabel } from '../state.js';
@@ -67,8 +67,31 @@ function segmentJump(node, scroller) {
  * 单独的阅读页。pager：{ count, index, get(i, styled) → { title, node, len }, styled }
  * 有 pager 时底部可以翻到上一条 / 下一条（键盘左右键也可以）
  */
+// ---- 阅读位置：全屏阅读读到哪儿，这台设备记着，下次打开接着读 ----
+// 按内容认（标题 + 长度 + 开头一段），内容改了就从头开始；最多记 150 篇，读完的不记
+const READ_POS_KEY = 'tv_readpos';
+const READ_POS_MAX = 150;
+const readPosAll = () => { try { const m = JSON.parse(localStorage.getItem(READ_POS_KEY) || '{}'); return m && typeof m === 'object' ? m : {}; } catch { return {}; } };
+const readPosKey = (text) => { let x = 5381; for (const ch of String(text)) x = ((x * 33) ^ ch.codePointAt(0)) >>> 0; return x.toString(36); };
+function saveReadPos(key, page, ratio) {
+    const all = readPosAll();
+    const e = all[key] && typeof all[key] === 'object' ? all[key] : { y: {} };
+    e.y = e.y && typeof e.y === 'object' ? e.y : {};
+    if (ratio < 0.02 || ratio > 0.97) delete e.y[page]; else e.y[page] = Math.round(ratio * 1000) / 1000;
+    e.i = page;
+    e.at = Date.now();
+    if (!Object.keys(e.y).length && !page) delete all[key]; else all[key] = e;
+    const keys = Object.keys(all);
+    if (keys.length > READ_POS_MAX) for (const k of keys.sort((a, b) => (all[a].at || 0) - (all[b].at || 0)).slice(0, keys.length - READ_POS_MAX)) delete all[k];
+    try { localStorage.setItem(READ_POS_KEY, JSON.stringify(all)); } catch { /* 存不了就不记 */ }
+}
+
 function readFull(title, node, len, { pager = null } = {}) {
     const wrap = h('div', { class: 'read-full' });
+    const memoKey = readPosKey(pager ? `p|${pager.memo ?? title}` : `t|${title}|${len}|${node?.textContent?.slice(0, 120) || ''}`);
+    const last = readPosAll()[memoKey] || null; // 打开时上次的记录（翻页会改掉，所以先取出来）
+    let restoring = false;
+    let lastPageHint = Boolean(pager && last && Number.isInteger(last.i));
     const tools = readTools();
     let styled = pager?.styled ?? false;
     let i = pager?.index || 0;
@@ -94,13 +117,37 @@ function readFull(title, node, len, { pager = null } = {}) {
     const fill = (n, l) => {
         const meta = h('div', { class: 'read-full-meta' }, h('span', {}, `${l} 字`), h('span', { class: 'grow' }), styleBtn);
         clear(wrap, meta, n);
+        restorePos(meta);
         const jump = segmentJump(n, s.body);
         if (jump) meta.insertBefore(jump, styleBtn || null);
         styleBtn?.querySelectorAll('.seg-item').forEach((b, k) => b.classList.toggle('active', (k === 1) === styled));
         styleBtn?.querySelector('.read-script')?.toggleAttribute('hidden', !styled);
     };
+    const maxScroll = () => s.body.scrollHeight - s.body.clientHeight;
+    /** 回到这一页上次读到的地方，并给一个「从头读」；上次停在别的页时提示一下 */
+    function restorePos(meta) {
+        const y = readPosAll()[memoKey]?.y?.[i];
+        const hint = (label, onclick) => { const b = h('button', { class: 'btn sm ghost read-resume', onclick: () => { b.remove(); onclick(); } }, label); meta.insertBefore(b, meta.querySelector('.grow')?.nextSibling || null); };
+        if (y) {
+            restoring = true;
+            const apply = () => { if (s.el.isConnected) s.body.scrollTop = y * maxScroll(); };
+            requestAnimationFrame(apply);
+            // 「酒馆效果」的内容高度要过一会儿才定下来，再对一次
+            setTimeout(() => { apply(); restoring = false; }, 350);
+            hint('已回到上次读到的地方 · 从头读', () => { s.body.scrollTop = 0; saveReadPos(memoKey, i, 0); });
+        }
+        if (lastPageHint && last.i !== i && last.i < pager.count) hint(`上次读到第 ${last.i + 1} 条`, () => show(last.i));
+        lastPageHint = false;
+    }
+    s.body.addEventListener('scroll', debounce(() => {
+        if (restoring || !s.el.isConnected) return;
+        const max = maxScroll();
+        saveReadPos(memoKey, i, max > 40 ? s.body.scrollTop / max : 0);
+    }, 300), { passive: true });
     function show(k) {
+        const moved = k !== i;
         i = Math.max(0, Math.min(pager.count - 1, k));
+        if (moved) saveReadPos(memoKey, i, readPosAll()[memoKey]?.y?.[i] || 0);
         const p = pager.get(i, styled);
         s.title.textContent = p.title;
         fill(p.node, p.len);
@@ -153,6 +200,22 @@ function fieldDisplay(f, v) {
 
 /** 12345 → 1.2 万 */
 const fmtTok = (n) => (n >= 10000 ? `${(n / 10000).toFixed(1).replace(/\.0$/, '')} 万` : String(n));
+
+/** 把角色卡里内嵌的世界书 / 正则拆出来单独使用：存成卡匣里的条目，或者下载成文件 */
+async function extractFromCard(it, part, what) {
+    const kind = part === 'regex' ? '正则' : '世界书';
+    const pickd = await choiceDialog(`把「${it.name}」的${what}拆出来，角色卡本身不会改动。`,
+        [{ key: 'file', label: '下载文件' }, { key: 'save', label: `存为${kind}条目`, cls: 'primary' }], { title: `拆出${what}` });
+    if (!pickd) return;
+    try {
+        if (pickd === 'file') {
+            downloadBlob(await api.req('POST', `/api/items/${it.id}/extract`, { part }, { blob: true }), `${it.name} 的${kind}.json`);
+            return;
+        }
+        const r = await api.post(`/api/items/${it.id}/extract`, { part, save: true });
+        toast(r.status === 'duplicate' ? `之前已经拆出过，内容一样：「${r.item.name}」` : `已存为${kind}「${r.item.name}」，共 ${r.count} 条`, 'ok');
+    } catch (e) { toast(e.message, 'err'); }
+}
 
 /**
  * 预览不在卡匣里的内容（酒馆里的角色卡、世界书……），界面和条目详情一样，只读。
@@ -266,6 +329,7 @@ export function openDetail(id, { seq = null, onLeave = null, src = null } = {}) 
         const canStyle = list.some((g) => looksHtml(g) || hasHtmlFence(g) || (scripts.length && styledOf(String(g)).hits));
         const label = (k) => (k === 0 ? '开场白' : `备选开场白 ${k}`);
         readFull(label(start), null, 0, { pager: {
+            memo: `${list.length}|${String(list[0]).length}|${String(list[0]).slice(0, 120)}`,
             count: list.length,
             index: start,
             canStyle,
@@ -751,8 +815,10 @@ export function openDetail(id, { seq = null, onLeave = null, src = null } = {}) 
         txt('depth', '深度提示词', ext.depth_prompt?.prompt);
         txt('notes', '作者注释', d.creator_notes);
         const bookN = entriesOf(book).length;
-        if (bookN) secs.push({ key: 'book', title: '内嵌世界书', meta: [String(book.name || '').trim(), `${bookN} 条`].filter(Boolean).join(' · '), node: worldbookView(book, n) });
-        if (regex.length) secs.push({ key: 'regex', title: '内嵌正则', meta: `${regex.length} 条`, node: regexView(regex, { sample: String(greetings[0] || ''), n }) });
+        // 拆出来单独用：存成卡匣里的条目，或者下载成文件。预览（不在卡匣里）和回收站里的不提供
+        const takeOut = (part, what) => (src || it.deletedAt ? null : btn('拆出', { icon: 'external', cls: 'sm ghost', title: `把${what}拆出来单独使用`, onclick: () => extractFromCard(it, part, what) }));
+        if (bookN) secs.push({ key: 'book', title: '内嵌世界书', meta: [String(book.name || '').trim(), `${bookN} 条`].filter(Boolean).join(' · '), action: takeOut('book', '内嵌世界书'), node: worldbookView(book, n) });
+        if (regex.length) secs.push({ key: 'regex', title: '内嵌正则', meta: `${regex.length} 条`, action: takeOut('regex', '内嵌正则'), node: regexView(regex, { sample: String(greetings[0] || ''), n }) });
         const anchor = (k) => `sec-${id}-${k}`;
         return h('div', { class: 'reader' },
             h('div', { class: 'reader-tools' },

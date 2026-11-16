@@ -18,6 +18,7 @@ import { AiConfig, listModels, chat, AiError } from './lib/ai.js';
 import { createAiTasks } from './lib/ai-tasks.js';
 import { createAiChat } from './lib/ai-chat.js';
 import { createBackups, recoverDb } from './lib/backups.js';
+import { extractPart } from './lib/extract.js';
 const str = (v) => (v == null ? '' : typeof v === 'string' ? v : String(v));
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -564,6 +565,29 @@ route('GET', '/api/events', ({ req, res }) => {
 
 // 条目
 route('GET', '/api/items/:id', ({ p }) => getItem(p.id));
+
+// 把角色卡里内嵌的世界书 / 正则拆出来：save=true 存成卡匣里的新条目，否则下载成文件
+route('POST', '/api/items/:id/extract', async ({ p, req, res }) => {
+    const it = getItem(p.id);
+    const { part, save } = await readJson(req);
+    const c = loadContent(it);
+    const out = c.kind === 'card' ? extractPart(normalizeCard(c.data)?.data || {}, part, it.name) : null;
+    if (!out) throw new HttpError(400, part === 'regex' ? '这张卡里没有内嵌正则' : '这张卡里没有内嵌世界书');
+    const buf = Buffer.from(JSON.stringify(out.obj, null, 2));
+    const filename = safeFilename(out.filename);
+    if (!save) {
+        send(res, 200, buf, { 'Content-Type': 'application/json; charset=utf-8', 'Content-Disposition': contentDisposition(filename, true) });
+        return undefined;
+    }
+    // 以前拆过、内容一样的就不再存一份
+    const sha = crypto.createHash('sha256').update(buf).digest('hex');
+    const had = Object.values(store.db.items).find((i) => !i.deletedAt && i.files.some((f) => f.sha === sha));
+    if (had) return { status: 'duplicate', count: out.count, item: slim(had) };
+    const r = ingest(buf, filename, { mode: 'new', collections: it.collections });
+    store.save();
+    broadcast('change', { ids: [r.item.id] });
+    return { status: 'created', count: out.count, item: r.item };
+});
 
 route('GET', '/api/items/:id/content', ({ p }) => {
     const it = getItem(p.id);
@@ -1572,8 +1596,20 @@ function snippet(text, lower, term) {
     const b = Math.min(text.length, i + term.length + 60);
     return `${a > 0 ? '…' : ''}${text.slice(a, b).replace(/\s+/g, ' ').trim()}${b < text.length ? '…' : ''}`;
 }
+// 搜索范围：网页可以只搜其中几类（in=name,book）。没列在这里的分段都算「其它内容」
+const SEARCH_SCOPES = {
+    name: ['名称'],
+    info: ['作者', '标签', '资料'],
+    desc: ['简介', 'AI 简介', '笔记', '作者注释'],
+    persona: ['描述', '性格', '场景', '系统提示词', '后置指令', '深度提示词'],
+    greet: ['开场白', '对话示例'],
+    book: ['内嵌世界书', '世界书'],
+};
+const SCOPE_OF = new Map(Object.entries(SEARCH_SCOPES).flatMap(([k, labels]) => labels.map((l) => [l, k])));
 /** 空格分隔的词都要出现，-词 表示不能出现；#标签 / -#标签 由网页自己按标签筛 */
 route('GET', '/api/search', ({ url }) => {
+    const want = new Set(String(url.searchParams.get('in') || '').split(',').filter((k) => k === 'other' || k in SEARCH_SCOPES));
+    const inScope = (s) => !want.size || want.has(SCOPE_OF.get(s[0]) || 'other');
     const raw = String(url.searchParams.get('q') || '').slice(0, 500);
     const words = raw.toLowerCase().split(/\s+/).filter(Boolean).filter((w) => !/^-?#/.test(w));
     const pos = words.filter((w) => !w.startsWith('-'));
@@ -1582,7 +1618,7 @@ route('GET', '/api/search', ({ url }) => {
     if (!pos.length && !neg.length) return { q: raw, hits };
     for (const it of Object.values(store.db.items)) {
         if (it.deletedAt) continue;
-        const segs = searchSegs(it);
+        const segs = searchSegs(it).filter(inScope);
         if (neg.some((t) => segs.some((s) => s[2].includes(t)))) continue;
         let first = null;
         let ok = true;
