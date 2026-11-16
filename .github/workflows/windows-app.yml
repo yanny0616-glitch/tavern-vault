@@ -1,0 +1,80 @@
+# 编译 Windows 桌面版（免安装的单个 exe，没有代码签名）
+# 触发：推送改动了 desktop/ 的提交；手动运行（Actions → Windows App → Run workflow）；
+#       打 desktop-v1.2.3 这样的 tag 会同时发布到 Releases
+name: Windows App
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ['**']
+    paths: ['desktop/**', '.github/workflows/windows-app.yml']
+    tags: ['desktop-v*']
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
+    defaults:
+      run:
+        working-directory: desktop
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+
+      - name: 版本号
+        id: ver
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/desktop-v* ]]; then v="${GITHUB_REF#refs/tags/desktop-v}"; else v="$(node -p "require('./package.json').version")"; fi
+          # 版本号只能是 1.2.3 这种，别的一律不接受
+          [[ "$v" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "版本号不对：$v"; exit 1; }
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "版本 $v（构建号 $GITHUB_RUN_NUMBER）"
+
+      - name: 安装依赖
+        run: npm ci
+
+      - name: 打包 exe
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+          # 不签名：没有证书，也不要去找
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: |
+          npx electron-builder --win portable --x64 --publish never -c.extraMetadata.version="$VERSION"
+          ls -lh dist/*.exe
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: TavernVault-${{ steps.ver.outputs.version }}-windows
+          path: desktop/dist/*.exe
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/desktop-v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: TavernVault-${{ needs.build.outputs.version }}-windows
+      - name: 发布到 Releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" *.exe --repo "$GITHUB_REPOSITORY" --title "藏馆 Windows 桌面版 $VERSION" \
+            --notes "免安装，双击运行。没有代码签名，第一次打开时 Windows 可能提示「已保护你的电脑」，点「更多信息 → 仍要运行」。"

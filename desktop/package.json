@@ -1,0 +1,24 @@
+{
+  "name": "tavern-vault-desktop",
+  "version": "1.0.0",
+  "private": true,
+  "description": "酒馆藏馆 Windows 桌面版外壳（Electron）",
+  "author": "TavernVault",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --win portable --x64 --publish never"
+  },
+  "devDependencies": {
+    "electron": "45.3.2",
+    "electron-builder": "26.18.0"
+  },
+  "build": {
+    "appId": "app.tavernvault.desktop",
+    "productName": "酒馆藏馆",
+    "files": ["main.js", "preload.js", "launcher.html", "build/icon.png"],
+    "directories": { "output": "dist" },
+    "win": { "target": "portable", "icon": "build/icon.png" },
+    "portable": { "artifactName": "TavernVault-${version}.exe" }
+  }
+}

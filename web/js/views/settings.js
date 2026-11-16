@@ -21,7 +21,7 @@ const SECTIONS = [
     { key: 'tags', title: '标签', icon: 'tag', desc: () => `${tagCounts().size} 个标签`, render: tagsSection },
     { key: 'fields', title: '自定义字段', icon: 'sliders', desc: () => `${state.fields.filter((f) => !f.hidden).length} 个字段在用`, render: fieldsSection },
     { key: 'ai', title: 'AI 助手', icon: 'sparkles', desc: () => (state.settings.ai?.ready ? '已配置' : '还没有配置'), render: () => panel('AI 助手', 'sparkles', null, aiSettings()) },
-    { key: 'connect', title: '连接与设备', icon: 'beer', desc: () => (bridge.host ? `已连接 ${bridge.host.host}` : '酒馆插件、iPhone'), render: () => (native ? [iosApp(), connection()] : [connection(), shortcut()]) },
+    { key: 'connect', title: '连接与设备', icon: 'beer', desc: () => (bridge.host ? `已连接 ${bridge.host.host}` : '酒馆插件、iPhone'), render: () => (native ? [iosApp(), connection()] : desktop ? [desktopApp(), connection()] : [connection(), shortcut()]) },
     { key: 'security', title: '访问密码', icon: 'lock', desc: () => (state.settings.auth ? '已启用' : '未设置'), render: () => [security(), state.settings.auth ? loginLogPanel() : null] },
     { key: 'data', title: '数据与存储', icon: 'database', desc: () => `${state.stats?.total ?? 0} 项 · ${fmtBytes(state.stats?.bytes || 0)}`, render: data },
     { key: 'about', title: '关于', icon: 'info', desc: () => `v${state.settings.version || '1.0.0'}`, render: about },
@@ -661,6 +661,15 @@ function iosApp() {
         h('div', { class: 'sub-label' }, '当前服务器'), copyBox(location.origin),
         help('在别的 App 或「文件」里分享角色卡、世界书、压缩包等文件，选「藏馆」就会打开导入。下载和导出的文件会弹出系统分享面板，选「存储到文件」或「存储图像」保存。'),
         btn('更换服务器', { icon: 'refresh', cls: 'sm', onclick: () => { location.href = LAUNCHER_URL; } }));
+}
+
+// Windows 桌面版（Electron 外壳）里打开时，外壳会给页面一个 window.tvDesktop
+const desktop = typeof window.tvDesktop?.changeServer === 'function';
+function desktopApp() {
+    return panel('桌面版', 'monitor', null,
+        h('div', { class: 'sub-label' }, '当前服务器'), copyBox(location.origin),
+        help('界面就是服务器上的网页，服务端更新后这里马上是新的，不用重新下载。别的网站的链接会用系统浏览器打开。'),
+        btn('更换服务器', { icon: 'refresh', cls: 'sm', onclick: () => window.tvDesktop.changeServer() }));
 }
 
 function shortcut() {

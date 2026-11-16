@@ -74,6 +74,7 @@ tavern-vault/
 ├── web/                 网页前端（原生 JS，无需构建）
 ├── extension/           酒馆插件（SillyTavern / TauriTavern 通用）
 ├── app/                 iOS App 外壳（Capacitor，在 GitHub Actions 里编译）
+├── desktop/             Windows 桌面版外壳（Electron，在 GitHub Actions 里编译）
 └── deploy/              systemd 服务与 Cloudflare Tunnel 示例配置
 ```
 
@@ -186,7 +187,20 @@ https://github.com/yanny0616-glitch/tavern-vault
 
 **第一次打开**：填藏馆的服务器地址（就是浏览器里打开藏馆用的那个），再输入访问密码。之后每次打开自动连上；要换服务器到「设置 → 连接与设备 → 更换服务器」。
 
-## 五、AI 功能
+## 五、Windows 桌面版
+
+`desktop/` 是和 iOS App 一样的薄外壳（Electron）：打开后连到你的藏馆服务，窗口里就是服务器上的网页，服务端更新后马上是新界面，不用重新下载。
+
+- 免安装的单个 exe，双击运行；窗口大小和位置会记住
+- 下载、导出、备份直接弹出「另存为」；可以把文件拖进窗口导入
+- 只有你的藏馆服务器在窗口里打开，别的链接交给系统浏览器
+- 登录状态存在本机，不受浏览器清理数据影响
+
+**编译**：推送改动了 `desktop/` 的提交会自动编译；也可以到 GitHub → Actions → Windows App → Run workflow 手动运行。几分钟后在运行记录底部下载 `TavernVault-*-windows`，解压得到 exe。推送 `desktop-v1.0.0` 这样的 tag 会同时发布到 Releases。
+
+**第一次打开**：exe 没有代码签名，Windows 可能提示「已保护你的电脑」，点「更多信息 → 仍要运行」。然后填藏馆的服务器地址，再输入访问密码。要换服务器：菜单（按 Alt 显示）→「藏馆 → 更换服务器」，或「设置 → 连接与设备」。
+
+## 六、AI 功能
 
 在「设置 → AI 助手」添加服务：
 
@@ -198,7 +212,7 @@ https://github.com/yanny0616-glitch/tavern-vault
 
 使用：在仓库里多选条目点「AI 整理」，或在条目详情里点「AI 整理」。右下角会显示进度和待审核数量。筛选里可以只看「未整理」的条目。
 
-## 六、数据与备份
+## 七、数据与备份
 
 - 数据都在 `server/data/`：`db.json` 是索引，`files/` 存按 SHA-256 命名的原始文件
 - 「设置 → 下载完整备份」得到包含所有版本文件的 ZIP；在「设置 → 从备份还原」上传即可恢复，可以选「合并」（保留现有内容）或「替换」。也可以直接把 ZIP 解压回 data 目录
