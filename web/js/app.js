@@ -46,12 +46,12 @@ import { handleAiChatEvent } from './views/aichat.js';
 
 const app = document.getElementById('app');
 
-// 在酒馆插件里打开时：底部安全区由藏馆自己留（底部栏铺到屏幕最下面），插件面板顶部跟着藏馆的风格配色
+// 在酒馆插件里打开时：底部安全区由卡匣自己留（底部栏铺到屏幕最下面），插件面板顶部跟着卡匣的风格配色
 async function fitHost() {
     const root = document.documentElement;
     if (bridge.has('insets')) {
         try {
-            // 插件不再留边距、也不显示自己的标题栏，藏馆铺满全屏，自己给灵动岛 / 状态栏和底部 Home 条留位置
+            // 插件不再留边距、也不显示自己的标题栏，卡匣铺满全屏，自己给灵动岛 / 状态栏和底部 Home 条留位置
             const r = await bridge.call('insets', {}, [], 5000);
             const px = (v) => `${Math.max(0, Math.min(Number(v) || 0, 120))}px`;
             for (const k of ['top', 'bottom', 'left', 'right']) root.style.setProperty(`--safe-${k}`, px(r?.[k]));
@@ -116,7 +116,7 @@ function renderNav() {
     clear(navEl,
         h('div', { class: 'brand' },
             h('div', { class: 'brand-mark' }, icon('archive', { size: 20 })),
-            h('div', { class: 'brand-text' }, h('b', {}, state.settings.title || '酒馆藏馆'), h('small', {}, 'Tavern Vault'))),
+            h('div', { class: 'brand-text' }, h('b', {}, state.settings.title || '卡匣'), h('small', {}, 'Cardbox'))),
         btn('添加资源', { icon: 'plus', cls: 'primary brand-add', onclick: () => openImporter() }),
         h('div', { class: 'nav-group' }, visible.filter(([k]) => k !== 'trash').map(navItem)),
         h('div', { class: 'nav-sep' }),
@@ -166,8 +166,8 @@ function showLogin(title) {
     }
     clear(app, h('div', { class: 'login' }, embedClose(), h('div', { class: 'login-box' },
         h('div', { class: 'login-mark' }, icon('lock', { size: 26, stroke: 1.6 })),
-        h('div', { class: 'login-kicker' }, 'Tavern Vault'),
-        h('h2', { class: 'login-title' }, title || '酒馆藏馆'),
+        h('div', { class: 'login-kicker' }, 'Cardbox'),
+        h('h2', { class: 'login-title' }, title || '卡匣'),
         h('p', { class: 'login-hint' }, '请输入访问密码'),
         h('div', { class: 'login-field' }, pw, go2))));
     setTimeout(() => pw.focus(), 50);
@@ -186,10 +186,10 @@ async function start() {
         health = await api.get('/api/health');
     } catch (e) {
         await hostReady;
-        clear(app, h('div', { class: 'login' }, embedClose(), emptyState('wifiOff', '无法连接到藏馆服务', e.message, btn('重试', { icon: 'refresh', onclick: start }))));
+        clear(app, h('div', { class: 'login' }, embedClose(), emptyState('wifiOff', '无法连接到卡匣服务', e.message, btn('重试', { icon: 'refresh', onclick: start }))));
         return;
     }
-    document.title = health.title || '酒馆藏馆';
+    document.title = health.title || '卡匣';
     if (health.skin) { state.settings.skin = health.skin; applyAccent(); }
     try {
         await reload();
@@ -224,7 +224,7 @@ async function start() {
             if (files.length) openImporter(files);
         });
         initNative({ onFiles: openImporter, notify: toast });
-        // 酒馆里已有哪些内容：藏馆卡片上的「酒馆」角标和「未导入酒馆」筛选要用
+        // 酒馆里已有哪些内容：卡匣卡片上的「酒馆」角标和「未导入酒馆」筛选要用
         if (bridge.host) loadTavernIndex();
         const m = location.hash.match(/[?&]item=([a-f0-9]+)/);
         if (m && state.byId.has(m[1])) setTimeout(() => openDetail(m[1]), 100);

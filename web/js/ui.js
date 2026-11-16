@@ -100,6 +100,50 @@ function untrackSheet(entry) {
     }, 0);
 }
 
+/**
+ * 弹窗开着时，手指和滚轮只能滚动最上面那个弹窗里的内容。
+ * 不拦的话，碰到标题栏、底部按钮、遮罩，或者内容已经滚到头，滚动会落到后面的弹窗 / 页面上。
+ */
+const topOverlay = () => [...document.querySelectorAll('.overlay')].pop() || null;
+/** 从 target 往上到弹窗为止，有没有哪一层还能朝这个方向滚（dx / dy 是内容要滚动的方向） */
+function canScrollIn(top, target, dx, dy) {
+    const vertical = Math.abs(dy) >= Math.abs(dx);
+    const d = vertical ? dy : dx;
+    for (let el = target; el instanceof Element; el = el.parentElement) {
+        const cs = getComputedStyle(el);
+        const [flow, pos, size, view] = vertical ? [cs.overflowY, el.scrollTop, el.scrollHeight, el.clientHeight] : [cs.overflowX, el.scrollLeft, el.scrollWidth, el.clientWidth];
+        if (/auto|scroll/.test(flow) && size > view + 1 && (d < 0 ? pos > 0 : pos + view < size - 1)) return true;
+        if (el === top) break;
+    }
+    return false;
+}
+const scrollStays = (e, dx, dy) => {
+    const top = topOverlay();
+    if (!top) return true;
+    return top.contains(e.target) && canScrollIn(top, e.target, dx, dy);
+};
+document.addEventListener('wheel', (e) => {
+    if (e.ctrlKey || !e.cancelable) return;
+    if (!scrollStays(e, e.deltaX, e.deltaY)) e.preventDefault();
+}, { passive: false });
+{
+    let start = null;
+    let block = null; // 一次滑动只在第一下判断：滚起来以后浏览器不让中途拦
+    document.addEventListener('touchstart', (e) => { start = e.touches.length === 1 ? { x: e.touches[0].clientX, y: e.touches[0].clientY } : null; block = null; }, { passive: true });
+    document.addEventListener('touchmove', (e) => {
+        if (!start || e.touches.length !== 1 || !topOverlay()) return;
+        // 输入框里拖动光标、滑块、下拉框不管
+        if (e.target instanceof Element && e.target.closest('input, select')) return;
+        if (block === null) {
+            const dx = start.x - e.touches[0].clientX;
+            const dy = start.y - e.touches[0].clientY;
+            if (!dx && !dy) return;
+            block = !scrollStays(e, dx, dy);
+        }
+        if (block && e.cancelable) e.preventDefault();
+    }, { passive: false });
+}
+
 /** 往下拖弹窗顶部（小横条和标题栏）关掉弹窗 */
 function dragToClose(box, overlay, tryClose) {
     const grabs = () => [box.querySelector('.sheet-grip'), box.querySelector('.sheet-head')];

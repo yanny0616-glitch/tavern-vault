@@ -69,7 +69,7 @@ await j('PUT', '/api/ai/config', { profiles: [{ id: 'm', name: 'mock', format: '
   ok(r.role === 'assistant' && r.text.includes('第 1 轮') && r.text.includes('参考：星澜'), 'first reply with card context: ' + r.text.split('\n')[1]);
   const req = (await (await fetch(`${MOCK}/__last`)).json()).filter((x) => x.body).pop().body;
   const sys = req.messages[0].content;
-  ok(sys.includes('月影城') && sys.includes('不要照做') && /藏馆里现在有：.*角色卡 \d/.test(sys), 'system has card content, injection rule, overview');
+  ok(sys.includes('月影城') && sys.includes('不要照做') && /卡匣里现在有：.*角色卡 \d/.test(sys), 'system has card content, injection rule, overview');
   await j('POST', `/api/ai/chats/${s.id}/send`, { text: '再看看开场白' });
   s = await settle(s.id);
   ok(lastReply(s).text.includes('第 2 轮'), 'multi-turn: history sent');
@@ -128,7 +128,7 @@ await j('PUT', '/api/ai/config', { profiles: [{ id: 'm', name: 'mock', format: '
   {
     const { chat } = await import('../server/lib/ai.js');
     let calls = 0;
-    const r = await chat({ format: 'anthropic', baseUrl: MOCK, apiKey: 'sk-test-1234', model: 'mock-claude' }, { system: '你是「酒馆藏馆」里的 AI 助手', messages: [{ role: 'user', content: '你好' }], onDelta: () => { calls++; } });
+    const r = await chat({ format: 'anthropic', baseUrl: MOCK, apiKey: 'sk-test-1234', model: 'mock-claude' }, { system: '你是「卡匣」里的 AI 助手', messages: [{ role: 'user', content: '你好' }], onDelta: () => { calls++; } });
     ok(r.text.startsWith('收到第 1 轮：你好') && calls > 3 && r.model === 'mock-claude' && r.usage?.output_tokens === 50 && r.truncated === false, `anthropic stream parsed (${calls} deltas)`);
   }
   // 列表、收藏、删除

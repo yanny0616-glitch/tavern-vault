@@ -21,7 +21,7 @@ export const DEFAULT_ORGANIZE = {
 export const DEFAULT_TEMPLATE = Object.freeze({
     id: 'default',
     name: '默认',
-    role: '你是「酒馆藏馆」的整理助手，替用户给 SillyTavern 的资源（角色卡、世界书、预设、正则等）打标签、写简介、填资料字段，让它们以后好找。',
+    role: '你是「卡匣」的整理助手，替用户给 SillyTavern 的资源（角色卡、世界书、预设、正则等）打标签、写简介、填资料字段，让它们以后好找。',
     tagLimit: 6,
     allowNewTags: true,
     tagRule: '每个标签 2 到 8 个字，写题材、世界观、身份、性格、人物关系、玩法、文风这类能帮助筛选的特点。名称、作者、文件类型不要当标签。',

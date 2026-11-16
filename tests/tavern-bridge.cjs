@@ -58,7 +58,7 @@ const j = async (u, o) => (await fetch(u, o)).json();
     const { extractCardFromPng } = await import(require("path").resolve(__dirname, "../server/lib/png.js"));
     const c = extractCardFromPng(buf); ok(buf.slice(1, 4).toString() === 'PNG' && JSON.stringify(c).includes('在酒馆里改过的描述'), 'saved version is full tavern PNG with new text'); }
 
-  // 酒馆里其实是旧版：同步 → 存为旧版本，藏馆当前版本不变
+  // 酒馆里其实是旧版：同步 → 存为旧版本，卡匣当前版本不变
   await fetch(`${M}/__edit?q=${encodeURIComponent(JSON.stringify({ avatar: 'lily.png', description: '酒馆里的旧描述' }))}`);
   await frame.click('.topbar .btn[title="重新读取"]');
   await row('酒馆里的莉莉').locator('text=酒馆有改动').waitFor({ timeout: 10000 });
@@ -75,18 +75,18 @@ const j = async (u, o) => (await fetch(u, o)).json();
   await frame.click('.topbar .btn[title="重新读取"]');
   await row('酒馆里的莉莉').locator('text=已同步').waitFor({ timeout: 10000 });
 
-  // 藏馆里出现更新的版本（网页编辑） → 酒馆是旧版本
+  // 卡匣里出现更新的版本（网页编辑） → 酒馆是旧版本
   const content = await j(`${V}/api/items/${lily.id}/content`);
-  await fetch(`${V}/api/items/${lily.id}/card`, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ card: { ...content.card, data: { ...content.data, first_mes: '藏馆里改的开场白' } } }) });
+  await fetch(`${V}/api/items/${lily.id}/card`, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ card: { ...content.card, data: { ...content.data, first_mes: '卡匣里改的开场白' } } }) });
   await frame.click('.topbar .btn[title="重新读取"]');
-  await row('酒馆里的莉莉').locator('text=藏馆较新').waitFor({ timeout: 10000 });
-  ok(true, 'vault edit → 藏馆较新');
+  await row('酒馆里的莉莉').locator('text=卡匣较新').waitFor({ timeout: 10000 });
+  ok(true, 'vault edit → 卡匣较新');
   await row('酒馆里的莉莉').locator('button:has-text("更新到酒馆")').click();
   await frame.waitForFunction(() => [...document.querySelectorAll('.progress-label')].some((e) => e.textContent.includes('已导入')), null, { timeout: 10000 });
   await page.screenshot({ path: `${OUT}/tavern-overwrite.png` });
   await frame.locator('body').press('Escape');
   const ms = await j(`${M}/__state`);
-  ok(Object.keys(ms.chars).length === 1 && ms.chars['lily.png'].data.first_mes === '藏馆里改的开场白', `tavern card overwritten in place (chars=${Object.keys(ms.chars)})`);
+  ok(Object.keys(ms.chars).length === 1 && ms.chars['lily.png'].data.first_mes === '卡匣里改的开场白', `tavern card overwritten in place (chars=${Object.keys(ms.chars)})`);
   const imp = ms.received.filter((r) => r.path === '/api/characters/import').pop();
   ok(imp?.fields?.preserved_name === 'lily.png', `preserved_name sent: ${imp?.fields?.preserved_name}`);
   await row('酒馆里的莉莉').locator('text=已同步').waitFor({ timeout: 10000 });

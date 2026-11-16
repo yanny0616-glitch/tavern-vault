@@ -73,7 +73,7 @@ export function initNative({ onFiles, notify }) {
     new MutationObserver(syncStatusBar).observe(document.documentElement, { attributes: true, attributeFilter: ['data-mode'] });
     syncStatusBar();
 
-    // 「用藏馆打开」/「拷贝到藏馆」：系统把文件复制进 App 的 Inbox，再通知这里
+    // 「用卡匣打开」/「拷贝到卡匣」：系统把文件复制进 App 的 Inbox，再通知这里
     // App 冷启动时这条通知会一直留着，直到这里开始监听
     const seen = new Set();
     cap.addListener('App', 'appUrlOpen', async (ev) => {

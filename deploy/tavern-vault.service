@@ -1,7 +1,7 @@
 # systemd 服务：开机自启、崩溃自动重启
 # 安装：sudo cp deploy/tavern-vault.service /etc/systemd/system/ && sudo systemctl daemon-reload && sudo systemctl enable --now tavern-vault
 [Unit]
-Description=TavernVault 酒馆藏馆
+Description=Cardbox 卡匣
 After=network.target
 
 [Service]

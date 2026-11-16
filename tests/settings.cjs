@@ -37,7 +37,9 @@ const ok = (c, m) => { console.log(c ? 'PASS' : 'FAIL', m); if (!c) process.exit
   await p.click('.set-row:has-text("标签") .switch');
   await p.click('.set-row:has-text("模糊 NSFW") .switch');
   await p.click('.set-row:has-text("打开时先显示") .opt:has-text("内容")');
-  await p.fill('.set-row:has-text("{{user}}") input', '阿雪'); await p.press('.set-row:has-text("{{user}}") input', 'Tab');
+  ok(await p.locator('.set-row:has-text("显示为")').count() === 0, '{{user}} name field hidden until the switch is on');
+  await p.click('.set-row:has-text("自定义 {{user}}") .switch');
+  await p.fill('.set-row:has-text("显示为") input', '阿雪'); await p.press('.set-row:has-text("显示为") input', 'Tab');
   await p.click('.set-row:has-text("打开时进入") .opt:has-text("合集")');
   await p.click('.set-nav-item:has-text("导入")').catch(() => {});
   await p.goto(B + '/#/settings/import'); await p.waitForSelector('.set-title');
@@ -95,5 +97,23 @@ const ok = (c, m) => { console.log(c ? 'PASS' : 'FAIL', m); if (!c) process.exit
   }
   await fetch(B + '/api/settings', { method: 'PUT', headers: { ...H, 'Content-Type': 'application/json' }, body: JSON.stringify({ skin: 'atelier' }) });
   ok(!errs.length, 'no page errors ' + errs.join(' | '));
+  // 风格：点了马上换，选中标记跟着走，不靠服务器的变更通知（这里把通知断掉）
+  const d2 = await b.newContext({ viewport: { width: 1280, height: 860 } });
+  await d2.addInitScript((t) => localStorage.setItem('tv_token', t), token);
+  await d2.route('**/api/events**', (r) => r.abort());
+  const sq = await d2.newPage();
+  await sq.goto(B + '/#/settings'); await sq.click('.set-nav-item:has-text("外观")'); await sq.waitForSelector('.skin-opt');
+  for (const name of ['樱色图鉴', '极简', '墨白']) {
+    await sq.click(`.skin-opt:has-text("${name}")`); await sq.waitForTimeout(400);
+    const st = await sq.evaluate(() => ({ active: document.querySelector('.skin-opt.active .skin-name b')?.textContent, pv: document.querySelector('.skin-opt.active .skin-pv')?.dataset.skin, root: document.documentElement.dataset.skin }));
+    ok(st.active === name && st.pv === st.root, `skin ${name}: check mark and page agree without SSE ${JSON.stringify(st)}`);
+  }
+  await sq.click('.skin-opt:has-text("典藏")'); await sq.waitForTimeout(300);
+  // 弹窗开着时，滚轮落在遮罩 / 不能滚的地方不会带动后面的页面
+  await sq.goto(B + '/#/library'); await sq.waitForSelector('.card, .row'); await sq.waitForTimeout(300);
+  const wheelAt = (sel) => sq.evaluate((s) => { const el = s ? document.querySelector(s) : document.body; const e = new WheelEvent('wheel', { deltaY: 120, bubbles: true, cancelable: true }); el.dispatchEvent(e); return e.defaultPrevented; }, sel);
+  ok(await wheelAt('') === false, 'no sheet: wheel untouched');
+  await sq.evaluate(async () => { const { confirmDialog } = await import('/js/ui.js'); confirmDialog('滚动测试'); }); await sq.waitForSelector('.overlay');
+  ok(await wheelAt('.overlay') === true && await wheelAt('.overlay .sheet-foot') === true && await wheelAt('main.main') === true, 'sheet open: wheel on backdrop / footer / page behind is stopped');
   await b.close();
 })();

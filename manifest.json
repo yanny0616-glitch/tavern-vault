@@ -1,11 +1,11 @@
 {
-    "display_name": "TavernVault 酒馆藏馆",
+    "display_name": "Cardbox 卡匣",
     "loading_order": 100,
     "requires": [],
     "optional": [],
     "js": "extension/index.js",
     "css": "extension/style.css",
-    "author": "TavernVault",
-    "version": "1.2.3",
+    "author": "Cardbox",
+    "version": "1.2.4",
     "homePage": "https://github.com/yanny0616-glitch/tavern-vault"
 }

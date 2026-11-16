@@ -84,7 +84,7 @@ http.createServer((req, res) => {
                 if (usr.includes('TRUNCME')) return send(200, { model: j.model, choices: [{ message: { content: '{"tags":["奇幻"],"summary":"写到一半' }, finish_reason: 'length' }], usage: {} });
                 if (usr.includes('QUOTEME')) return send(200, { model: j.model, choices: [{ message: { content: '{"tags":["奇幻",],"summary":"他读完了“雨夜”这本书",}' }, finish_reason: 'stop' }], usage: {} });
                 const turns = j.messages.filter((m) => m.role !== 'system');
-                if (sys.includes('酒馆藏馆」里的 AI 助手')) {
+                if (sys.includes('卡匣」里的 AI 助手')) {
                     if (j.stream && !usr.includes('NOSTREAM')) return stream(usr.includes('SLOWME') ? `慢慢说：${'这是很长的一段回复。'.repeat(40)}` : chatReply(sys, turns), { model: j.model, gap: usr.includes('SLOWME') ? 150 : 30, cut: usr.includes('CUTME') });
                     if (usr.includes('SLOWME')) return setTimeout(() => send(200, { model: j.model, choices: [{ message: { content: chatReply(sys, turns) }, finish_reason: 'stop' }], usage: {} }), 4000);
                     return send(200, { model: j.model, choices: [{ message: { content: chatReply(sys, turns) }, finish_reason: 'stop' }], usage: { prompt_tokens: 100, completion_tokens: 50 } });
@@ -93,7 +93,7 @@ http.createServer((req, res) => {
             }
             if (u === '/v1/messages') {
                 if (JSON.stringify(j.messages).includes('FAILME')) return send(500, { error: { message: 'upstream exploded' } });
-                const text = (j.system || '').includes('酒馆藏馆」里的 AI 助手') ? chatReply(j.system, j.messages) : reply(j.system || '', j.messages[0].content);
+                const text = (j.system || '').includes('卡匣」里的 AI 助手') ? chatReply(j.system, j.messages) : reply(j.system || '', j.messages[0].content);
                 if (j.stream) return stream(text, { anthropic: true, model: j.model });
                 return send(200, { model: j.model, content: [{ type: 'text', text }], stop_reason: 'end_turn', usage: { input_tokens: 100, output_tokens: 50 } });
             }

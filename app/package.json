@@ -1,8 +1,8 @@
 {
   "name": "tavern-vault-app",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "private": true,
-  "description": "酒馆藏馆 iOS App 外壳（Capacitor）",
+  "description": "卡匣 iOS App 外壳（Capacitor）",
   "dependencies": {
     "@capacitor/app": "8.1.2",
     "@capacitor/core": "8.6.0",

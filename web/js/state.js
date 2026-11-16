@@ -53,6 +53,10 @@ export const state = {
     selecting: false,
 };
 
+/** {{user}} 的称呼是不是用自己填的：没碰过开关、但以前填过称呼的，当作开着 */
+export const userNameOn = () => state.prefs.userNameOn ?? Boolean(state.prefs.userName?.trim());
+/** {{user}} 显示成什么：开关没开或没填就是「你」 */
+export const userLabel = () => (userNameOn() && state.prefs.userName?.trim()) || '你';
 export function savePrefs() { lsSet('tv_prefs', state.prefs); }
 
 /**
@@ -115,8 +119,12 @@ export function subscribe(fn) { subs.add(fn); return () => subs.delete(fn); }
 export function notify() { for (const fn of subs) fn(); }
 
 let lastState = '';
+let reloadSeq = 0;
 export async function reload() {
+    const mine = ++reloadSeq;
     const s = await api.get('/api/state');
+    // 连着触发了几次：只用最后发出的那次结果，先发的晚到了也不能把新的盖回去
+    if (mine !== reloadSeq) return;
     // 切回页面、别处的改动通知都会触发重新加载；内容没变就不重画
     const sig = JSON.stringify(s);
     if (sig === lastState && state.loaded) return;

@@ -1,6 +1,6 @@
 {
-  "name": "TavernVault 酒馆藏馆",
-  "short_name": "藏馆",
+  "name": "Cardbox 卡匣",
+  "short_name": "卡匣",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#14111c",

@@ -65,7 +65,7 @@ export function aiSettings() {
         const formats = cfg.formats;
         const profiles = cfg.profiles;
         clear(box,
-            h('div', { class: 'note' }, icon('lock', { size: 15 }), h('span', {}, '密钥只保存在藏馆服务器上，网页和酒馆插件都拿不到；AI 请求由服务器发出，手机上也不会遇到跨域问题。')),
+            h('div', { class: 'note' }, icon('lock', { size: 15 }), h('span', {}, '密钥只保存在卡匣服务器上，网页和酒馆插件都拿不到；AI 请求由服务器发出，手机上也不会遇到跨域问题。')),
             profiles.length ? h('div', { class: 'field-list' }, profiles.map((p) => {
                 const active = p.id === cfg.active;
                 return h('div', { class: `field-def ai-profile ${active ? 'active' : ''}` },

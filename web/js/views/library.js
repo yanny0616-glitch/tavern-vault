@@ -143,7 +143,7 @@ export function renderLibrary(root) {
             oninput: debounce(() => { state.filter.q = search.value; renderLibrary(root); }, 160),
         });
         const actions = h('div', { class: 'tb-actions-inner' });
-        const head = topbar(state.settings.title || '酒馆藏馆', { kicker: 'Collection', actions: [actions] });
+        const head = topbar(state.settings.title || '卡匣', { kicker: 'Collection', actions: [actions] });
         const sub = h('div', { class: 'tb-sub' });
         head.querySelector('.tb-titles').append(sub);
         const searchWrap = h('label', { class: 'search' }, icon('search', { size: 16 }), search);
@@ -547,14 +547,14 @@ function batchMore(items, run) {
             }, !canDiff, n === 2 ? '' : '选中 2 项时可用'),
             item('download', '导出为 ZIP', async () => {
                 toast(`正在打包 ${n} 项…`);
-                try { downloadBlob(await api.req('POST', '/api/export', { ids: items.map((i) => i.id) }, { blob: true }), `TavernVault-${n}项.zip`); } catch (e) { toast(e.message, 'err'); }
+                try { downloadBlob(await api.req('POST', '/api/export', { ids: items.map((i) => i.id) }, { blob: true }), `Cardbox-${n}项.zip`); } catch (e) { toast(e.message, 'err'); }
             }),
             item('blocks', '改类型', () => {
                 const s = sheet({
                     title: '改成哪种类型',
                     body: h('div', { class: 'menu' }, Object.entries(TYPE_META).map(([k, v]) => h('button', { class: 'menu-item', onclick: async () => {
                         s.close();
-                        if (await confirmDialog(`把 ${n} 项都改成「${v.label}」？只改藏馆里的分类，不改文件。`, { ok: '修改' })) await run('setType', k, '已修改类型');
+                        if (await confirmDialog(`把 ${n} 项都改成「${v.label}」？只改卡匣里的分类，不改文件。`, { ok: '修改' })) await run('setType', k, '已修改类型');
                     } }, icon(v.icon, { size: 17 }), h('span', {}, v.label)))),
                 });
             })),

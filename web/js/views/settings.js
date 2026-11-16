@@ -3,7 +3,7 @@ import { h, clear, toast, confirmDialog, choiceDialog, promptDialog, sheet, down
 import { api } from '../api.js';
 import { bridge } from '../bridge.js';
 import { native, LAUNCHER_URL } from '../native.js';
-import { state, savePrefs, applyAccent, reload, TYPE_META, SKINS, uiFont, readZoom, UI_FONT, READ_ZOOM, notify, allTags, resetView, cardPrefOf, setCardPref, resetCardPref } from '../state.js';
+import { state, savePrefs, applyAccent, reload, TYPE_META, SKINS, uiFont, readZoom, UI_FONT, READ_ZOOM, notify, allTags, resetView, cardPrefOf, setCardPref, resetCardPref, userNameOn } from '../state.js';
 import { CARD_PARTS, ENTRY_FLAGS } from '../sig.js';
 import { SORTS } from './library.js';
 import { topbar, ensureView, MARK_POS, DEFAULT_MARKS, MARK_FIELD_KINDS, markRules, markName } from './common.js';
@@ -50,7 +50,7 @@ export function renderSettings(root) {
         h('div', { class: 'row-thumb' }, icon(x.icon, { size: 19 })),
         h('div', { class: 'row-main' }, h('div', { class: 'row-title' }, h('span', {}, x.title)), h('div', { class: 'row-sub' }, h('span', {}, x.desc()))),
         icon('chevronRight', { size: 16, cls: 'row-chev' })))),
-    h('div', { class: 'footnote' }, `TavernVault v${state.settings.version || '1.0.0'} · ${bridge.host ? `已连接 ${bridge.host.host}` : '独立网页模式'}`));
+    h('div', { class: 'footnote' }, `Cardbox v${state.settings.version || '1.0.0'} · ${bridge.host ? `已连接 ${bridge.host.host}` : '独立网页模式'}`));
     if (!sec) { clear(refs.content); lastSec = null; return; }
     clear(refs.content,
         h('div', { class: 'set-head' },
@@ -123,7 +123,7 @@ const deviceNote = () => help('这一页的设置只对这台设备生效，手�
 function skinPreview(key) {
     const mode = document.documentElement.dataset.mode;
     return h('div', { class: 'skin-pv', dataset: { skin: key, mode } },
-        h('div', { class: 'pv-top' }, h('span', { class: 'pv-kicker' }, SKINS[key].en), h('span', { class: 'pv-title' }, '藏馆')),
+        h('div', { class: 'pv-top' }, h('span', { class: 'pv-kicker' }, SKINS[key].en), h('span', { class: 'pv-title' }, '卡匣')),
         h('div', { class: 'pv-tabs' }, h('i', { class: 'on' }), h('i'), h('i')),
         h('div', { class: 'pv-cards' },
             h('div', { class: 'pv-card' }, h('div', { class: 'pv-img' }), h('b')),
@@ -131,23 +131,36 @@ function skinPreview(key) {
         h('div', { class: 'pv-nav' }, h('i', { class: 'on' }), h('i'), h('i'), h('i')));
 }
 
+/** 改风格 / 强调色：马上换、马上重画选中标记，再存到服务器（不等服务器的变更通知，通知断了也不会停在旧的选中状态） */
+async function saveLook(patch) {
+    const before = { skin: state.settings.skin, accent: state.settings.accent };
+    Object.assign(state.settings, patch);
+    applyAccent();
+    rerender();
+    try { await api.put('/api/settings', patch); } catch (e) {
+        Object.assign(state.settings, before);
+        applyAccent();
+        rerender();
+        toast(e.message, 'err');
+        return;
+    }
+    reload().catch(() => {});
+}
+
 function appearance() {
     const current = SKINS[state.settings.skin] ? state.settings.skin : 'atelier';
-    const title = h('input', { class: 'input', value: state.settings.title || '', placeholder: '酒馆藏馆', onchange: () => api.put('/api/settings', { title: title.value }) });
+    const title = h('input', { class: 'input', value: state.settings.title || '', placeholder: '卡匣', onchange: () => api.put('/api/settings', { title: title.value }) });
     return [
         panel('风格', 'palette', null,
             h('div', { class: 'skin-grid' }, Object.entries(SKINS).map(([k, v]) => h('button', {
                 class: `skin-opt ${current === k ? 'active' : ''}`,
-                onclick: async () => {
-                    state.settings.skin = k;
-                    applyAccent();
-                    await api.put('/api/settings', { skin: k });
-                },
+                onclick: () => saveLook({ skin: k }),
+
             }, skinPreview(k), h('div', { class: 'skin-name' }, h('b', {}, v.name), h('span', {}, v.desc)), current === k ? h('span', { class: 'skin-check' }, icon('check', { size: 13, stroke: 3 })) : null))),
             help( '风格、强调色和仓库名称对所有设备生效（网页和酒馆插件里一致）。'),
             setRow('强调色', '按钮、选中状态等使用的颜色', h('div', { class: 'color-picker' }, ACCENTS.map((c) => h('button', {
                 class: `${(state.settings.accent || '') === c ? 'active' : ''} ${c ? '' : 'auto'}`, style: { '--sw': c || 'var(--accent)' }, title: c || '跟随风格',
-                onclick: () => api.put('/api/settings', { accent: c }),
+                onclick: () => saveLook({ accent: c }),
             })))),
             setRow('仓库名称', '显示在浏览器标签和登录页上', title)),
         panel('这台设备', 'monitor', null,
@@ -186,7 +199,9 @@ function browse() {
             setRow('打开时先显示', '角色卡', seg(p.detailTab === 'content' ? 'content' : 'overview', [['overview', '介绍'], ['content', '内容']], (v) => setPref({ detailTab: v }))),
             setRow('其它类型先显示', '世界书、预设、正则等。它们的「内容」页就是条目和设置', seg(p.detailTabOther === 'overview' ? 'overview' : 'content', [['overview', '介绍'], ['content', '内容']], (v) => setPref({ detailTabOther: v }))),
             setRow('长文折叠', '超过这个字数的简介、开场白、作者的话和角色卡段落只显示开头，点「阅读全文」在单独页面看', seg(Number.isFinite(Number(p.foldAt)) ? Number(p.foldAt) : 500, [[300, '300 字'], [500, '500 字'], [1000, '1000 字'], [0, '不折叠']], (v) => setPref({ foldAt: v }))),
-            setRow('{{user}} 显示为', '角色卡里出现 {{user}} 的地方替换成这个称呼', userName)),
+            setRow('自定义 {{user}} 的称呼', '角色卡里的 {{user}} 默认显示成「你」。打开后可以换成自己的称呼',
+                switchEl(userNameOn(), (v) => { document.activeElement?.blur(); setPref({ userNameOn: v }); })), // 开关自己有焦点时不会重画，先让出焦点
+            userNameOn() ? setRow('{{user}} 显示为', '留空就还是「你」', userName) : null),
     ];
 }
 
@@ -271,7 +286,7 @@ function importPrefs() {
         syncExcludePanel(),
         dupPanel(),
         panel('导出与推送到酒馆', 'download', null,
-            setRow('写入藏馆的整理信息', '下载、导出 ZIP、推送到酒馆的角色卡里，附上藏馆里的标签、评分、收藏、笔记和合集（放在卡的扩展字段里，不影响酒馆使用）。以后再导入这张卡，会自动恢复这些信息。卡里已经带着的，不管这里开没开都会读回来',
+            setRow('写入卡匣的整理信息', '下载、导出 ZIP、推送到酒馆的角色卡里，附上卡匣里的标签、评分、收藏、笔记和合集（放在卡的扩展字段里，不影响酒馆使用）。以后再导入这张卡，会自动恢复这些信息。卡里已经带着的，不管这里开没开都会读回来',
                 switchEl(state.settings.exportMeta === true, async (v) => { state.settings.exportMeta = v; await api.put('/api/settings', { exportMeta: v }); toast('已保存', 'ok'); }))),
     ];
 }
@@ -325,9 +340,9 @@ function syncIgnorePanel() {
             h('div', { class: 'sub-label' }, '世界书条目（内嵌世界书和单独的世界书都适用）'),
             chips(ENTRY_FLAGS),
             help( '比如在酒馆里开关了某些条目、把蓝灯改成绿灯，勾选后这些改动不算差异。条目的关键词和内容始终比对；顺序、插入位置、深度、概率本来就不算差异。'),
-            ign.size ? setRow('收新版本时保留藏馆原来的这些部分', '其它部分有真正的改动、存成新版本时，勾选的部分仍用藏馆当前版本的内容（条目状态按关键词和内容对应到原来的条目），不把自己在酒馆里的改动存进去。关掉则原样保存',
+            ign.size ? setRow('收新版本时保留卡匣原来的这些部分', '其它部分有真正的改动、存成新版本时，勾选的部分仍用卡匣当前版本的内容（条目状态按关键词和内容对应到原来的条目），不把自己在酒馆里的改动存进去。关掉则原样保存',
                 switchEl(keep, (v) => save({ syncKeep: v }))) : null,
-            ign.size ? help('「用藏馆版本覆盖酒馆」会整张替换酒馆里的卡，自己改过的这几部分也会被换掉。酒馆里单独的世界书文件不受影响。') : null);
+            ign.size ? help('「用卡匣版本覆盖酒馆」会整张替换酒馆里的卡，自己改过的这几部分也会被换掉。酒馆里单独的世界书文件不受影响。') : null);
     };
     draw();
     return panel('从酒馆同步时哪些不算差异', 'user', null, box);
@@ -659,7 +674,7 @@ function connection() {
 function iosApp() {
     return panel('iOS App', 'phone', null,
         h('div', { class: 'sub-label' }, '当前服务器'), copyBox(location.origin),
-        help('在别的 App 或「文件」里分享角色卡、世界书、压缩包等文件，选「藏馆」就会打开导入。下载和导出的文件会弹出系统分享面板，选「存储到文件」或「存储图像」保存。'),
+        help('在别的 App 或「文件」里分享角色卡、世界书、压缩包等文件，选「卡匣」就会打开导入。下载和导出的文件会弹出系统分享面板，选「存储到文件」或「存储图像」保存。'),
         btn('更换服务器', { icon: 'refresh', cls: 'sm', onclick: () => { location.href = LAUNCHER_URL; } }));
 }
 
@@ -679,7 +694,7 @@ function shortcut() {
             h('li', {}, '快捷指令分享上传：新建快捷指令，开启「在共享表单中显示」并接收文件和图像，添加「获取 URL 内容」：'),
             h('li', { class: 'plain' }, copyBox(`${location.origin}/api/items?filename=快捷指令上传`)),
             h('li', { class: 'plain' }, '方法选 POST，请求体选「文件」并选择快捷指令输入。', state.settings.auth ? '头部添加 Authorization，值为 Bearer 加空格加访问令牌。' : ''),
-            h('li', {}, '之后在任何 App 里分享文件，选这个快捷指令，就会直接存进藏馆。')),
+            h('li', {}, '之后在任何 App 里分享文件，选这个快捷指令，就会直接存进卡匣。')),
         state.settings.auth ? h('details', { class: 'fold' }, h('summary', {}, icon('chevronRight', { size: 14, cls: 'fold-chev' }), icon('key', { size: 15 }), h('span', { class: 'fold-title' }, '显示访问令牌')), h('div', { class: 'fold-body' }, copyBox(api.token))) : null);
 }
 
@@ -698,7 +713,7 @@ function data() {
                 btn('下载完整备份', { icon: 'download', cls: 'primary', onclick: async (e) => {
                     const b = e.currentTarget;
                     b.disabled = true;
-                    try { downloadBlob(await api.req('GET', '/api/backup', undefined, { blob: true }), `TavernVault-backup-${new Date().toISOString().slice(0, 10)}.zip`); } catch (err) { toast(err.message, 'err'); }
+                    try { downloadBlob(await api.req('GET', '/api/backup', undefined, { blob: true }), `Cardbox-backup-${new Date().toISOString().slice(0, 10)}.zip`); } catch (err) { toast(err.message, 'err'); }
                     b.disabled = false;
                 } }),
                 btn('从备份还原', { icon: 'restore', onclick: () => restoreInput.click() }), restoreInput),
@@ -774,7 +789,7 @@ async function restoreServerBackup(b) {
 }
 
 function about() {
-    return panel('TavernVault 酒馆藏馆', 'info', null,
+    return panel('Cardbox 卡匣', 'info', null,
         h('div', { class: 'facts' },
             h('div', { class: 'fact' }, h('b', {}, `v${state.settings.version || '1.0.0'}`), h('span', {}, '服务端版本')),
             h('div', { class: 'fact' }, h('b', {}, bridge.host ? '酒馆内' : '网页'), h('span', {}, bridge.host ? `已连接 ${bridge.host.host}` : '独立网页模式'))),

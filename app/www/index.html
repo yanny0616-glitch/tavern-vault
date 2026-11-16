@@ -3,9 +3,9 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1">
-<title>藏馆</title>
+<title>卡匣</title>
 <style>
-  /* App 自带的连接页：第一次打开填服务器地址，之后自动跳到藏馆服务的网页 */
+  /* App 自带的连接页：第一次打开填服务器地址，之后自动跳到卡匣服务的网页 */
   :root {
     --bg: #f6f4fa; --card: #fff; --fg: #1d1a24; --muted: #6f6a7a; --line: #e4e0ec;
     --accent: #7c5cf0; --accent-fg: #fff; --err: #c0364a;
@@ -49,15 +49,15 @@
 <body>
 <main>
   <svg class="logo" viewBox="0 0 128 128" aria-hidden="true"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#c084fc"/><stop offset="1" stop-color="#6366f1"/></linearGradient></defs><rect width="128" height="128" rx="28" fill="#17131f"/><path d="M28 50 64 32l36 18v40L64 108 28 90Z" fill="none" stroke="url(#g)" stroke-width="7" stroke-linejoin="round"/><path d="M28 50l36 18 36-18M64 68v40" fill="none" stroke="url(#g)" stroke-width="7" stroke-linejoin="round"/><circle cx="64" cy="50" r="6" fill="#f0abfc"/></svg>
-  <h1>酒馆藏馆</h1>
-  <p class="sub" id="sub">连接到你的藏馆服务</p>
+  <h1>卡匣</h1>
+  <p class="sub" id="sub">连接到你的卡匣服务</p>
 
   <form id="form" hidden>
     <label for="url">服务器地址</label>
     <input id="url" type="url" inputmode="url" autocomplete="url" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="https://vault.example.com">
     <button id="go" type="submit">连接</button>
-    <button id="back" class="ghost" type="button" hidden>取消，回到藏馆</button>
-    <p class="hint">就是在浏览器里打开藏馆用的地址。之后每次打开 App 会自动连上，想换的话到「设置 → 连接与设备」。</p>
+    <button id="back" class="ghost" type="button" hidden>取消，回到卡匣</button>
+    <p class="hint">就是在浏览器里打开卡匣用的地址。之后每次打开 App 会自动连上，想换的话到「设置 → 连接与设备」。</p>
   </form>
 
   <div id="retry" hidden>
@@ -96,7 +96,7 @@
     var timer = setTimeout(function () { ctl.abort(); }, 10000);
     return fetch(origin + '/api/health', { signal: ctl.signal, cache: 'no-store' })
       .then(function (r) { if (!r.ok) throw new Error('服务器返回 ' + r.status); return r.json(); })
-      .then(function (j) { if (!j || j.app !== 'tavern-vault') throw new Error('这个地址不是藏馆服务'); return j; })
+      .then(function (j) { if (!j || j.app !== 'tavern-vault') throw new Error('这个地址不是卡匣服务'); return j; })
       .catch(function (e) { throw new Error(e.name === 'AbortError' ? '连接超时' : e.message === 'Load failed' || e.message === 'Failed to fetch' ? '连不上这个地址' : e.message); })
       .finally(function () { clearTimeout(timer); });
   }
@@ -111,7 +111,7 @@
     $('retry').hidden = true;
     $('form').hidden = false;
     $('back').hidden = !saved;
-    $('sub').textContent = '连接到你的藏馆服务';
+    $('sub').textContent = '连接到你的卡匣服务';
     $('url').value = saved;
   }
 

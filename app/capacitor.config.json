@@ -1,6 +1,6 @@
 {
-  "appId": "top.yanny.tavernvault",
-  "appName": "藏馆",
+  "appId": "top.yanny.cardbox",
+  "appName": "卡匣",
   "webDir": "www",
   "ios": {
     "contentInset": "never",

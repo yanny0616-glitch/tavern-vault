@@ -1,4 +1,4 @@
-// AI 对话：多轮聊天，可以指定藏馆里的条目当参考资料；对话存在服务器，回复在后台生成
+// AI 对话：多轮聊天，可以指定卡匣里的条目当参考资料；对话存在服务器，回复在后台生成
 import { h, clear, toast, sheet, btn, icon, confirmDialog, promptDialog, timeAgo, emptyState } from '../ui.js';
 import { api } from '../api.js';
 import { state, live } from '../state.js';

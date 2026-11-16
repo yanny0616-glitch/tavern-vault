@@ -1,4 +1,4 @@
-// 端到端：酒馆页像角色列表一样浏览、点开预览（和藏馆详情一样）、多选；藏馆卡片上的「酒馆」角标、未导入酒馆筛选、
+// 端到端：酒馆页像角色列表一样浏览、点开预览（和卡匣详情一样）、多选；卡匣卡片上的「酒馆」角标、未导入酒馆筛选、
 // 封面角标自定义位置，以及四个角的角标在各风格、紧凑视图下互不遮挡
 const { chromium } = require('playwright');
 const fs = require('fs');
@@ -38,7 +38,7 @@ const putSettings = (o) => fetch(`${V}/api/settings`, { method: 'PUT', headers: 
   ok(await card('酒馆里的莉莉').locator('.corner-bl:has-text("未收藏")').count() === 1, 'grid card shows 未收藏 status');
   await page.screenshot({ path: `${OUT}/tavern-grid.png` });
 
-  // ---- 点开预览：和藏馆详情一样的介绍 / 内容 ----
+  // ---- 点开预览：和卡匣详情一样的介绍 / 内容 ----
   await card('酒馆里的莉莉').click();
   const sheet = frame.locator('.detail-sheet');
   await sheet.locator('.hero-title:has-text("酒馆里的莉莉")').waitFor({ timeout: 10000 });
@@ -56,8 +56,8 @@ const putSettings = (o) => fetch(`${V}/api/settings`, { method: 'PUT', headers: 
   ok(before === (await j(`${V}/api/state`)).items.length, 'preview does not create vault items');
 
   // 收藏后预览底部按钮跟着变
-  await sheet.locator('.sheet-foot button:has-text("收藏到藏馆")').click();
-  await sheet.locator('.sheet-foot button:has-text("在藏馆中查看")').waitFor({ timeout: 10000 });
+  await sheet.locator('.sheet-foot button:has-text("收藏到卡匣")').click();
+  await sheet.locator('.sheet-foot button:has-text("在卡匣中查看")').waitFor({ timeout: 10000 });
   ok(true, 'preview foot updates after collecting');
   await sheet.locator('.hero-badges:has-text("已同步")').waitFor({ timeout: 5000 });
   ok(true, 'preview status updates after collecting');
@@ -99,11 +99,11 @@ const putSettings = (o) => fetch(`${V}/api/settings`, { method: 'PUT', headers: 
   await frame.locator('.detail-sheet .tabs button.active:has-text("内容")').waitFor({ timeout: 10000 });
   await frame.locator('.detail-sheet .detail-body .entry .fold-title:has-text("酒馆")').waitFor({ timeout: 10000 });
   ok(true, 'worldbook preview opens on 内容 with entries');
-  await frame.locator('.detail-sheet .sheet-foot button:has-text("收藏到藏馆")').click();
-  await frame.locator('.detail-sheet .sheet-foot button:has-text("在藏馆中查看")').waitFor({ timeout: 10000 });
-  await frame.locator('.detail-sheet .sheet-foot button:has-text("在藏馆中查看")').click();
+  await frame.locator('.detail-sheet .sheet-foot button:has-text("收藏到卡匣")').click();
+  await frame.locator('.detail-sheet .sheet-foot button:has-text("在卡匣中查看")').waitFor({ timeout: 10000 });
+  await frame.locator('.detail-sheet .sheet-foot button:has-text("在卡匣中查看")').click();
   await frame.locator('.detail-sheet .hero-badges:has-text("酒馆里已有")').waitFor({ timeout: 10000 });
-  ok(true, '在藏馆中查看 opens the vault item, which shows 酒馆里已有');
+  ok(true, '在卡匣中查看 opens the vault item, which shows 酒馆里已有');
   await page.screenshot({ path: `${OUT}/vault-detail-intavern.png` });
   await frame.evaluate(() => history.back());
   await frame.waitForSelector('.detail-sheet', { state: 'detached', timeout: 5000 }).catch(() => {});
@@ -114,7 +114,7 @@ const putSettings = (o) => fetch(`${V}/api/settings`, { method: 'PUT', headers: 
   await frame.click('.lightbox');
   await frame.waitForSelector('.lightbox', { state: 'detached', timeout: 5000 });
 
-  // ---- 藏馆这边：右下角「酒馆」角标、未导入酒馆筛选 ----
+  // ---- 卡匣这边：右下角「酒馆」角标、未导入酒馆筛选 ----
   await tab('仓库');
   ok(await frame.locator('.main .seg-item:has-text("全部")').count() === 0, 'library has no 全部 type tab');
   await frame.click('.main .seg-item:has-text("角色卡")');

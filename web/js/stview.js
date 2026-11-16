@@ -94,7 +94,7 @@ const cspOf = (scripts) => (scripts
 /**
  * 隔离的 HTML 预览窗口，高度跟着内容走。
  * scripts=false：sandbox 只给 allow-same-origin（外面要量高度），脚本全部不运行。
- * scripts=true：sandbox 只给 allow-scripts，不给同源——脚本在匿名源里运行，读不到藏馆的登录信息和数据，也不能跳转页面、弹窗。
+ * scripts=true：sandbox 只给 allow-scripts，不给同源——脚本在匿名源里运行，读不到卡匣的登录信息和数据，也不能跳转页面、弹窗。
  * full：内容本身是一整个网页（<html>…</html>），按原样显示，只在开头加上安全设置。
  */
 export function htmlFrame(html, { markdown = true, maxHeight = 2400, scripts = false, full = false } = {}) {

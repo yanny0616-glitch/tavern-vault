@@ -1,9 +1,9 @@
 {
   "name": "tavern-vault-desktop",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "private": true,
-  "description": "酒馆藏馆 Windows 桌面版外壳（Electron）",
-  "author": "TavernVault",
+  "description": "卡匣 Windows 桌面版外壳（Electron）",
+  "author": "Cardbox",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
@@ -14,11 +14,11 @@
     "electron-builder": "26.18.0"
   },
   "build": {
-    "appId": "app.tavernvault.desktop",
-    "productName": "酒馆藏馆",
+    "appId": "app.cardbox.desktop",
+    "productName": "卡匣",
     "files": ["main.js", "preload.js", "launcher.html", "build/icon.png"],
     "directories": { "output": "dist" },
     "win": { "target": "portable", "icon": "build/icon.png" },
-    "portable": { "artifactName": "TavernVault-${version}.exe" }
+    "portable": { "artifactName": "Cardbox-${version}.exe" }
   }
 }

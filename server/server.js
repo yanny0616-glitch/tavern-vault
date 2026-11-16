@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// TavernVault 酒馆藏馆 —— 服务端（零依赖，Node >= 18）
+// Cardbox 卡匣 —— 服务端（零依赖，Node >= 18）
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -181,7 +181,7 @@ function findSimilar(det) {
         .sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
 }
 
-// ---- 藏馆的整理信息（标签、评分、收藏、笔记、合集）写进导出的角色卡，再导入时读回来 ----
+// ---- 卡匣的整理信息（标签、评分、收藏、笔记、合集）写进导出的角色卡，再导入时读回来 ----
 const VAULT_EXT = 'tavern_vault';
 const exportMetaOn = () => store.db.settings.exportMeta === true;
 const cardOf = (buf) => {
@@ -210,7 +210,7 @@ async function withVaultMeta(buf, it) {
     } catch { return buf; }
 }
 
-/** 导入新条目时，卡里带着藏馆整理信息的，读回标签、评分、收藏、笔记、合集 */
+/** 导入新条目时，卡里带着卡匣整理信息的，读回标签、评分、收藏、笔记、合集 */
 function vaultMetaFrom(buf, det) {
     if (det.type !== 'character') return null;
     try {
@@ -380,7 +380,7 @@ const isBackupZip = (entries) => entries.some((e) => e.name === 'db.json') && en
 /** 解压并逐个收录，返回每个文件的结果 */
 function ingestZip(buf, archiveName, opts, depth = 0) {
     const entries = readZip(buf, { maxTotal: MAX_UPLOAD * 10 });
-    if (isBackupZip(entries)) throw new HttpError(400, '这是藏馆的完整备份，请到「设置 → 数据」里用「从备份还原」导入');
+    if (isBackupZip(entries)) throw new HttpError(400, '这是卡匣的完整备份，请到「设置 → 数据」里用「从备份还原」导入');
     const base = path.basename(archiveName, path.extname(archiveName));
     const o = { ...opts, collectionName: opts.zipCollection ? base : opts.collectionName };
     const results = [];
@@ -410,7 +410,7 @@ function ingestAny(buf, filename, opts) {
     if (/\.zip$/i.test(filename) && opts.unzip !== false) {
         let entries;
         try { entries = readZip(buf); } catch { entries = null; }
-        if (entries && isBackupZip(entries)) throw new HttpError(400, '这是藏馆的完整备份，请到「设置 → 数据」里用「从备份还原」导入');
+        if (entries && isBackupZip(entries)) throw new HttpError(400, '这是卡匣的完整备份，请到「设置 → 数据」里用「从备份还原」导入');
         if (entries && !isExtensionZip(entries)) return ingestZip(buf, filename, opts);
     }
     return ingest(buf, filename, opts);
@@ -580,7 +580,7 @@ route('POST', '/api/items', async ({ req, url }) => {
     let buf = await readBody(req);
     if (!buf.length) throw new HttpError(400, '空文件');
     let merged = false;
-    // 对比用：酒馆只发来角色卡的文字（JSON），套进藏馆当前版本的图片里，省得手机上传整张 PNG
+    // 对比用：酒馆只发来角色卡的文字（JSON），套进卡匣当前版本的图片里，省得手机上传整张 PNG
     if (url.searchParams.get('probe') === '1' && opts.target) ({ buf, filename: opts.filename } = await probeCard(buf, opts.filename, opts.target));
     if (opts.origin === 'tavern') {
         buf = await stripFromTavern(buf, opts.filename);
@@ -593,7 +593,7 @@ route('POST', '/api/items', async ({ req, url }) => {
     return result;
 });
 
-// 预览：解析酒馆发来的内容（角色卡 JSON、世界书、预设……），返回和条目详情一样的资料和内容，不存进藏馆
+// 预览：解析酒馆发来的内容（角色卡 JSON、世界书、预设……），返回和条目详情一样的资料和内容，不存进卡匣
 route('POST', '/api/preview', async ({ req, url }) => {
     const buf = await readBody(req);
     if (!buf.length) throw new HttpError(400, '空内容');
@@ -623,11 +623,11 @@ route('POST', '/api/preview', async ({ req, url }) => {
 });
 
 const syncExclude = () => store.db.settings.syncExclude ?? DEFAULT_SYNC_EXCLUDE;
-// 从酒馆同步时忽略的角色卡分段；syncKeep：收新版本时，这几段沿用藏馆原来的内容
+// 从酒馆同步时忽略的角色卡分段；syncKeep：收新版本时，这几段沿用卡匣原来的内容
 const syncIgnore = () => (store.db.settings.syncIgnore || []).filter((k) => k in SYNC_OPTIONS);
 const syncKeep = () => store.db.settings.syncKeep !== false;
 
-/** 角色卡 JSON + 藏馆当前版本的 PNG 图片 → 一张完整的 PNG 卡（只用于对比，图片按藏馆的算） */
+/** 角色卡 JSON + 卡匣当前版本的 PNG 图片 → 一张完整的 PNG 卡（只用于对比，图片按卡匣的算） */
 async function probeCard(buf, filename, targetId) {
     const it = store.db.items[targetId];
     const prev = it && store.primaryFile(it);
@@ -639,7 +639,7 @@ async function probeCard(buf, filename, targetId) {
     return { buf: await writeCardToPng(img, card), filename: String(filename || 'card').replace(/\.json$/i, '') + '.png' };
 }
 
-/** 酒馆里的卡收成新版本前：把忽略的那几段换回藏馆当前版本的内容 */
+/** 酒馆里的卡收成新版本前：把忽略的那几段换回卡匣当前版本的内容 */
 async function keepVaultParts(buf, filename, targetId) {
     const ignore = syncIgnore();
     const it = store.db.items[targetId];
@@ -726,7 +726,7 @@ route('POST', '/api/ai/organize/preview', async ({ req }) => {
     // 预览模板时没指定条目：拿一张角色卡当例子
     const live = Object.values(store.db.items).filter((it) => !it.deletedAt);
     const pick = id ? String(id) : (live.find((it) => it.type === 'character') || live[0])?.id;
-    if (!pick) throw new HttpError(400, '藏馆里还没有条目，没法生成示例');
+    if (!pick) throw new HttpError(400, '卡匣里还没有条目，没法生成示例');
     try { return { ...aiTasks.preview(pick, extra, template && typeof template === 'object' ? template : null), id: pick, name: store.db.items[pick]?.name || '' }; } catch (e) { return aiFail(e); }
 });
 route('POST', '/api/ai/organize', async ({ req }) => {
@@ -800,7 +800,7 @@ route('POST', '/api/import-url', async ({ req }) => {
     let u;
     try { u = new URL(target); } catch { throw new HttpError(400, '链接无效'); }
     if (!/^https?:$/.test(u.protocol)) throw new HttpError(400, '仅支持 http/https 链接');
-    const r = await fetch(u, { redirect: 'follow', headers: { 'User-Agent': 'TavernVault/1.0' } });
+    const r = await fetch(u, { redirect: 'follow', headers: { 'User-Agent': 'Cardbox/1.0' } });
     if (!r.ok) throw new HttpError(502, `下载失败：HTTP ${r.status}`);
     const len = Number(r.headers.get('content-length') || 0);
     if (len > MAX_UPLOAD) throw new HttpError(413, '文件过大');
@@ -1121,7 +1121,7 @@ route('POST', '/api/export', async ({ req, res }) => {
         if (withMeta) entries.push({ name: `${typeDir(it.type)}/_info/${safeFilename(it.name)}.json`, data: Buffer.from(JSON.stringify({ ...it, searchText: undefined }, null, 2)) });
     }
     const zip = buildZip(entries);
-    send(res, 200, zip, { 'Content-Type': 'application/zip', 'Content-Disposition': contentDisposition(`TavernVault-${new Date().toISOString().slice(0, 10)}.zip`, true) });
+    send(res, 200, zip, { 'Content-Type': 'application/zip', 'Content-Disposition': contentDisposition(`Cardbox-${new Date().toISOString().slice(0, 10)}.zip`, true) });
     return null;
 });
 
@@ -1149,7 +1149,7 @@ function buildBackup() {
 }
 
 route('GET', '/api/backup', ({ res }) => {
-    send(res, 200, buildBackup(), { 'Content-Type': 'application/zip', 'Content-Disposition': contentDisposition(`TavernVault-backup-${new Date().toISOString().slice(0, 10)}.zip`, true) });
+    send(res, 200, buildBackup(), { 'Content-Type': 'application/zip', 'Content-Disposition': contentDisposition(`Cardbox-backup-${new Date().toISOString().slice(0, 10)}.zip`, true) });
     return null;
 });
 
@@ -1163,7 +1163,7 @@ async function restoreFrom(src, mode) {
         try { entries = readZip(src, { maxTotal: MAX_RESTORE * 4, maxEntries: 500000 }); } catch (e) { throw new HttpError(400, `无法读取备份：${e.message}`); }
     }
     const dbEntry = entries.find((e) => e.name === 'db.json');
-    if (!dbEntry) throw new HttpError(400, '这不是藏馆备份（缺少 db.json）');
+    if (!dbEntry) throw new HttpError(400, '这不是卡匣备份（缺少 db.json）');
     let backup;
     try { backup = JSON.parse(dbEntry.read().toString('utf8')); } catch { throw new HttpError(400, '备份里的 db.json 已损坏'); }
     if (!backup || typeof backup.items !== 'object') throw new HttpError(400, '备份格式不正确');
@@ -1280,7 +1280,7 @@ route('POST', '/api/backups/:name/restore', async ({ p, url }) => restoreFrom(ba
 route('GET', '/api/files/:sha', async ({ req, res, p, url }) => {
     if (!store.hasBlob(p.sha)) throw new HttpError(404, '文件不存在');
     const name = url.searchParams.get('name') || p.sha;
-    // 带 item 参数（下载、推送到酒馆）且开了「写入整理信息」：角色卡里写上藏馆的标签、评分等
+    // 带 item 参数（下载、推送到酒馆）且开了「写入整理信息」：角色卡里写上卡匣的标签、评分等
     const owner = store.db.items[url.searchParams.get('item') || ''];
     if (owner && exportMetaOn() && owner.type === 'character' && owner.files.some((f) => f.sha === p.sha)) {
         const out = await withVaultMeta(store.readBlob(p.sha), owner);
@@ -1372,6 +1372,8 @@ route('DELETE', '/api/collections/:id', ({ p }) => {
 const SKIN_IDS = ['atelier', 'minimal', 'sakura', 'ink', 'neon'];
 // 以前选过已经下架的风格（暗夜酒馆）：换回默认的典藏
 if (!SKIN_IDS.includes(store.db.settings.skin)) { store.db.settings.skin = 'atelier'; store.save(); }
+// 改名前存下的默认标题跟着换成新名字；自己起的标题不动
+if (store.db.settings.title === '\u9152\u9986\u85cf\u9986') { store.db.settings.title = '卡匣'; store.save(); }
 route('PUT', '/api/fields', async ({ req }) => {
     const { fields } = await readJson(req);
     if (!Array.isArray(fields)) throw new HttpError(400, 'fields 必须是数组');
@@ -1639,7 +1641,7 @@ fillSigs().then((n) => { if (n) console.log(`  已为 ${n} 个旧文件补算内
 
 server.requestTimeout = 0;
 server.listen(PORT, HOST, () => {
-    console.log(`\n  TavernVault 酒馆藏馆 v${VERSION}`);
+    console.log(`\n  Cardbox 卡匣 v${VERSION}`);
     console.log(`  数据目录: ${DATA_DIR}`);
     console.log(`  本机访问: http://localhost:${PORT}`);
     for (const list of Object.values(os.networkInterfaces())) {

@@ -57,7 +57,7 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: TavernVault-${{ steps.ver.outputs.version }}-windows
+          name: Cardbox-${{ steps.ver.outputs.version }}-windows
           path: desktop/dist/*.exe
           if-no-files-found: error
 
@@ -70,11 +70,11 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with:
-          name: TavernVault-${{ needs.build.outputs.version }}-windows
+          name: Cardbox-${{ needs.build.outputs.version }}-windows
       - name: 发布到 Releases
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ needs.build.outputs.version }}
         run: |
-          gh release create "$GITHUB_REF_NAME" *.exe --repo "$GITHUB_REPOSITORY" --title "藏馆 Windows 桌面版 $VERSION" \
+          gh release create "$GITHUB_REF_NAME" *.exe --repo "$GITHUB_REPOSITORY" --title "卡匣 Windows 桌面版 $VERSION" \
             --notes "免安装，双击运行。没有代码签名，第一次打开时 Windows 可能提示「已保护你的电脑」，点「更多信息 → 仍要运行」。"

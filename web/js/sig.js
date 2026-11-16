@@ -204,7 +204,7 @@ export function partsDiff(a, b, ignore = []) {
 }
 
 /**
- * 世界书条目：把 mask 指定的状态（启用、蓝灯、标题）换回藏馆里对应条目的值。
+ * 世界书条目：把 mask 指定的状态（启用、蓝灯、标题）换回卡匣里对应条目的值。
  * 先按「关键词 + 内容」对应；内容改过的，关键词在两边都只出现一次时按关键词对应。
  */
 function keepEntryFlags(tBook, vBook, mask) {
@@ -232,7 +232,7 @@ function keepEntryFlags(tBook, vBook, mask) {
 }
 
 /**
- * 把 ignore 里的几段换成藏馆原来的内容（收新版本时不把自己在酒馆里的改动存进去）。
+ * 把 ignore 里的几段换成卡匣原来的内容（收新版本时不把自己在酒馆里的改动存进去）。
  * 酒馆的 V2 卡顶层还有一份旧字段（description、first_mes、creatorcomment 等），一起改。
  */
 export function mergeParts(type, tavern, vault, ignore = []) {

@@ -40,7 +40,7 @@ const settings = (b) => fetch(`${V}/api/settings`, { method: 'PUT', headers: { '
   await page.screenshot({ path: `${OUT}/ign-synced.png` });
   // 收藏这行（已同步状态下手动选中收藏）→ 不会产生新版本
   const up = await j(`${V}/api/items?filename=lily.png&origin=tavern&target=${lily.id}&match=version`, { method: 'POST', body: await (await fetch(`${M}/__export?avatar=lily.png`).catch(() => null))?.arrayBuffer?.() || '' }).catch(() => null);
-  // 真正的改动：描述也改了 → 存为新版本时世界书和开场白保留藏馆原来的
+  // 真正的改动：描述也改了 → 存为新版本时世界书和开场白保留卡匣原来的
   await fetch(`${M}/__edit?q=${encodeURIComponent(JSON.stringify({ avatar: 'lily.png', description: '酒馆里改的描述' }))}`);
   await refresh(); await row(L).locator('text=酒馆有改动').waitFor({ timeout: 10000 });
   ok(true, 'real change (description) → 酒馆有改动');
@@ -54,7 +54,7 @@ const settings = (b) => fetch(`${V}/api/settings`, { method: 'PUT', headers: { '
   ok(JSON.stringify(c.data.character_book || null) === JSON.stringify(orig.data.character_book || null), 'new version kept the vault worldbook (own edit not stored)');
   ok(JSON.stringify(c.data.alternate_greetings || []) === JSON.stringify(orig.data.alternate_greetings || []), 'new version kept the vault greetings');
   ok(/已同步/.test(await status()), 'after saving → 已同步 again: ' + await status());
-  // 关掉「保留藏馆原来的」→ 原样保存
+  // 关掉「保留卡匣原来的」→ 原样保存
   await settings({ syncKeep: false });
   await fetch(`${M}/__edit?q=${encodeURIComponent(JSON.stringify({ avatar: 'lily.png', description: '第二次改的描述' }))}`);
   await refresh(); await row(L).locator('button:has-text("同步")').click(); await frame.click('.menu-item:has-text("酒馆的较新：存为新版本")');

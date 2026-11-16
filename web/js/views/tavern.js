@@ -57,9 +57,9 @@ bridge.on((event) => {
 const sigKey = (kind, id) => `${kind}:${id}`;
 
 /**
- * 酒馆条目和藏馆的关系
+ * 酒馆条目和卡匣的关系
  * new 未收藏 · collected 已收藏（无法比对）· synced 内容一致 · changed 酒馆里改过
- * older 酒馆里是藏馆的某个旧版本（藏馆较新）· other 酒馆里是藏馆的另一个版本，但不是当前版本
+ * older 酒馆里是卡匣的某个旧版本（卡匣较新）· other 酒馆里是卡匣的另一个版本，但不是当前版本
  */
 // 设置里「从酒馆同步时不算差异」的部分：角色卡分段、世界书条目的状态
 const ignoreFor = (kind) => {
@@ -69,7 +69,7 @@ const ignoreFor = (kind) => {
     return [];
 };
 
-/** 酒馆里的内容（t = { sig, parts }）和藏馆的某个文件是否算同一个版本 */
+/** 酒馆里的内容（t = { sig, parts }）和卡匣的某个文件是否算同一个版本 */
 function sameAs(f, t, kind) {
     if (!f?.sig || !t?.sig) return false;
     if (f.sig === t.sig) return true;
@@ -78,7 +78,7 @@ function sameAs(f, t, kind) {
 }
 
 /**
- * 酒馆里的这一行对应藏馆的哪个条目。同名的只有一个就是它；
+ * 酒馆里的这一行对应卡匣的哪个条目。同名的只有一个就是它；
  * 有好几个（同名不同作者）时，看哪个条目里有和酒馆内容一样的版本；都没有就认不出（sure = false）
  */
 function vaultItemFor(kind, r) {
@@ -103,7 +103,7 @@ function statusOf(kind, r) {
 
 /** 「有差异」时写清楚是哪几部分不同；只有可以设为不算差异的部分不同时，提示去设置里勾选 */
 function changedNote(kind, parts) {
-    if (!parts?.length) return { text: '酒馆里的内容和藏馆当前版本不同' };
+    if (!parts?.length) return { text: '酒馆里的内容和卡匣当前版本不同' };
     const label = (k) => (k === 'entries' ? '条目的关键词或内容' : k === 'book' ? '内嵌世界书的关键词或内容' : SYNC_OPTIONS[k] || k);
     const canIgnore = parts.every((k) => k in ENTRY_FLAGS || (kind === 'character' && k in CARD_PARTS));
     return { text: `不同的部分：${parts.map(label).join('、')}`, hint: canIgnore };
@@ -130,7 +130,7 @@ export function renderTavern(root) {
         return;
     }
     clear(refs.note, !bridge.has('raw')
-        ? h('div', { class: 'note warn' }, icon('alert', { size: 15 }), h('span', {}, '酒馆里的插件版本较旧，无法比对版本和覆盖导入。请在酒馆的扩展管理里更新「酒馆藏馆」插件。'))
+        ? h('div', { class: 'note warn' }, icon('alert', { size: 15 }), h('span', {}, '酒馆里的插件版本较旧，无法比对版本和覆盖导入。请在酒馆的扩展管理里更新「卡匣」插件。'))
         : null);
     clear(refs.actions,
         COVER_KINDS.has(ui.kind) ? btn('', { icon: useGrid(ui.kind) ? 'grid' : 'list', cls: 'ghost', title: '显示方式', onclick: () => pickView(root) }) : null,
@@ -212,7 +212,7 @@ export function renderTavern(root) {
                 }
                 case 'older':
                 case 'other':
-                    note = st.s === 'older' ? '酒馆里是旧版本，藏馆有更新' : '酒馆里是藏馆的另一个版本（不是当前版本）';
+                    note = st.s === 'older' ? '酒馆里是旧版本，卡匣有更新' : '酒馆里是卡匣的另一个版本（不是当前版本）';
                     right = h('div', { class: 'row-actions' },
                         btn('对比', { icon: 'eye', cls: 'sm ghost', onclick: stop(() => compareWithTavern(r, st.item)) }),
                         btn('更新到酒馆', { cls: 'sm primary', onclick: stop(() => importItemsToTavern([st.item], { decide: 'replace', rows: [r] })) }));
@@ -226,7 +226,7 @@ export function renderTavern(root) {
                 h('div', { class: 'row-main' },
                     h('div', { class: 'row-title' }, h('span', {}, r.name)),
                     isDiff(st)
-                        ? h('div', { class: 'row-sub' }, h('span', { class: `chip-s ${st.s === 'changed' ? 'warn' : 'info'}` }, { changed: '酒馆有改动', older: '藏馆较新', other: '版本不同' }[st.s]), h('span', { title: typeof note === 'string' ? note : note.textContent }, note))
+                        ? h('div', { class: 'row-sub' }, h('span', { class: `chip-s ${st.s === 'changed' ? 'warn' : 'info'}` }, { changed: '酒馆有改动', older: '卡匣较新', other: '版本不同' }[st.s]), h('span', { title: typeof note === 'string' ? note : note.textContent }, note))
                         : st.ignored ? h('div', { class: 'row-sub' }, h('span', { class: 'chip-s' }, '自己改过'), h('span', { title: note }, note))
                             : r.sub ? h('div', { class: 'row-sub' }, h('span', {}, r.sub)) : null),
                 right);
@@ -263,7 +263,7 @@ async function refresh(force = false) {
     checkSigs(kind, ui.lists[kind]);
 }
 
-/** 读取酒馆里已收藏条目的内容，计算指纹，判断是否和藏馆一致 */
+/** 读取酒馆里已收藏条目的内容，计算指纹，判断是否和卡匣一致 */
 async function checkSigs(kind, list, { force = false } = {}) {
     if (!SIG_KINDS.has(kind) || !bridge.has('raw') || !list?.length) return;
     const todo = list.filter((r) => findByName(kind, r.name) && (force || !ui.sigs.has(sigKey(kind, r.id))));
@@ -316,12 +316,12 @@ async function loadThumb(el) {
 
 /** 网格卡片左下角的状态 */
 function statusChip(st) {
-    const map = { new: ['new', '未收藏'], synced: ['ok', '已同步'], collected: ['ok', '已收藏'], changed: ['dupe', '酒馆有改动'], older: ['info', '藏馆较新'], other: ['info', '版本不同'] };
+    const map = { new: ['new', '未收藏'], synced: ['ok', '已同步'], collected: ['ok', '已收藏'], changed: ['dupe', '酒馆有改动'], older: ['info', '卡匣较新'], other: ['info', '版本不同'] };
     const [k, label] = map[st.s] || [];
     return label ? h('span', { class: `badge-${k}` }, label) : null;
 }
 
-/** 预览：从酒馆读出原始内容，交给服务端解析成和藏馆条目一样的资料，不存进藏馆 */
+/** 预览：从酒馆读出原始内容，交给服务端解析成和卡匣条目一样的资料，不存进卡匣 */
 async function loadPreview(kind, r) {
     const key = sigKey(kind, r.id);
     if (previews.has(key)) return previews.get(key);
@@ -335,13 +335,13 @@ async function loadPreview(kind, r) {
     return out;
 }
 
-/** 打开酒馆里的一项：背景直接看大图；其它用和藏馆详情一样的预览，可以左右切换 */
+/** 打开酒馆里的一项：背景直接看大图；其它用和卡匣详情一样的预览，可以左右切换 */
 function openRow(kind, r, rows) {
     if (kind === 'background') {
         thumbUrl(kind, r.id, true).then((u) => u && lightbox(u)).catch((e) => toast(e.message, 'err'));
         return;
     }
-    if (!bridge.has('raw')) { toast('酒馆里的插件版本较旧，不能预览。请在扩展管理里更新「酒馆藏馆」插件', 'err'); return; }
+    if (!bridge.has('raw')) { toast('酒馆里的插件版本较旧，不能预览。请在扩展管理里更新「卡匣」插件', 'err'); return; }
     const byId = new Map(rows.map((x) => [x.id, x]));
     const label = KINDS.find(([k]) => k === kind)?.[1] || '';
     openPreview(r.id, {
@@ -358,8 +358,8 @@ function openRow(kind, r, rows) {
         foot: (id, close) => {
             const row = byId.get(id);
             const st = statusOf(kind, row);
-            const inVault = st.item ? btn('在藏馆中查看', { icon: 'archive', onclick: () => { close(); openDetail(st.item.id); } }) : null;
-            if (st.s === 'new') return [btn('收藏到藏馆', { icon: 'download', cls: 'primary', onclick: () => collect([row]) })];
+            const inVault = st.item ? btn('在卡匣中查看', { icon: 'archive', onclick: () => { close(); openDetail(st.item.id); } }) : null;
+            if (st.s === 'new') return [btn('收藏到卡匣', { icon: 'download', cls: 'primary', onclick: () => collect([row]) })];
             if (st.s === 'changed') return [inVault, btn('对比', { icon: 'eye', onclick: () => compareWithTavern(row, st.item) }), btn('同步', { cls: 'primary', onclick: () => syncChoice(row, st.item, changedNote(kind, st.parts).text) })];
             if (st.s === 'older' || st.s === 'other') return [inVault, btn('对比', { icon: 'eye', onclick: () => compareWithTavern(row, st.item) }), btn('更新到酒馆', { cls: 'primary', onclick: () => importItemsToTavern([st.item], { decide: 'replace', rows: [row] }) })];
             return [inVault];
@@ -376,8 +376,8 @@ async function exportFromTavern(kind, r) {
 const comparing = new Set();
 
 /**
- * 对比：把酒馆里的版本临时上传（不建条目），和藏馆当前版本做对比。
- * 角色卡只上传文字内容（套用藏馆的图片），不传整张 PNG，手机上快很多；真要保存时再取完整的卡
+ * 对比：把酒馆里的版本临时上传（不建条目），和卡匣当前版本做对比。
+ * 角色卡只上传文字内容（套用卡匣的图片），不传整张 PNG，手机上快很多；真要保存时再取完整的卡
  */
 function compareWithTavern(r, item) {
     const kind = ui.kind;
@@ -400,8 +400,8 @@ function compareWithTavern(r, item) {
             step('正在上传');
             const res = await api.upload(upload.blob, { filename: upload.filename, target: item.id, match: 'ask', origin: 'tavern', probe });
             if (res.status === 'duplicate') {
-                toast(res.ignoredOnly ? (res.current ? '只有设置里忽略的部分不同，算作和藏馆当前版本相同' : '只有忽略的部分不同，酒馆里是藏馆中的一个旧版本')
-                    : res.current ? '内容和藏馆当前版本相同' : '酒馆里是藏馆中的一个旧版本', 'ok');
+                toast(res.ignoredOnly ? (res.current ? '只有设置里忽略的部分不同，算作和卡匣当前版本相同' : '只有忽略的部分不同，酒馆里是卡匣中的一个旧版本')
+                    : res.current ? '内容和卡匣当前版本相同' : '酒馆里是卡匣中的一个旧版本', 'ok');
                 if (res.current) return null;
             }
             const tavernFile = res.status === 'duplicate' ? item.files.find((f) => f.sha === res.sha) || item.files.find((f) => sameAs(f, ui.sigs.get(key), kind)) : { sha: res.sha, name: res.filename };
@@ -413,25 +413,25 @@ function compareWithTavern(r, item) {
                     if (probe) { await collect([r], { primary }); return; }
                     try {
                         await api.resolve(res, 'version', { target: item.id, primary });
-                        toast(primary ? '已存为新版本，设为当前版本' : '已存为旧版本，藏馆当前版本不变', 'ok');
+                        toast(primary ? '已存为新版本，设为当前版本' : '已存为旧版本，卡匣当前版本不变', 'ok');
                     } catch (e) { toast(e.message, 'err'); return; }
                     await reload();
                     rerender();
                 };
                 return [
-                    btn('藏馆的较新：更新到酒馆', { onclick: () => { close(); importItemsToTavern([item], { decide: 'replace', rows: [r] }); } }),
+                    btn('卡匣的较新：更新到酒馆', { onclick: () => { close(); importItemsToTavern([item], { decide: 'replace', rows: [r] }); } }),
                     res.status === 'conflict' ? btn('酒馆的较旧：存为旧版本', { onclick: save(false) }) : null,
                     res.status === 'conflict' ? btn('酒馆的较新：存为新版本', { cls: 'primary', onclick: save(true) }) : null,
                 ];
             };
-            return { a: { sha: cur.sha, name: cur.name, label: '藏馆 · 当前版本' }, b: { sha: tavernFile.sha, name: tavernFile.name, label: '酒馆里的版本' }, foot };
+            return { a: { sha: cur.sha, name: cur.name, label: '卡匣 · 当前版本' }, b: { sha: tavernFile.sha, name: tavernFile.name, label: '酒馆里的版本' }, foot };
         },
     });
 }
 
 /**
  * 两边内容不同时选择怎么同步：酒馆的较新 → 存为新版本；酒馆的较旧 → 只留作历史版本；
- * 藏馆的较新 → 用藏馆当前版本覆盖酒馆
+ * 卡匣的较新 → 用卡匣当前版本覆盖酒馆
  */
 function syncChoice(r, item, diffText) {
     const cur = item.files.find((f) => f.primary) || item.files[item.files.length - 1];
@@ -441,11 +441,11 @@ function syncChoice(r, item, diffText) {
     const s = sheet({
         title: `「${r.name}」两边不一样`,
         body: h('div', { class: 'stack-s' },
-            h('div', { class: 'muted small' }, [diffText, curInfo ? `藏馆当前版本：${curInfo}` : ''].filter(Boolean).join('。')),
+            h('div', { class: 'muted small' }, [diffText, curInfo ? `卡匣当前版本：${curInfo}` : ''].filter(Boolean).join('。')),
             h('div', { class: 'menu' },
-                opt('download', '酒馆的较新：存为新版本', '存进藏馆，并设为当前版本', () => collect([r], { primary: true })),
-                opt('clock', '酒馆的较旧：存为旧版本', '存进藏馆的历史版本，藏馆当前版本不变', () => collect([r], { primary: false })),
-                opt('upload', '藏馆的较新：更新到酒馆', '用藏馆当前版本覆盖酒馆里的', () => importItemsToTavern([item], { decide: 'replace', rows: [r] })),
+                opt('download', '酒馆的较新：存为新版本', '存进卡匣，并设为当前版本', () => collect([r], { primary: true })),
+                opt('clock', '酒馆的较旧：存为旧版本', '存进卡匣的历史版本，卡匣当前版本不变', () => collect([r], { primary: false })),
+                opt('upload', '卡匣的较新：更新到酒馆', '用卡匣当前版本覆盖酒馆里的', () => importItemsToTavern([item], { decide: 'replace', rows: [r] })),
                 opt('eye', '先对比再决定', '看看两边具体哪里不同', () => compareWithTavern(r, item)))),
     });
 }
@@ -472,7 +472,7 @@ async function collect(rows, { primary } = {}) {
     }
     const msg = [n.created && `新增 ${n.created}`, n.version && (primary === false ? `存为旧版本 ${n.version}` : `新版本 ${n.version}`), n.duplicate && `已是最新 ${n.duplicate}`, n.fail && `失败 ${n.fail}`, conflicts.length && `同名待处理 ${conflicts.length}`].filter(Boolean).join('，');
     if (conflicts.length) {
-        prog.log(`${conflicts.length} 项和藏馆里的条目同名（名字写法略有不同），请选择：`, '');
+        prog.log(`${conflicts.length} 项和卡匣里的条目同名（名字写法略有不同），请选择：`, '');
         prog.actions(
             btn('全部存为新版本', { cls: 'sm primary', onclick: async () => { for (const c of conflicts) await api.resolve(c, 'version'); toast('已处理', 'ok'); prog.close(); await reload(); } }),
             btn('全部另存', { cls: 'sm', onclick: async () => { for (const c of conflicts) await api.resolve(c, 'new'); toast('已处理', 'ok'); prog.close(); await reload(); } }),
@@ -519,7 +519,7 @@ export async function importItemsToTavern(items, { decide, rows } = {}) {
     for (const m of plan) {
         const cur = m.it.files.find((f) => f.primary) || m.it.files[m.it.files.length - 1];
         const t = m.existing ? ui.sigs.get(sigKey(m.it.type, m.existing.id)) : null;
-        // 这里要一字不差才算一致：「不算差异」只管从酒馆同步，不然藏馆里改过的那几段永远推不过去
+        // 这里要一字不差才算一致：「不算差异」只管从酒馆同步，不然卡匣里改过的那几段永远推不过去
         if (m.existing && cur?.sig && cur.sig === t?.sig) same.push(m); else todo.push(m);
     }
     const clashes = todo.filter((m) => m.existing);

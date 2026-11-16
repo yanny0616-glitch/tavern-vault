@@ -1,5 +1,5 @@
 /* =========================================================
-   TavernVault — 五套风格
+   Cardbox — 五套风格
    每套风格 = 设计变量（浅/深）+ 结构改写（标题栏、分段、卡片、列表、按钮、面板、导航、详情）
    结构改写一律限定在 html[data-skin=…] 下；设置页的预览缩略图用 .skin-pv[data-skin=…]
    ========================================================= */
@@ -355,7 +355,7 @@ html[data-skin="sakura"] .kpi, html[data-skin="sakura"] .shelf { border: 0; bord
 html[data-skin="ink"] .topbar { background: var(--bg); backdrop-filter: none; -webkit-backdrop-filter: none; border-bottom: 3px solid var(--ink); gap: 12px; }
 html[data-skin="ink"] .tb-row { align-items: flex-end; }
 html[data-skin="ink"] .tb-kicker { display: flex; gap: 10px; align-items: center; color: var(--text); font-weight: 700; letter-spacing: .3em; font-size: calc(10px * var(--fs)); padding-bottom: 6px; margin-bottom: 6px; border-bottom: 1px solid var(--line); }
-html[data-skin="ink"] .tb-kicker::after { content: "TAVERN VAULT"; margin-left: auto; color: var(--text-3); font-weight: 400; }
+html[data-skin="ink"] .tb-kicker::after { content: "CARDBOX"; margin-left: auto; color: var(--text-3); font-weight: 400; }
 html[data-skin="ink"] .tb-title { letter-spacing: -.01em; }
 html[data-skin="ink"] .tb-sub { text-transform: uppercase; letter-spacing: .14em; font-size: calc(10.5px * var(--fs)); margin-top: 6px; }
 html[data-skin="ink"] .search .search-input { background: transparent; border: 0; border-bottom: 1.5px solid var(--ink); padding-left: 26px; }

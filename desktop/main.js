@@ -1,5 +1,5 @@
-// 酒馆藏馆 Windows 桌面版：一个很薄的外壳。
-// 窗口里打开的就是你的藏馆服务器上的网页，所以服务端更新后这里马上是新界面，不用重新下载。
+// 卡匣 Windows 桌面版：一个很薄的外壳。
+// 窗口里打开的就是你的卡匣服务器上的网页，所以服务端更新后这里马上是新界面，不用重新下载。
 // 第一次打开先到 launcher.html 填服务器地址；只有这个地址在窗口里打开，别的链接交给系统浏览器。
 const { app, BrowserWindow, Menu, ipcMain, shell } = require('electron');
 const fs = require('node:fs');
@@ -8,7 +8,10 @@ const path = require('node:path');
 const LAUNCHER = path.join(__dirname, 'launcher.html');
 const cfgFile = () => path.join(app.getPath('userData'), 'config.json');
 let cfg = {};
-const loadCfg = () => { try { cfg = JSON.parse(fs.readFileSync(cfgFile(), 'utf8')) || {}; } catch { cfg = {}; } };
+// 改名前的配置放在旧名字的文件夹里：新位置还没有配置时读它，省得重填服务器地址
+const oldCfgFile = () => path.join(app.getPath('appData'), '\u9152\u9986\u85cf\u9986', 'config.json');
+const readCfg = (file) => { try { const c = JSON.parse(fs.readFileSync(file, 'utf8')); return c && typeof c === 'object' ? c : null; } catch { return null; } };
+const loadCfg = () => { cfg = readCfg(cfgFile()) || readCfg(oldCfgFile()) || {}; };
 const saveCfg = () => { try { fs.mkdirSync(path.dirname(cfgFile()), { recursive: true }); fs.writeFileSync(cfgFile(), JSON.stringify(cfg)); } catch { /* 存不了就下次再填 */ } };
 
 /** 只认 http(s) 地址，统一成「协议 + 主机 + 端口」 */
@@ -25,14 +28,14 @@ function createWindow() {
     win = new BrowserWindow({
         width: b.width || 1240, height: b.height || 860, x: b.x, y: b.y,
         minWidth: 380, minHeight: 560,
-        title: '酒馆藏馆', backgroundColor: '#14111c', autoHideMenuBar: true,
+        title: '卡匣', backgroundColor: '#14111c', autoHideMenuBar: true,
         icon: path.join(__dirname, 'build', 'icon.png'),
         webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false, sandbox: true },
     });
     if (cfg.maximized) win.maximize();
     const wc = win.webContents;
 
-    // 窗口里只能去两个地方：自带的连接页、保存的藏馆服务器
+    // 窗口里只能去两个地方：自带的连接页、保存的卡匣服务器
     const guard = (e, url) => { if (!isLauncher(url) && !isServer(url)) { e.preventDefault(); openOutside(url); } };
     wc.on('will-navigate', guard);
     wc.on('will-redirect', guard);
@@ -55,10 +58,10 @@ function createWindow() {
     showLauncher();
 }
 
-// 连接页和藏馆网页能调用的三件事（见 preload.js）
+// 连接页和卡匣网页能调用的三件事（见 preload.js）
 ipcMain.handle('tv:get-server', () => cfg.server || '');
 ipcMain.handle('tv:set-server', (e, url) => {
-    // 只有自带的连接页可以改服务器地址；藏馆网页（或它里面的内容）不行
+    // 只有自带的连接页可以改服务器地址；卡匣网页（或它里面的内容）不行
     if (!isLauncher(e.senderFrame?.url)) throw new Error('只能在连接页里更换服务器');
     const origin = originOf(url);
     if (!origin) throw new Error('地址不正确');
@@ -69,7 +72,7 @@ ipcMain.handle('tv:change-server', (e) => { if (isLauncher(e.senderFrame?.url) |
 
 function buildMenu() {
     Menu.setApplicationMenu(Menu.buildFromTemplate([
-        { label: '藏馆', submenu: [
+        { label: '卡匣', submenu: [
             { label: '刷新', accelerator: 'F5', click: () => win?.webContents.reload() },
             { label: '更换服务器…', click: () => showLauncher(true) },
             { type: 'separator' },

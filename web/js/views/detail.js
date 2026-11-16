@@ -2,7 +2,7 @@
 import { h, clear, sheet, toast, debounce, confirmDialog, promptDialog, lightbox, fmtBytes, fmtDate, timeAgo, downloadBlob, downloadUrl, switchEl, icon, btn, starsEl, emptyState } from '../ui.js';
 import { api } from '../api.js';
 import { bridge } from '../bridge.js';
-import { state, typeMeta, TYPE_META, fieldsFor, subscribe, allTags, notify, savePrefs, applyAccent, readZoom, READ_ZOOM, detailTabOf } from '../state.js';
+import { state, typeMeta, TYPE_META, fieldsFor, subscribe, allTags, notify, savePrefs, applyAccent, readZoom, READ_ZOOM, detailTabOf, userLabel } from '../state.js';
 import { collectionName, typeBadge } from './common.js';
 import { pickCollection } from './library.js';
 import { importItemsToTavern, TAVERN_IMPORTABLE } from './tavern.js';
@@ -76,7 +76,7 @@ function readFull(title, node, len, { pager = null } = {}) {
     const next = btn('下一条', { icon: 'chevronRight', onclick: () => show(i + 1) });
     const count = h('span', { class: 'read-count' });
     const styleBtn = pager?.canStyle ? h('div', { class: 'read-mode-wrap' },
-        h('label', { class: 'check-line read-script', title: '运行卡里美化的脚本（翻页、点击切换等）。脚本在隔离环境里运行，读不到藏馆的数据' },
+        h('label', { class: 'check-line read-script', title: '运行卡里美化的脚本（翻页、点击切换等）。脚本在隔离环境里运行，读不到卡匣的数据' },
             h('input', { type: 'checkbox', checked: Boolean(state.prefs.stScripts), onchange: (e) => { state.prefs.stScripts = e.target.checked; savePrefs(); show(i); } }), h('span', {}, '运行脚本')),
         h('div', { class: 'seg read-mode' },
             h('button', { class: 'seg-item', onclick: () => { styled = false; show(i); } }, '文字'),
@@ -155,7 +155,7 @@ function fieldDisplay(f, v) {
 const fmtTok = (n) => (n >= 10000 ? `${(n / 10000).toFixed(1).replace(/\.0$/, '')} 万` : String(n));
 
 /**
- * 预览不在藏馆里的内容（酒馆里的角色卡、世界书……），界面和条目详情一样，只读。
+ * 预览不在卡匣里的内容（酒馆里的角色卡、世界书……），界面和条目详情一样，只读。
  * src = { ids：可以左右切换的顺序, get(id) → 已读到的 { item, content, cover }, load(id) → Promise,
  *         badges(id) → 标题上方的状态, foot(id, close) → 底部按钮, title }
  */
@@ -171,7 +171,7 @@ export function openDetail(id, { seq = null, onLeave = null, src = null } = {}) 
     let greetIdx = 0;
     const order = src ? (src.ids.length > 1 && src.ids.includes(id) ? src.ids : null)
         : Array.isArray(seq) && seq.length > 1 && seq.includes(id) ? seq : null;
-    // 预览模式下条目来自 src，不在藏馆里：没有编辑、文件页、收藏评分这些
+    // 预览模式下条目来自 src，不在卡匣里：没有编辑、文件页、收藏评分这些
     const itemOf = (x) => (src ? src.get(x)?.item : state.byId.get(x));
     tab = detailTabOf(src?.type || itemOf(id)?.type);
     const hasFiles = (it) => (src ? true : it.files.length > 0);
@@ -255,7 +255,7 @@ export function openDetail(id, { seq = null, onLeave = null, src = null } = {}) 
 
     const primary = (it) => it.files.find((f) => f.primary) || it.files[0];
     const save = (patch) => api.patch(`/api/items/${id}`, patch).catch((e) => toast(e.message, 'err'));
-    const names = (it) => ({ char: content?.data?.name || it.name, user: state.prefs.userName?.trim() || '你' });
+    const names = (it) => ({ char: content?.data?.name || it.name, user: userLabel() });
 
     /** 开场白阅读页：可以左右翻，有美化正则或 HTML 时可以切到「酒馆效果」 */
     async function readGreetings(it, list, start = 0) {
@@ -400,7 +400,7 @@ export function openDetail(id, { seq = null, onLeave = null, src = null } = {}) 
     }
 
     // ---------- 头部 ----------
-    // 封面：藏馆条目用缩略图；预览模式用酒馆给的图片
+    // 封面：卡匣条目用缩略图；预览模式用酒馆给的图片
     const coverUrl = (it) => (src ? src.get(id)?.cover || '' : it.cover ? coverSrc(it) : '');
     const coverNode = (it, props) => (src ? h('img', { src: coverUrl(it), alt: '' }) : coverImg(it, props));
     const bigCover = (it) => lightbox(src ? coverUrl(it) : api.fileUrl(it.cover));
@@ -681,7 +681,7 @@ export function openDetail(id, { seq = null, onLeave = null, src = null } = {}) 
                 h('div', { class: 'edit-sec' }, h('div', { class: 'form-label' }, '资料字段'), fieldBox,
                     h('div', { class: 'muted small' }, '字段可以在「设置 → 自定义字段」里增减。')),
                 h('div', { class: 'field' }, h('label', {}, '笔记'), notes),
-                it.type === 'character' && it.files.length ? h('div', { class: 'note' }, icon('info', { size: 15 }), h('span', {}, '这里改的是藏馆里的资料。要改角色卡本身（描述、开场白等），用右上角菜单里的「编辑角色卡内容」，会保存为新版本。')) : null),
+                it.type === 'character' && it.files.length ? h('div', { class: 'note' }, icon('info', { size: 15 }), h('span', {}, '这里改的是卡匣里的资料。要改角色卡本身（描述、开场白等），用右上角菜单里的「编辑角色卡内容」，会保存为新版本。')) : null),
             foot: [
                 btn('取消', { onclick: () => es.tryClose() }),
                 btn('保存', { icon: 'check', cls: 'primary', onclick: (e) => doSave(e.currentTarget) }),
@@ -811,7 +811,7 @@ export function openDetail(id, { seq = null, onLeave = null, src = null } = {}) 
             fold('原始 JSON', () => h('pre', { class: 'code' }, JSON.stringify(d, null, 2)), { ic: 'braces' }));
     }
 
-    function regexView(list, { sample = '', n = { char: '角色', user: state.prefs.userName?.trim() || '你' } } = {}) {
+    function regexView(list, { sample = '', n = { char: '角色', user: userLabel() } } = {}) {
         return h('div', { class: 'stack-s' }, list.map((r) => lazyDetails({ class: `fold entry ${r.disabled ? 'off' : ''}` },
             h('summary', {}, icon('chevronRight', { size: 14, cls: 'fold-chev' }), h('span', { class: 'entry-dot' }), h('span', { class: 'fold-title' }, r.scriptName || '（未命名）'),
                 looksHtml(r.replaceString) || hasHtmlFence(r.replaceString) ? h('span', { class: 'chip-s info' }, '美化') : null, r.disabled ? h('span', { class: 'chip-s' }, '禁用') : null),
@@ -871,7 +871,7 @@ export function openDetail(id, { seq = null, onLeave = null, src = null } = {}) 
         return h('div', { class: 'st-preview' },
             h('div', { class: 'sub-label' }, '效果预览'), info, out,
             h('details', { class: 'st-sample-box', open: !sample }, h('summary', {}, '换一段示例文本'), input),
-            hasScript(r.replaceString) ? h('label', { class: 'check-line' }, runJs, h('span', {}, '运行脚本（翻页、点击切换等效果需要；脚本在隔离环境里运行，读不到藏馆的数据）')) : null);
+            hasScript(r.replaceString) ? h('label', { class: 'check-line' }, runJs, h('span', {}, '运行脚本（翻页、点击切换等效果需要；脚本在隔离环境里运行，读不到卡匣的数据）')) : null);
     }
 
     function qrView(d) {

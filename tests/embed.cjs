@@ -31,7 +31,7 @@ let fails = 0; const ok = (c, m) => { console.log(c ? 'PASS' : 'FAIL', m); if (!
   await page.addStyleTag({ content: ':root{--tt-viewport-bottom-inset:300px!important}' }); await page.waitForTimeout(100);
   const kb = await page.$eval('#tv-panel', (e) => e.getBoundingClientRect().bottom);
   ok(kb === 852 - 266, 'keyboard lifts panel bottom: ' + kb);
-  // 重新加载藏馆（数据很慢）：面板一打开就是全屏，不先显示插件标题栏；藏馆在数据到之前就拿到安全区
+  // 重新加载卡匣（数据很慢）：面板一打开就是全屏，不先显示插件标题栏；卡匣在数据到之前就拿到安全区
   await page.addStyleTag({ content: ':root{--tt-viewport-bottom-inset:34px!important}' });
   await page.route('**/api/state', async (r) => { await new Promise((ok2) => setTimeout(ok2, 2500)); r.continue(); });
   await page.evaluate(() => { const el = document.querySelector('#tv-panel'); el.classList.remove('tv-edge'); el.querySelector('[data-act="reload"]').click(); });

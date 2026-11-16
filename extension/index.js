@@ -1,5 +1,5 @@
-// TavernVault 酒馆藏馆 —— SillyTavern / TauriTavern 插件
-// 作用：1) 全屏内嵌藏馆网页；2) 作为桥，替藏馆页面读写酒馆本地数据（角色卡、世界书、预设、正则、快速回复、主题、背景）
+// Cardbox 卡匣 —— SillyTavern / TauriTavern 插件
+// 作用：1) 全屏内嵌卡匣网页；2) 作为桥，替卡匣页面读写酒馆本地数据（角色卡、世界书、预设、正则、快速回复、主题、背景）
 
 const EXT_KEY = 'tavernVault';
 const VERSION = '1.2.3';
@@ -17,7 +17,7 @@ function settings() {
 const save = () => ctx().saveSettingsDebounced();
 const baseUrl = () => String(settings().url || '').trim().replace(/\/+$/, '');
 
-// 上次打开时藏馆的样子（是否全屏、什么颜色）。下次打开直接照这个显示，不用等藏馆加载完才变全屏
+// 上次打开时卡匣的样子（是否全屏、什么颜色）。下次打开直接照这个显示，不用等卡匣加载完才变全屏
 const LOOK_KEY = 'tavernVault.look';
 function look() {
     try { return JSON.parse(localStorage.getItem(LOOK_KEY) || '{}') || {}; } catch { return {}; }
@@ -35,8 +35,8 @@ function paint({ bg, fg, line } = {}) {
 
 function toast(msg, kind = 'info') {
     const t = window.toastr;
-    if (t && t[kind]) t[kind](msg, '酒馆藏馆');
-    else console.log('[TavernVault]', msg);
+    if (t && t[kind]) t[kind](msg, '卡匣');
+    else console.log('[Cardbox]', msg);
 }
 
 function headers(json = true) {
@@ -109,7 +109,7 @@ const jsonFile = (name, obj) => ({ filename: `${String(name).replace(/[\\/:*?"<>
 const handlers = {
     hello: async () => ({ host: isTT() ? 'TauriTavern' : 'SillyTavern', version: VERSION, features: ['raw', 'replace', 'theme', 'insets', 'image'] }),
 
-    /** 藏馆告诉插件当前风格的颜色：面板顶部（状态栏那一条）和标题栏跟着变，不再是固定的深色 */
+    /** 卡匣告诉插件当前风格的颜色：面板顶部（状态栏那一条）和标题栏跟着变，不再是固定的深色 */
     async theme({ bg, fg, line } = {}) {
         if (!panel) return { ok: false };
         paint({ bg, fg, line });
@@ -118,8 +118,8 @@ const handlers = {
     },
 
     /**
-     * 全屏：面板不再留边距、隐藏自己的标题栏，藏馆铺满整个屏幕；
-     * 灵动岛 / 状态栏、底部 Home 条、横屏两侧的安全区高度交给藏馆自己留
+     * 全屏：面板不再留边距、隐藏自己的标题栏，卡匣铺满整个屏幕；
+     * 灵动岛 / 状态栏、底部 Home 条、横屏两侧的安全区高度交给卡匣自己留
      */
     async insets() {
         if (!panel) return { top: 0, bottom: 0, left: 0, right: 0 };
@@ -138,7 +138,7 @@ const handlers = {
         return { top: measure('top'), bottom: measure('bottom'), left: measure('left'), right: measure('right') };
     },
 
-    /** 返回酒馆里条目的原始内容（JSON），藏馆用它计算内容指纹，判断两边是否一致 */
+    /** 返回酒馆里条目的原始内容（JSON），卡匣用它计算内容指纹，判断两边是否一致 */
     async raw({ kind, ids = [] }) {
         const c = ctx();
         const out = [];
@@ -395,7 +395,7 @@ function buildPanel() {
     panel.id = 'tv-panel';
     panel.innerHTML = `
         <div class="tv-bar">
-            <span class="tv-title">${SVG(IC.archive, 17)}<span>酒馆藏馆</span></span>
+            <span class="tv-title">${SVG(IC.archive, 17)}<span>卡匣</span></span>
             <button type="button" data-act="reload" title="刷新">${SVG(IC.refresh)}</button>
             <button type="button" data-act="close" title="关闭">${SVG(IC.x)}</button>
         </div>
@@ -426,12 +426,12 @@ function buildPanel() {
 
 async function openPanel() {
     if (!baseUrl()) {
-        toast('请先在扩展设置里填写藏馆服务器地址', 'warning');
+        toast('请先在扩展设置里填写卡匣服务器地址', 'warning');
         document.querySelector('#tv-settings .inline-drawer-toggle')?.click();
         return;
     }
     if (!panel) buildPanel();
-    // 藏馆以前用过全屏：一打开就全屏、用上次的颜色，加载过程中不再先显示插件自己的标题栏
+    // 卡匣以前用过全屏：一打开就全屏、用上次的颜色，加载过程中不再先显示插件自己的标题栏
     const l = look();
     paint(l);
     if (l.edge) panel.classList.add('tv-edge');
@@ -443,7 +443,7 @@ async function openPanel() {
     } catch (e) {
         panel.classList.remove('tv-edge'); // 连不上时要显示插件自己的标题栏（有关闭按钮）
         panel.classList.add('error');
-        panel.querySelector('.tv-error-msg').innerHTML = `无法连接藏馆服务：${e.message}<br><small>请检查地址是否正确、服务是否在运行。iOS 版 TauriTavern 请使用 https 地址。</small>`;
+        panel.querySelector('.tv-error-msg').innerHTML = `无法连接卡匣服务：${e.message}<br><small>请检查地址是否正确、服务是否在运行。iOS 版 TauriTavern 请使用 https 地址。</small>`;
         return;
     }
     const po = location.origin && location.origin !== 'null' ? location.origin : '*';
@@ -453,7 +453,7 @@ async function openPanel() {
     if (loadedSrc !== src) {
         loadedSrc = src;
         iframe.src = src;
-        // 藏馆一直没接手全屏（加载卡住、旧版藏馆）：退回显示标题栏，保证能关掉
+        // 卡匣一直没接手全屏（加载卡住、旧版卡匣）：退回显示标题栏，保证能关掉
         edgeOk = false;
         clearTimeout(edgeTimer);
         if (panel.classList.contains('tv-edge')) edgeTimer = setTimeout(() => { if (!edgeOk) panel.classList.remove('tv-edge'); }, 15000);
@@ -480,7 +480,7 @@ window.addEventListener('message', async (e) => {
         if (result?.transfer) delete result.transfer;
         reply({ ok: true, result }, transfer);
     } catch (err) {
-        console.error('[TavernVault]', err);
+        console.error('[Cardbox]', err);
         reply({ ok: false, error: err?.message || String(err) });
     }
 });
@@ -493,7 +493,7 @@ function renderFab() {
     fab = document.createElement('button');
     fab.id = 'tv-fab';
     fab.type = 'button';
-    fab.title = '酒馆藏馆';
+    fab.title = '卡匣';
     fab.innerHTML = SVG(IC.archive, 24);
     const pos = settings().fabPos;
     if (pos) { fab.style.left = `${pos.x}px`; fab.style.top = `${pos.y}px`; fab.style.right = 'auto'; fab.style.bottom = 'auto'; }
@@ -531,15 +531,15 @@ function buildSettings() {
     <div id="tv-settings" class="tv-settings">
       <div class="inline-drawer">
         <div class="inline-drawer-toggle inline-drawer-header">
-          <b>TavernVault 酒馆藏馆</b>
+          <b>Cardbox 卡匣</b>
           <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
         </div>
         <div class="inline-drawer-content">
           <div class="tv-row"><label>服务器</label><input id="tv-url" class="text_pole" type="text" placeholder="https://vault.example.com"></div>
-          <div class="tv-row"><label>密码</label><input id="tv-pass" class="text_pole" type="password" placeholder="藏馆访问密码（未设置可留空）"></div>
+          <div class="tv-row"><label>密码</label><input id="tv-pass" class="text_pole" type="password" placeholder="卡匣访问密码（未设置可留空）"></div>
           <div class="tv-row">
             <div id="tv-connect" class="menu_button">${SVG(IC.link, 15)} 连接</div>
-            <div id="tv-open" class="menu_button">${SVG(IC.archive, 15)} 打开藏馆</div>
+            <div id="tv-open" class="menu_button">${SVG(IC.archive, 15)} 打开卡匣</div>
           </div>
           <div id="tv-status" class="tv-status"></div>
           <label class="checkbox_label"><input id="tv-fab-toggle" type="checkbox"> 显示悬浮按钮（可拖动）</label>
@@ -564,7 +564,7 @@ function buildSettings() {
         status('连接中…');
         try {
             const health = await (await fetch(`${s.url}/api/health`, { cache: 'no-store' })).json();
-            if (health.app !== 'tavern-vault') throw new Error('这个地址不是藏馆服务');
+            if (health.app !== 'tavern-vault') throw new Error('这个地址不是卡匣服务');
             if (health.auth) {
                 const pw = $('tv-pass').value;
                 if (pw) {
@@ -573,7 +573,7 @@ function buildSettings() {
                     if (!r.ok) throw new Error(j.error || '登录失败');
                     s.token = j.token;
                 } else if (!s.token) {
-                    throw new Error('该藏馆设置了密码，请填写密码');
+                    throw new Error('该卡匣设置了密码，请填写密码');
                 }
                 const check = await fetch(`${s.url}/api/state`, { headers: { Authorization: `Bearer ${s.token}` } });
                 if (check.status === 401) { s.token = ''; throw new Error('令牌已失效，请重新输入密码'); }
@@ -583,7 +583,7 @@ function buildSettings() {
             $('tv-pass').value = '';
             save();
             loadedSrc = '';
-            status(`已连接：${health.title || '酒馆藏馆'} v${health.version}`, 'ok');
+            status(`已连接：${health.title || '卡匣'} v${health.version}`, 'ok');
         } catch (e) {
             status(`连接失败：${e.message}`, 'err');
         }
@@ -597,7 +597,7 @@ function addMenuItem() {
     item.id = 'tv-menu-item';
     item.className = 'list-group-item flex-container flexGap5 interactable';
     item.tabIndex = 0;
-    item.innerHTML = `<span class="tv-menu-ic">${SVG(IC.archive, 16)}</span><span>酒馆藏馆</span>`;
+    item.innerHTML = `<span class="tv-menu-ic">${SVG(IC.archive, 16)}</span><span>卡匣</span>`;
     item.addEventListener('click', openPanel);
     menu.append(item);
 }
@@ -611,7 +611,7 @@ async function init() {
     buildSettings();
     addMenuItem();
     renderFab();
-    // 角色列表变化时，让藏馆页面知道（用于刷新酒馆页）
+    // 角色列表变化时，让卡匣页面知道（用于刷新酒馆页）
     const c = ctx();
     const notify = () => iframe?.contentWindow?.postMessage({ tv: 1, kind: 'event', event: 'tavern-changed' }, vaultOrigin() || '*');
     for (const ev of ['CHARACTER_EDITED', 'CHARACTER_DELETED', 'CHARACTER_PAGE_LOADED', 'WORLDINFO_UPDATED', 'SETTINGS_UPDATED']) {
@@ -619,4 +619,4 @@ async function init() {
     }
 }
 
-jQuery(() => { init().catch((e) => console.error('[TavernVault] init failed', e)); });
+jQuery(() => { init().catch((e) => console.error('[Cardbox] init failed', e)); });

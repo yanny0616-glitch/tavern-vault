@@ -1,14 +1,14 @@
 
-// ---- 藏馆 App 外壳（由 app/scripts/patch-ios.sh 追加到 SceneDelegate.swift 末尾，import WebKit 加在文件开头）----
+// ---- 卡匣 App 外壳（由 app/scripts/patch-ios.sh 追加到 SceneDelegate.swift 末尾，import WebKit 加在文件开头）----
 
-/// 启动后注册藏馆自己的原生插件
+/// 启动后注册卡匣自己的原生插件
 class VaultViewController: CAPBridgeViewController {
     override func capacitorDidLoad() {
         bridge?.registerPluginInstance(VaultShellPlugin())
     }
 }
 
-/// 记住藏馆服务器地址，并决定哪些网址留在 App 里打开：
+/// 记住卡匣服务器地址，并决定哪些网址留在 App 里打开：
 /// 只有这台服务器的页面在 App 里显示（也只有它能用原生功能），其它网址交给 Safari 或对应的 App
 @objc(VaultShellPlugin)
 public class VaultShellPlugin: CAPPlugin, CAPBridgedPlugin {
