@@ -6,7 +6,6 @@ import { coverImg } from '../thumbs.js';
 import { openDetail } from './detail.js';
 import { aiReady } from './ai.js';
 
-const AI_MAX = 400; // 和服务端一致：一次最多拿这么多个给 AI 看
 
 // 抽卡记录：只存在这台设备的浏览器里。[{ id, at, ai }]，新的在前
 const LOG_KEY = 'tv_draws';
@@ -83,13 +82,22 @@ export function openDraw(list) {
 
     const want = h('input', { class: 'input', placeholder: '比如：轻松日常、慢热、有反转', maxlength: 300, onkeydown: (e) => { if (e.key === 'Enter') ask(); } });
     const askBtn = btn('让 AI 挑', { icon: 'sparkles', onclick: () => ask() });
+    const pickN = [1, 3, 5, 10].includes(state.prefs.drawAiCount) ? state.prefs.drawAiCount : 3;
+    const countSel = h('select', { class: 'select draw-ai-n', title: '挑几张', onchange: () => { state.prefs.drawAiCount = Number(countSel.value); savePrefs(); } }, [1, 3, 5, 10].map((k) => h('option', { value: k, selected: k === pickN }, `挑 ${k} 张`)));
     async function ask() {
         const v = want.value.trim();
         if (!v) { want.focus(); return; }
         askBtn.disabled = true;
         clear(out, h('div', { class: 'loading' }, h('span', { class: 'spinner' }), h('span', {}, 'AI 正在挑')));
         try {
-            const r = await api.post('/api/ai/recommend', { ids: pool.slice(0, AI_MAX).map((it) => it.id), want: v });
+            const body = { ids: pool.map((it) => it.id), want: v, count: Number(countSel.value) || 3 };
+            let r = await api.post('/api/ai/recommend', body);
+            // 候选太多一次看不完：先问一句，再分批初选、汇总
+            if (r.needSplit) {
+                if (!(await confirmDialog(`这次有 ${r.total} 个候选，AI 一次看不完。可以分 ${r.batches} 批先各挑几个，再汇总挑出最后的，一共发 ${r.requests} 次请求。也可以先在仓库里筛选，缩小范围。`, { title: '候选太多', ok: `分 ${r.batches} 批挑` }))) { clear(out, h('div', { class: 'muted draw-none' }, '没有挑。先在仓库里筛选或搜索，缩小范围再试。')); return; }
+                clear(out, h('div', { class: 'loading' }, h('span', { class: 'spinner' }), h('span', {}, `AI 正在分 ${r.batches} 批挑，要等一会儿`)));
+                r = await api.post('/api/ai/recommend', { ...body, split: true });
+            }
             const picks = r.picks.map((x) => [state.byId.get(x.id), x.reason]).filter(([it]) => it);
             if (picks.length) addLog(picks.map(([it]) => it.id), true);
             clear(out, picks.length ? picks.map(([it, reason]) => card(it, reason)) : h('div', { class: 'muted draw-none' }, '这些里面没有特别合适的。换个说法，或者放宽仓库里的筛选再试。'));
@@ -107,7 +115,7 @@ export function openDraw(list) {
             btn('抽卡记录', { icon: 'clock', cls: 'sm ghost', onclick: () => openLog((id) => { s.close(); setTimeout(() => openDetail(id), 200); }) })),
         aiReady() ? h('div', { class: 'draw-ai' },
             h('div', { class: 'form-label' }, '或者说说想找什么样的'),
-            h('div', { class: 'draw-ai-row' }, want, askBtn),
-            h('div', { class: 'muted small' }, `只把名称、标签、简介和笔记发给 AI，不发文件内容。${pool.length > AI_MAX ? `条目太多，只看前 ${AI_MAX} 个。` : ''}`)) : null);
+            h('div', { class: 'draw-ai-row' }, want, countSel, askBtn),
+            h('div', { class: 'muted small' }, '只把名称、标签、简介和笔记发给 AI，不发文件内容。候选太多时会先问你要不要分批挑。')) : null);
     clear(out, h('div', { class: 'draw-empty' }, icon('dice', { size: 30, stroke: 1.5 }), h('span', {}, '不知道看哪张？抽一张试试')));
 }

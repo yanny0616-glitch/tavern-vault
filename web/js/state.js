@@ -1,5 +1,6 @@
 // 全局状态
 import { api } from './api.js';
+import { themeCss } from './themecore.js';
 
 export const TYPE_META = {
     character: { icon: 'user', color: '#b4637a', label: '角色卡', en: 'Character' },
@@ -163,14 +164,39 @@ export const uiFont = (p) => clampNum(p.uiFont, UI_FONT, UI_PX[p.uiSize] || (Mat
 /** 阅读字号（%） */
 export const readZoom = (p) => clampNum(p.readZoom, READ_ZOOM, READ_PCT[p.readSize] || 100);
 
+/** 正在用的自定义主题；编辑主题时先用还没保存的那份（state.themeDraft）看效果 */
+export function activeTheme() {
+    if (state.themeDraft) return state.themeDraft;
+    if (NO_THEME) return null;
+    return (state.settings.themes || []).find((t) => t.id === state.settings.theme) || null;
+}
+// 主题把界面改坏了、点不到设置时：地址后面加 ?notheme 打开，这次不套自定义主题
+const NO_THEME = /[?&#]notheme\b/.test(location.href);
+
 export function applyAccent() {
     const root = document.documentElement;
-    const skin = SKINS[state.settings.skin] ? state.settings.skin : 'atelier';
-    root.dataset.skin = skin;
+    const theme = activeTheme();
+    const skin = theme ? theme.base : SKINS[state.settings.skin] ? state.settings.skin : 'atelier';
+    if (theme || state.loaded || !root.dataset.theme) root.dataset.skin = skin;
+    // 自定义主题：一段样式挂在 <style id="tv-theme"> 里，同时存一份在本机，下次打开首屏就能用上
+    let tag = document.getElementById('tv-theme');
+    if (theme) {
+        if (!tag) { tag = document.createElement('style'); tag.id = 'tv-theme'; document.head.append(tag); }
+        const css = themeCss(theme);
+        if (tag.textContent !== css) tag.textContent = css;
+        root.dataset.theme = theme.id;
+        if (!state.themeDraft) { try { localStorage.setItem('tv_theme', JSON.stringify({ id: theme.id, css })); } catch { /* ignore */ } }
+    } else if (state.loaded || NO_THEME) {
+        // 数据还没读回来时先留着首屏套上的那份，免得闪一下
+        tag?.remove();
+        delete root.dataset.theme;
+        try { localStorage.removeItem('tv_theme'); } catch { /* ignore */ }
+    }
     try { localStorage.setItem('tv_skin', skin); } catch { /* ignore */ }
-    const mode = state.prefs.mode === 'auto' || !state.prefs.mode ? (darkMq.matches ? 'dark' : 'light') : state.prefs.mode;
+    // 编辑主题时界面跟着正在改的那一套（浅色 / 深色）走
+    const mode = state.themeDraftMode || (state.prefs.mode === 'auto' || !state.prefs.mode ? (darkMq.matches ? 'dark' : 'light') : state.prefs.mode);
     root.dataset.mode = mode;
-    if (state.settings.accent) root.style.setProperty('--accent', state.settings.accent);
+    if (state.settings.accent && !theme) root.style.setProperty('--accent', state.settings.accent);
     else root.style.removeProperty('--accent');
     // 每台设备自己的显示偏好，通过 html 上的属性交给 CSS
     const p = state.prefs;

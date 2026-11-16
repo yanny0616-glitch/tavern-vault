@@ -38,6 +38,11 @@ function reply(system, user) {
         const lib = ((user.match(/现有标签（按使用次数排序）：(.+)/) || [])[1] || '').split('、').filter(Boolean);
         const tags = [...lib.slice(0, 2), name.includes('星澜') ? '雨夜' : '原创', '奇幻'];
         const wantFields = /nsfw（/.test(user);
+        // BADJSON：故意把格式写坏（少一个逗号），用来测「改了原始回复重新解析」
+        if (user.includes('BADJSON')) return `好的，结果如下：{"tags":["原创" "奇幻"],"summary":"${name}的简介"}`;
+        // 用户建了标签分类时，说新标签放哪：第一个分类（应采用）、不存在的分类（应去掉）
+        const gm = system.match(/新标签归类：用户的标签分类有 「([^」]+)」/);
+        if (gm) return JSON.stringify({ tags: [...tags, '全新标签甲'], summary: `${name}的简介`, fields: {}, groups: { 全新标签甲: gm[1], 原创: '不存在的分类', [lib[0] || 'x']: gm[1] } });
         return '```json\n' + JSON.stringify({ tags, summary: `${name}：一段关于雨夜酒馆的温柔故事，附带完整世界观设定。`, fields: wantFields ? { nsfw: false, language: '中文', bogus: 1 } : {} }).replace(/}$/, ',}') + '\n```';
     }
     if (system.includes('版本之间的差异')) {

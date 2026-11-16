@@ -11,14 +11,15 @@ import { detectFile, mimeOf, normalizeCard, summarizeCard, TYPES } from './lib/d
 import { extractCardFromPng, isPng, writeCardToPng } from './lib/png.js';
 import { buildZip, readZip, isJunkPath } from './lib/zip.js';
 import { fileSig, fileParts, parseFile } from './lib/content.js';
-import { entriesOf, entryKeys, effectivePrompts } from '../web/js/cardfmt.js';
+import { entriesOf, entryKeys, entryKeys2, effectivePrompts } from '../web/js/cardfmt.js';
 import { stripSyncEntries, DEFAULT_SYNC_EXCLUDE, SYNC_OPTIONS, PARTS_VERSION, sameParts, mergeParts } from '../web/js/sig.js';
 import { diffFiles, diffSummary } from './lib/diff.js';
 import { AiConfig, listModels, chat, AiError } from './lib/ai.js';
+import { cleanThemes } from '../web/js/themecore.js';
 import { createAiTasks } from './lib/ai-tasks.js';
 import { createAiChat } from './lib/ai-chat.js';
 import { createBackups, recoverDb } from './lib/backups.js';
-import { extractPart } from './lib/extract.js';
+import { extractPart, toCardBook } from './lib/extract.js';
 const str = (v) => (v == null ? '' : typeof v === 'string' ? v : String(v));
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -728,8 +729,8 @@ const idList = (v) => (Array.isArray(v) ? v.map(String).filter((id) => store.db.
 
 // AI 推荐：从给定的条目里按一句话的想法挑几个（只看名称、标签、简介、笔记）
 route('POST', '/api/ai/recommend', async ({ req }) => {
-    const { ids, want } = await readJson(req);
-    try { return await aiTasks.recommend(idList(ids), want); } catch (e) { return aiFail(e); }
+    const { ids, want, count, split } = await readJson(req);
+    try { return await aiTasks.recommend((Array.isArray(ids) ? ids.map(String) : []).slice(0, 4000), want, { count, split: split === true }); } catch (e) { return aiFail(e); }
 });
 
 route('GET', '/api/ai/config', () => aiConfig.public());
@@ -779,6 +780,10 @@ route('POST', '/api/ai/drafts/discard', async ({ req }) => {
     aiTasks.discard(Array.isArray(ids) ? ids.map(String) : []);
     return { ok: true };
 });
+route('POST', '/api/ai/drafts/reparse', async ({ req }) => {
+    const { id, raw } = await readJson(req);
+    try { return { draft: aiTasks.reparse(String(id || ''), raw) }; } catch (e) { return aiFail(e); }
+});
 route('POST', '/api/ai/cancel', () => { aiTasks.cancel(); return { ok: true }; });
 route('POST', '/api/ai/explain', async ({ req }) => {
     const { a, b, aLabel, bLabel, force } = await readJson(req);
@@ -813,6 +818,17 @@ route('POST', '/api/ai/chats/:id/send', async ({ req, p }) => {
     const { text, retry } = await readJson(req);
     chatOr404(() => aiChat.get(p.id));
     try { return aiChat.send(p.id, { text, retry: Boolean(retry) }); } catch (e) { return aiFail(e); }
+});
+// 重新生成一条回复 / 撤回一句提问（它和后面的消息都删掉）
+route('POST', '/api/ai/chats/:id/regen', async ({ req, p }) => {
+    const { msg } = await readJson(req);
+    chatOr404(() => aiChat.get(p.id));
+    try { return aiChat.regen(p.id, String(msg || '')); } catch (e) { return aiFail(e); }
+});
+route('POST', '/api/ai/chats/:id/rewind', async ({ req, p }) => {
+    const { msg } = await readJson(req);
+    chatOr404(() => aiChat.get(p.id));
+    try { return aiChat.rewind(p.id, String(msg || '')); } catch (e) { return aiFail(e); }
 });
 // 修改块：预览 / 应用（存成新版本）/ 撤销
 route('POST', '/api/ai/chats/:id/edit', async ({ req, p }) => {
@@ -932,7 +948,7 @@ route('POST', '/api/items/merge', async ({ req }) => {
     const cur = target.files.find((f) => f.primary);
     if (body.newest && cur) {
         const family = (f) => ((/^image\/png/.test(f.mime) && (f.sig || f.primary)) || /\.(json|charx)$/i.test(f.name) ? 'card' : /^image\//.test(f.mime) ? 'image' : f.mime);
-        const latest = target.files.filter((f) => family(f) === family(cur)).sort((a, b) => String(b.addedAt).localeCompare(String(a.addedAt)))[0];
+        const latest = target.files.filter((f) => !f.bookset && family(f) === family(cur)).sort((a, b) => String(b.addedAt).localeCompare(String(a.addedAt)))[0];
         if (latest && latest !== cur) {
             target.files.forEach((f) => { f.primary = f === latest; });
             applyDetection(target, detectFile(store.readBlob(latest.sha), latest.name), latest.sha);
@@ -967,6 +983,7 @@ route('PATCH', '/api/items/:id/files/:fid', async ({ req, p }) => {
     if (typeof body.label === 'string') f.label = body.label;
     if (typeof body.name === 'string' && body.name.trim()) f.name = safeFilename(body.name);
     if (body.primary) {
+        if (f.bookset) throw new HttpError(400, '这是挂在卡上的一套世界书，不能设为主文件');
         it.files.forEach((x) => { x.primary = x.id === f.id; });
         applyDetection(it, detectFile(store.readBlob(f.sha), f.name), f.sha);
     }
@@ -1039,9 +1056,14 @@ function removeVersion(it, fileId, prefer = '') {
     if (idx < 0) return false;
     const [f] = it.files.splice(idx, 1);
     if (f.primary && it.files.length) {
-        const next = it.files.find((x) => x.id === prefer) || it.files[it.files.length - 1];
-        it.files.forEach((x) => { x.primary = x === next; });
-        applyDetection(it, detectFile(store.readBlob(next.sha), next.name), next.sha);
+        // 挂在卡上的世界书套装不是卡，不能顶上来当主文件；卡都没了，套装也一起去掉
+        const rest = it.files.filter((x) => !x.bookset);
+        if (!rest.length) it.files = [];
+        else {
+            const next = rest.find((x) => x.id === prefer) || rest[rest.length - 1];
+            it.files.forEach((x) => { x.primary = x === next; });
+            applyDetection(it, detectFile(store.readBlob(next.sha), next.name), next.sha);
+        }
     }
     if (it.cover === f.sha && !it.files.some((x) => x.sha === f.sha)) it.cover = null;
     it.updatedAt = new Date().toISOString();
@@ -1052,15 +1074,102 @@ function removeVersion(it, fileId, prefer = '') {
 }
 
 // 编辑角色卡内容 → 生成新版本文件
-// 网页里编辑世界书文件（不在角色卡里的）：整份内容存成新版本
+// 网页里编辑世界书、预设、正则文件：整份内容存成新版本
 route('PUT', '/api/items/:id/json', async ({ req, p }) => {
     const it = getItem(p.id);
-    if (it.type !== 'worldbook') throw new HttpError(400, '只有世界书可以这样编辑');
     const { data } = await readJson(req);
-    const es = data && typeof data === 'object' ? data.entries : null;
-    if (!es || typeof es !== 'object') throw new HttpError(400, '世界书数据无效');
+    const isObj = (v) => v && typeof v === 'object' && !Array.isArray(v);
+    if (it.type === 'worldbook') {
+        if (!isObj(data) || !data.entries || typeof data.entries !== 'object') throw new HttpError(400, '世界书数据无效');
+    } else if (it.type === 'preset') {
+        if (!isObj(data) || !Array.isArray(data.prompts) || !data.prompts.every(isObj)) throw new HttpError(400, '预设数据无效');
+    } else if (it.type === 'regex') {
+        const list = Array.isArray(data) ? data : [data];
+        if (!list.length) throw new HttpError(400, '至少要留一条正则；不要了可以直接删除这个条目');
+        if (!list.every((r) => isObj(r) && typeof r.findRegex === 'string')) throw new HttpError(400, '正则数据无效');
+    } else throw new HttpError(400, '这类文件不能这样编辑');
     saveJsonVersion(it, data, '网页编辑');
     return slim(store.db.items[it.id]);
+});
+
+// ---------- 一张卡挂多套世界书 ----------
+// 每一套存成这张卡名下的一个附件（file.bookset），不算版本。换用时写进卡里，生成一个新版本。
+const MAX_BOOKSETS = 20;
+const bookSig = (b) => JSON.stringify(entriesOf(b).map((e) => [entryKeys(e), entryKeys2(e), String(e.content ?? ''), String(e.comment ?? e.name ?? ''), Boolean(e.constant), e.disable !== undefined ? !e.disable : e.enabled !== false]));
+const readBookSet = (f) => { try { return JSON.parse(store.readBlob(f.sha).toString('utf8')); } catch { return null; } };
+function bookCardOf(it) {
+    const c = it.type === 'character' ? loadContent(it) : null;
+    const n = c?.kind === 'card' ? normalizeCard(c.data) : null;
+    if (!n?.data) throw new HttpError(400, '只有角色卡可以挂多套世界书');
+    return { raw: c.data, data: n.data };
+}
+function addBookSet(it, book, name) {
+    const title = String(name || book.name || '').replace(/\s+/g, ' ').trim().slice(0, 60) || '未命名的一套';
+    const sig = bookSig(book);
+    const had = it.files.find((f) => f.bookset && bookSig(readBookSet(f)) === sig);
+    if (had) return { file: had, existed: true };
+    if (it.files.filter((f) => f.bookset).length >= MAX_BOOKSETS) throw new HttpError(400, `一张卡最多挂 ${MAX_BOOKSETS} 套世界书`);
+    const buf = Buffer.from(JSON.stringify({ ...book, name: String(book.name || '').trim() || title }, null, 2));
+    const sha = store.putBlob(buf);
+    const file = store.addFile(it.id, { sha, name: `${safeFilename(title)}.json`, size: buf.length, mime: 'application/json', label: title, primary: false });
+    file.bookset = true;
+    store.save();
+    return { file, existed: false };
+}
+function bookSetList(it) {
+    const { data } = bookCardOf(it);
+    const cur = entriesOf(data.character_book).length ? data.character_book : null;
+    const curSig = cur ? bookSig(cur) : '';
+    return {
+        current: cur ? { name: String(cur.name || '').trim(), count: entriesOf(cur).length } : null,
+        sets: it.files.filter((f) => f.bookset).map((f) => {
+            const b = readBookSet(f);
+            return { id: f.id, sha: f.sha, name: f.label || f.name, count: entriesOf(b).length, size: f.size, addedAt: f.addedAt, same: Boolean(cur) && bookSig(b) === curSig };
+        }),
+    };
+}
+route('GET', '/api/items/:id/booksets', ({ p }) => bookSetList(getItem(p.id)));
+
+// 加一套：from=current 把卡里现在这套存起来；itemId 用卡匣里的一本世界书；book 直接给内容（上传的文件）
+route('POST', '/api/items/:id/booksets', async ({ req, p }) => {
+    const it = getItem(p.id);
+    const { data } = bookCardOf(it);
+    const body = await readJson(req);
+    let book = null;
+    let name = String(body.name || '');
+    if (body.from === 'current') {
+        if (!entriesOf(data.character_book).length) throw new HttpError(400, '这张卡里现在没有世界书');
+        book = data.character_book;
+    } else if (body.itemId) {
+        const w = getItem(String(body.itemId));
+        const c = loadContent(w);
+        book = w.type === 'worldbook' && c.kind === 'json' ? toCardBook(c.data, w.name) : null;
+        if (!book) throw new HttpError(400, '选的不是世界书');
+        name ||= w.name;
+    } else {
+        book = toCardBook(body.book, name);
+        if (!book) throw new HttpError(400, '这个文件不是世界书');
+    }
+    if (!entriesOf(book).length) throw new HttpError(400, '这本世界书里没有条目');
+    const r = addBookSet(it, book, name);
+    broadcast('change', { ids: [it.id] });
+    return { ...bookSetList(it), added: r.file.id, existed: r.existed };
+});
+
+// 换用某一套（fid=none：卡里不带世界书）。keep 有值时先把卡里现在这套用这个名字存起来
+route('POST', '/api/items/:id/booksets/:fid/use', async ({ req, p }) => {
+    const it = getItem(p.id);
+    const { raw, data } = bookCardOf(it);
+    const body = await readJson(req);
+    const f = p.fid === 'none' ? null : it.files.find((x) => x.id === p.fid && x.bookset);
+    if (p.fid !== 'none' && !f) throw new HttpError(404, '这一套不存在');
+    const book = f ? readBookSet(f) : null;
+    if (f && !entriesOf(book).length) throw new HttpError(400, '这一套读不出来');
+    if (body.keep && entriesOf(data.character_book).length) addBookSet(it, data.character_book, String(body.keep));
+    const next = structuredClone(data);
+    if (book) next.character_book = book; else delete next.character_book;
+    await saveCardVersion(it, { ...raw, data: next }, f ? `换世界书「${f.label || f.name}」` : '去掉世界书');
+    return { ...bookSetList(store.db.items[it.id]), item: slim(store.db.items[it.id]) };
 });
 
 route('PUT', '/api/items/:id/card', async ({ req, p }) => {
@@ -1527,6 +1636,14 @@ route('PUT', '/api/settings', async ({ req }) => {
     const body = await readJson(req);
     for (const k of ['title', 'accent']) if (typeof body[k] === 'string') store.db.settings[k] = body[k].slice(0, 80);
     if (SKIN_IDS.includes(body.skin)) store.db.settings.skin = body.skin;
+    // 自定义主题：整份列表一起存；theme 是正在用的那套的 id，空字符串 = 用内置风格
+    if (Array.isArray(body.themes)) {
+        try { store.db.settings.themes = cleanThemes(body.themes); } catch (e) { throw new HttpError(400, e.message); }
+    }
+    if (typeof body.theme === 'string') store.db.settings.theme = (store.db.settings.themes || []).some((t) => t.id === body.theme) ? body.theme : '';
+    if (store.db.settings.theme && !(store.db.settings.themes || []).some((t) => t.id === store.db.settings.theme)) store.db.settings.theme = '';
+    // 用自定义主题时，风格跟着它的底稿走
+    { const t = (store.db.settings.themes || []).find((x) => x.id === store.db.settings.theme); if (t) store.db.settings.skin = t.base; }
     if ([0, 7, 14, 30, 90].includes(body.trashDays)) store.db.settings.trashDays = body.trashDays;
     if (body.autoBackup && typeof body.autoBackup === 'object') {
         const cur = autoBackupCfg();

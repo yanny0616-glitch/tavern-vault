@@ -54,6 +54,44 @@ function toWorldEntry(e, i) {
 }
 
 /**
+ * 反过来：世界书文件里的条目 → 角色卡里的写法。已经是卡里写法的原样返回。
+ * 卡的规范里没有的细项（概率、深度、分组……）放进 extensions，酒馆读卡时认这些名字。
+ */
+function toCardEntry(e, i) {
+    if (!('key' in e) && 'keys' in e) return e;
+    const position = num(e.position, 0);
+    const ext = {
+        position, depth: num(e.depth, 4), display_index: num(e.displayIndex, i),
+        probability: num(e.probability, 100), useProbability: e.useProbability !== false, selectiveLogic: num(e.selectiveLogic, 0),
+        exclude_recursion: Boolean(e.excludeRecursion), prevent_recursion: Boolean(e.preventRecursion), delay_until_recursion: e.delayUntilRecursion ?? false,
+        group: str(e.group), group_override: Boolean(e.groupOverride), group_weight: num(e.groupWeight, 100),
+        scan_depth: e.scanDepth ?? null, case_sensitive: e.caseSensitive ?? null, match_whole_words: e.matchWholeWords ?? null, use_group_scoring: e.useGroupScoring ?? null,
+        automation_id: str(e.automationId), role: e.role ?? null, vectorized: Boolean(e.vectorized),
+        sticky: e.sticky ?? null, cooldown: e.cooldown ?? null, delay: e.delay ?? null,
+    };
+    return {
+        id: num(e.uid, i),
+        keys: keysOf(e.key),
+        secondary_keys: keysOf(e.keysecondary),
+        comment: str(e.comment),
+        content: str(e.content),
+        constant: Boolean(e.constant),
+        selective: e.selective !== false,
+        insertion_order: num(e.order, 100),
+        enabled: !e.disable,
+        position: position === 0 ? 'before_char' : 'after_char',
+        use_regex: true,
+        extensions: ext,
+    };
+}
+/** 一份世界书（文件的写法或卡里的写法都行）→ 可以放进角色卡的 character_book。不是世界书时返回 null */
+export function toCardBook(obj, fallbackName = '') {
+    if (!obj || typeof obj !== 'object' || Array.isArray(obj) || !obj.entries || typeof obj.entries !== 'object') return null;
+    const list = entriesOf(obj);
+    return { name: str(obj.name).trim() || str(fallbackName).trim(), extensions: obj.extensions && typeof obj.extensions === 'object' ? obj.extensions : {}, entries: list.map(toCardEntry) };
+}
+
+/**
  * @param d 角色卡的 data；part: 'book' | 'regex'；cardName 用来起文件名
  * @returns {{ filename: string, obj: any, count: number } | null} 卡里没有这部分时是 null
  */

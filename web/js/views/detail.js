@@ -9,6 +9,8 @@ import { importItemsToTavern, TAVERN_IMPORTABLE } from './tavern.js';
 import { openDiff } from './diff.js';
 import { startOrganize, aiReady, aiStamp } from './ai.js';
 import { openAiChat } from './aichat.js';
+import { editPreset, editRegex, openBookSets } from './editors.js';
+import { stThemePreview } from '../stthemeview.js';
 import { richText, dialogView } from '../richtext.js';
 import { coverImg, coverSrc } from '../thumbs.js';
 import { runRegex, vetScripts, applyScripts, displayScripts, looksHtml, stView, hasHtmlFence, hasScript, PLACEMENT } from '../stview.js';
@@ -372,6 +374,7 @@ export function openDetail(id, { seq = null, onLeave = null, src = null } = {}) 
         loading = false;
         render();
     }
+    const dropContent = () => { content = null; };
     const ensureContent = (it) => { if (hasFiles(it) && !content) loadContent(it); return content; };
 
     // 预览模式：还没读到内容时先显示加载中
@@ -404,7 +407,7 @@ export function openDetail(id, { seq = null, onLeave = null, src = null } = {}) 
         clear(headMore,
             order ? navEl() : null,
             !src ? btn('', { icon: 'more', cls: 'ghost icon', title: '更多操作', onclick: () => moreMenu(it) }) : null);
-        const tabs = src ? [['overview', '介绍'], ['content', '内容']] : [['overview', '介绍'], ['content', '内容'], ['files', `文件 · ${it.files.length}`]];
+        const tabs = src ? [['overview', '介绍'], ['content', '内容']] : [['overview', '介绍'], ['content', '内容'], ['files', `文件 · ${it.files.filter((f) => !f.bookset).length}`]];
         if (src && tab === 'files') tab = 'overview';
         clear(s.body, h('div', { class: 'detail-layout' },
             h('aside', { class: 'detail-aside' }, hero(it)),
@@ -887,10 +890,17 @@ export function openDetail(id, { seq = null, onLeave = null, src = null } = {}) 
             if (it.type === 'worldbook') return src || it.deletedAt ? worldbookView(d, names(it)) : h('div', {},
                 h('div', { class: 'reader-tools' }, h('span', { class: 'grow' }), btn('编辑条目', { icon: 'pencil', cls: 'sm', onclick: () => editBook(it, content) })),
                 worldbookView(d, names(it)));
-            if (it.type === 'preset' && Array.isArray(d.prompts)) return presetView(d, it);
-            if (it.type === 'regex') return regexView(Array.isArray(d) ? d : [d], { n: names(it) });
+            const canEdit = !src && !it.deletedAt;
+            // 保存后重新读取的那一小会儿 content 是空的，这时候点编辑会拿到旧内容，所以等读完
+            const edit = (fn) => () => (content ? fn(it, content, dropContent) : toast('正在读取刚保存的内容，稍等一下'));
+            if (it.type === 'preset' && Array.isArray(d.prompts)) return h('div', {},
+                canEdit ? h('div', { class: 'reader-tools' }, h('span', { class: 'grow' }), btn('编辑条目', { icon: 'pencil', cls: 'sm', onclick: edit(editPreset) }), btn('正则', { icon: 'terminal', cls: 'sm', title: '编辑预设里附带的正则', onclick: edit(editRegex) })) : null,
+                presetView(d, it));
+            if (it.type === 'regex') return h('div', {},
+                canEdit ? h('div', { class: 'reader-tools' }, h('span', { class: 'grow' }), btn('编辑', { icon: 'pencil', cls: 'sm', onclick: edit(editRegex) })) : null,
+                regexView(Array.isArray(d) ? d : [d], { n: names(it) }));
             if (it.type === 'quickreply' && Array.isArray(d.qrList)) return qrView(d);
-            if (it.type === 'theme') return themeView(d);
+            if (it.type === 'theme') return themeView(d, it);
             return codeView(d);
         }
         if (content.kind === 'text') return h('pre', { class: 'code' }, content.text);
@@ -935,10 +945,12 @@ export function openDetail(id, { seq = null, onLeave = null, src = null } = {}) 
         txt('depth', '深度提示词', ext.depth_prompt?.prompt);
         txt('notes', '作者注释', d.creator_notes);
         const bookN = entriesOf(book).length;
+        // 这张卡名下存着几套世界书
+        const sets = src ? 0 : it.files.filter((f) => f.bookset).length;
         // 拆出来单独用：存成卡匣里的条目，或者下载成文件。预览（不在卡匣里）和回收站里的不提供
         const takeOut = (part, what) => (src || it.deletedAt ? null : btn('拆出', { icon: 'external', cls: 'sm ghost', title: `把${what}拆出来单独使用`, onclick: () => extractFromCard(it, part, what) }));
         if (bookN) secs.push({ key: 'book', title: '内嵌世界书', meta: [String(book.name || '').trim(), `${bookN} 条`].filter(Boolean).join(' · '), action: src || it.deletedAt ? null : h('span', { class: 'row-actions' }, btn('编辑', { icon: 'pencil', cls: 'sm ghost', onclick: () => editBook(it, c) }), takeOut('book', '内嵌世界书')), node: worldbookView(book, n) });
-        if (regex.length) secs.push({ key: 'regex', title: '内嵌正则', meta: `${regex.length} 条`, action: takeOut('regex', '内嵌正则'), node: regexView(regex, { sample: String(greetings[0] || ''), n }) });
+        if (regex.length) secs.push({ key: 'regex', title: '内嵌正则', meta: `${regex.length} 条`, action: src || it.deletedAt ? null : h('span', { class: 'row-actions' }, btn('编辑', { icon: 'pencil', cls: 'sm ghost', onclick: () => editRegex(it, c, dropContent) }), takeOut('regex', '内嵌正则')), node: regexView(regex, { sample: String(greetings[0] || ''), n }) });
         const anchor = (k) => `sec-${id}-${k}`;
         return h('div', { class: 'reader' },
             h('div', { class: 'reader-tools' },
@@ -946,6 +958,8 @@ export function openDetail(id, { seq = null, onLeave = null, src = null } = {}) 
                 d.character_version ? h('span', { class: 'muted small' }, `v${d.character_version}`) : null,
                 h('span', { class: 'grow' }),
                 !src && !it.deletedAt ? btn('编辑内容', { icon: 'pencil', cls: 'sm', onclick: () => editCard(it, c) }) : null,
+                !src && !it.deletedAt ? btn(sets ? `世界书 · ${sets} 套` : '世界书', { icon: 'book', cls: 'sm card-booksets', title: '一张卡存几套世界书，要用哪套换哪套', onclick: () => openBookSets(it, dropContent) }) : null,
+                !src && !it.deletedAt ? btn('正则', { icon: 'terminal', cls: 'sm card-regex', title: '编辑卡里内嵌的正则', onclick: () => editRegex(it, c, dropContent) }) : null,
                 btn('JSON', { icon: 'download', cls: 'sm', onclick: () => downloadBlob(new Blob([JSON.stringify(c.card, null, 2)], { type: 'application/json' }), `${d.name || 'card'}.json`) })),
             secs.length > 2 ? h('nav', { class: 'sec-nav' }, secs.map((sc) => h('button', { onclick: () => document.getElementById(anchor(sc.key))?.scrollIntoView({ behavior: 'smooth', block: 'start' }) }, sc.title))) : null,
             secs.length ? secs.map((sc) => h('section', { class: 'read-sec', id: anchor(sc.key) },
@@ -1064,9 +1078,19 @@ export function openDetail(id, { seq = null, onLeave = null, src = null } = {}) 
         return h('div', { class: 'stack-s' }, d.qrList.map((q) => fold(q.label || '（无标签）', h('pre', { class: 'code' }, q.message || ''), { ic: 'zap' })));
     }
 
-    function themeView(d) {
+    function themeView(d, it) {
         const colors = Object.entries(d).filter(([, v]) => typeof v === 'string' && /^(#|rgba?\()/.test(v));
+        const hasCss = Boolean(String(d.custom_css || '').trim());
+        const withCss = h('input', { type: 'checkbox', checked: true, onchange: () => drawPv() });
+        const pv = h('div', { class: 'st-theme-pv' });
+        const drawPv = () => clear(pv, stThemePreview(d, { css: withCss.checked, names: names(it) }));
+        drawPv();
         return h('div', { class: 'stack' },
+            h('section', { class: 'panel' },
+                h('div', { class: 'panel-head' }, icon('eye', { size: 16 }), h('h3', {}, '预览'), h('span', { class: 'grow' }),
+                    hasCss ? h('label', { class: 'check-line' }, withCss, h('span', {}, '套上自定义 CSS')) : null),
+                pv,
+                h('div', { class: 'muted small' }, '按主题里的颜色、字号、头像和气泡样式搭的一个示意聊天界面，和酒馆里的实际效果大致相同。主题要加载的外部图片、字体这里不会去取。')),
             colors.length ? h('section', { class: 'panel' }, h('div', { class: 'swatch-list' }, colors.map(([k, v]) => h('div', { class: 'swatch-item' }, h('i', { style: { background: v } }), h('span', {}, k))))) : null,
             d.custom_css ? fold('自定义 CSS', h('pre', { class: 'code' }, d.custom_css), { ic: 'braces', count: `${d.custom_css.length} 字` }) : null,
             fold('原始 JSON', () => codeView(d), { ic: 'braces' }));
@@ -1321,7 +1345,8 @@ export function openDetail(id, { seq = null, onLeave = null, src = null } = {}) 
             toast('上传完成', 'ok');
             fileInput.value = '';
         } });
-        const sorted = [...it.files].sort((a, b) => b.addedAt.localeCompare(a.addedAt));
+        // 挂在卡上的几套世界书在「内容」页的「世界书」里管，这里不列
+        const sorted = it.files.filter((f) => !f.bookset).sort((a, b) => b.addedAt.localeCompare(a.addedAt));
         const cur = primary(it);
         // 和主文件同一类的文件算作「版本」，其余（插图等）算附件
         // 带角色卡数据的 PNG（有内容指纹）才算角色卡，其它图片是插图 / 封面收藏

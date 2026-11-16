@@ -171,8 +171,31 @@ export function openAiChat({ refs = [], id = null } = {}) {
         if (follow && atBottom) sc.scrollTop = sc.scrollHeight;
     }
 
+    // 重新生成、撤回改问：都会删掉后面的消息，先说清楚删几条
+    const after = (m) => cur.messages.length - 1 - cur.messages.indexOf(m);
+    async function regen(m) {
+        const n = after(m);
+        if (n && !(await confirmDialog(`重新生成这条回复，会删掉它后面的 ${n} 条消息。已经存成新版本的修改不受影响。`, { ok: '重新生成', danger: true }))) return;
+        try { cur = await api.post(`/api/ai/chats/${cur.id}/regen`, { msg: m.id }); draw(true); schedulePoll(); } catch (e) { toast(e.message, 'err'); }
+    }
+    async function rewind(m) {
+        const n = after(m);
+        if (n > 1 && !(await confirmDialog(`撤回这句提问，会连同后面的 ${n} 条消息一起删掉，原文放回输入框给你改。已经存成新版本的修改不受影响。`, { ok: '撤回', danger: true }))) return;
+        try {
+            const r = await api.post(`/api/ai/chats/${cur.id}/rewind`, { msg: m.id });
+            cur = r.session;
+            input.value = r.text;
+            grow();
+            draw(true);
+            input.focus();
+        } catch (e) { toast(e.message, 'err'); }
+    }
+
     function bubble(m, isLast) {
-        if (m.role === 'user') return h('div', { class: 'chat-msg user' }, h('div', { class: 'chat-bubble' }, m.text));
+        if (m.role === 'user') {
+            return h('div', { class: 'chat-msg user' }, h('div', { class: 'chat-bubble' }, m.text),
+                !cur.pending && m.id ? h('div', { class: 'chat-meta' }, h('button', { class: 'btn ghost sm icon', title: '撤回，改了再问', onclick: () => rewind(m) }, icon('pencil', { size: 13 }))) : null);
+        }
         if (m.error) {
             return h('div', { class: 'chat-msg ai' }, h('div', { class: 'note warn chat-err' }, icon('alert', { size: 15 }),
                 h('span', { class: 'grow' }, m.error),
@@ -186,7 +209,8 @@ export function openAiChat({ refs = [], id = null } = {}) {
             m.truncated ? h('div', { class: 'muted small chat-note' }, '回复写到一半被截断了。可以让它「继续」，或者在 AI 服务设置里调大「最大输出 tokens」。') : null,
             h('div', { class: 'chat-meta' },
                 h('span', {}, [m.model, m.at ? timeAgo(m.at) : ''].filter(Boolean).join(' · ')),
-                h('button', { class: 'btn ghost sm icon', title: '复制', onclick: () => copy(m.text) }, icon('copy', { size: 14 }))));
+                h('button', { class: 'btn ghost sm icon', title: '复制', onclick: () => copy(m.text) }, icon('copy', { size: 14 })),
+                !cur.pending && m.id ? h('button', { class: 'btn ghost sm icon', title: '重新生成', onclick: () => regen(m) }, icon('refresh', { size: 14 })) : null));
     }
 
     // ---------------- 修改建议：预览、应用、撤销 ----------------

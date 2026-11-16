@@ -70,6 +70,8 @@ run ai-fix         seed 0 ai-fix.mjs
 run dup-separators seed 0 dup-separators.cjs
 run ai-ui          seed 0 ai-ui.cjs
 run ai-chat-api    seed 0 ai-chat-api.mjs
+run ai-more        seed 0 ai-more.mjs
+run ai-more-ui     seed 0 ai-more-ui.cjs
 run ai-chat-ui     seed 0 ai-chat-ui.cjs
 run security       sec  0 security.mjs
 run backups        seed 0 backups.mjs
@@ -85,6 +87,8 @@ run scope-extract-read perf 0 scope-extract-read.cjs
 run tags-import-book perf 0 tags-import-book.cjs
 run compare-draw-chat seed 0 compare-draw-chat.cjs
 run merge-smart-stats seed 0 merge-smart-stats.cjs
+run themes         seed 0 themes.cjs
+run editors        seed 0 editors.cjs
 
 echo
 if [ ${#FAILED[@]} -eq 0 ]; then echo "全部通过（$PASS 项）"; exit 0; fi

@@ -13,7 +13,9 @@ const SCOPES = {
     brief: ['精简', '名称、作者注释、角色描述开头、世界书标题，最省'],
     standard: ['标准', '再加性格、场景、开场白、对话示例和世界书条目摘要'],
     full: ['完整', '几乎全部内容，适合内容少的卡或想要更准的结果'],
+    custom: ['自定义', '自己勾选读角色卡的哪些部分。卡很大时可以只读要紧的，省 token'],
 };
+const READ_PARTS = [['notes', '作者注释'], ['description', '描述'], ['personality', '性格'], ['scenario', '场景'], ['greeting', '主开场白'], ['alt', '备选开场白'], ['example', '对话示例'], ['system', '系统提示词和后置指令']];
 
 export const aiReady = () => Boolean(state.settings.ai?.ready);
 const k = (n) => (n >= 10000 ? `${(n / 10000).toFixed(1)} 万` : n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n));
@@ -195,12 +197,32 @@ function rulesForm(redraw) {
     const drawScope = () => {
         clear(scopeBox, Object.entries(SCOPES).map(([key, [label]]) => h('button', { class: `opt ${r.scope === key ? 'active' : ''}`, onclick: () => { r.scope = key; mark(); drawScope(); } }, label)));
         scopeHint.textContent = SCOPES[r.scope][1];
+        drawRead();
+    };
+    // 自定义读取范围：勾选要读的部分
+    const readBox = h('div', { class: 'read-box' });
+    const drawRead = () => {
+        readBox.hidden = r.scope !== 'custom';
+        if (r.scope !== 'custom') { clear(readBox); return; }
+        if (!r.read || typeof r.read !== 'object') r.read = {};
+        const rd = r.read;
+        const on = (k) => (k === 'system' ? rd[k] === true : rd[k] !== false);
+        const seg = (cur, list, set) => h('div', { class: 'opts' }, list.map(([v, label]) => h('button', { class: `opt ${cur === v ? 'active' : ''}`, onclick: () => { set(v); mark(); drawRead(); } }, label)));
+        clear(readBox,
+            h('div', { class: 'sub-label' }, '角色卡读哪些部分'),
+            h('div', { class: 'opts read-parts' }, READ_PARTS.map(([k, label]) => h('button', { class: `opt ${on(k) ? 'active' : ''}`, onclick: () => { rd[k] = !on(k); mark(); drawRead(); } }, on(k) ? icon('check', { size: 13, stroke: 3 }) : null, h('span', {}, label)))),
+            h('div', { class: 'sub-label' }, '世界书'),
+            seg(rd.book || 'enabled', [['none', '不读'], ['enabled', '只读启用的条目'], ['all', '关闭的也读']], (v) => { rd.book = v; }),
+            (rd.book || 'enabled') !== 'none' ? seg(rd.bookBody !== false, [[true, '标题、关键词和内容'], [false, '只读标题和关键词']], (v) => { rd.bookBody = v; }) : null,
+            h('div', { class: 'sub-label' }, '每一部分读多少'),
+            seg(rd.level === 'full' ? 'full' : 'standard', [['standard', '开头一段（约 1600 字）'], ['full', '几乎全部']], (v) => { rd.level = v; }),
+            h('div', { class: 'muted small' }, '单独存的世界书不受「不读」影响。开始整理前会显示预计用量，可以对比着调。'));
     };
     drawScope();
     return h('details', { class: 'fold ai-rules', open: rulesOpen, ontoggle: (e) => { rulesOpen = e.target.open; } },
         h('summary', {}, icon('chevronRight', { size: 14, cls: 'fold-chev' }), icon('sliders', { size: 15 }), h('span', { class: 'fold-title' }, '整理规则')),
         h('div', { class: 'fold-body' }, h('div', { class: 'fields' },
-            h('div', { class: 'field wide' }, h('label', {}, '读取范围'), scopeBox, scopeHint),
+            h('div', { class: 'field wide' }, h('label', {}, '读取范围'), scopeBox, scopeHint, readBox),
             h('div', { class: 'field wide' }, h('label', {}, '让 AI 顺便填写的字段'), fieldOpts.length ? fieldBox : h('div', { class: 'muted small' }, '没有适合 AI 填写的字段，可以在「自定义字段」里添加。')),
             h('div', { class: 'field wide muted small' }, '标签个数、简介字数、不要做的事这些在下面的「提示词模板」里改。'),
             h('div', { class: 'field' }, h('label', {}, '同时发几个请求'), h('select', { class: 'select', onchange: (e) => { r.concurrency = Number(e.target.value); mark(); } }, [1, 2, 3, 4].map((n) => h('option', { value: n, selected: r.concurrency === n }, `${n} 个`)))),
@@ -461,7 +483,8 @@ export function openAiReview() {
 
     const payload = (d) => {
         const c = choices.get(d.id);
-        return { id: d.id, tags: [...c.tags], tagMode: c.tagMode, summary: c.summary, summaryMode: c.summaryMode, fields: Object.fromEntries(Object.entries(d.result.fields).filter(([f]) => c.fields[f])) };
+        return { id: d.id, tags: [...c.tags], tagMode: c.tagMode, summary: c.summary, summaryMode: c.summaryMode,
+            groups: Object.fromEntries(d.result.tags.filter((t) => t.group && c.tags.has(t.name)).map((t) => [t.name, t.group])), fields: Object.fromEntries(Object.entries(d.result.fields).filter(([f]) => c.fields[f])) };
     };
 
     async function apply(list2) {
@@ -529,7 +552,27 @@ export function openAiReview() {
             d.status === 'running' ? h('span', { class: 'spinner sm' }) : null,
             h('span', { class: `chip-s ${status[1]}` }, status[0]));
         if (d.status === 'queued' || d.status === 'running') return h('div', { class: `ai-card is-${d.status}` }, top);
-        const rawBtn = d.raw ? btn('原始回复', { cls: 'sm ghost', onclick: () => sheet({ title: 'AI 原始回复', body: h('div', { class: 'stack-s' }, d.error ? h('div', { class: 'note warn' }, d.error) : null, h('pre', { class: 'code' }, d.raw)) }) }) : null;
+        // 原始回复可以直接改了重新解析：模型把格式写坏时不用再请求一次
+        const rawBtn = d.raw ? btn('原始回复', { cls: 'sm ghost', onclick: () => {
+            const ta = h('textarea', { class: 'textarea code raw-edit', spellcheck: false, value: d.raw });
+            const err = h('div', { class: 'note warn', hidden: !d.error }, d.error || '');
+            const rs = sheet({ title: 'AI 原始回复', full: true,
+                body: h('div', { class: 'stack-s' }, err,
+                    h('div', { class: 'muted small' }, `格式有问题（少了括号、多了说明文字）时，可以直接在这里改好再解析，不用重新请求。${d.batchSize > 1 && d.batchIndex ? `这是合并请求的回复，这一项是其中 id 为 "${d.batchIndex}" 的那个。` : ''}`),
+                    ta),
+                foot: [btn('关闭', { onclick: () => rs.close() }),
+                    btn('重新解析', { icon: 'refresh', cls: 'primary', onclick: async (e) => {
+                        const b = e.currentTarget;
+                        b.disabled = true;
+                        try {
+                            await api.post('/api/ai/drafts/reparse', { id: d.id, raw: ta.value });
+                            choices.delete(d.id); cards.delete(d.id);
+                            toast('已按改过的内容解析', 'ok');
+                            rs.close();
+                            refresh();
+                        } catch (ex) { err.hidden = false; err.textContent = ex.message; b.disabled = false; }
+                    } })] });
+        } }) : null;
         if (d.status === 'error') {
             return h('div', { class: 'ai-card is-error' }, top,
                 h('div', { class: 'note warn' }, icon('alert', { size: 15 }), h('span', {}, d.error)),
@@ -544,7 +587,7 @@ export function openAiReview() {
                 const dup = c.tagMode === 'append' && have.has(t.name.toLowerCase());
                 return h('button', { class: `ai-tag ${c.tags.has(t.name) && !dup ? 'on' : ''} ${dup ? 'dup' : ''}`, disabled: dup || c.tagMode === 'keep', title: dup ? '条目里已有' : t.existing ? '已有标签' : '新标签',
                     onclick: () => { c.tags.has(t.name) ? c.tags.delete(t.name) : c.tags.add(t.name); drawTags(); } },
-                c.tags.has(t.name) && !dup ? icon('check', { size: 11, stroke: 3 }) : null, t.name, !t.existing ? h('i', {}, '新') : null);
+                c.tags.has(t.name) && !dup ? icon('check', { size: 11, stroke: 3 }) : null, t.name, !t.existing ? h('i', { title: t.group ? `写入时放进「${t.group}」分类` : '' }, t.group ? `新 · ${t.group}` : '新') : null);
             }),
             !d.result.tags.length ? h('span', { class: 'muted small' }, 'AI 没有给出合适的标签') : null);
         drawTags();
@@ -566,7 +609,7 @@ export function openAiReview() {
                 h('div', { class: 'muted small' }, d.result.overLength ? '比模板里设定的字数长一些，可以手动删减。' : '单独保存，显示在卡片和列表上，不会改动作者写的简介。')),
             fieldRows.length ? h('div', { class: 'ai-sec' }, h('div', { class: 'ai-sec-head' }, h('span', {}, '字段')), fieldRows) : null,
             h('div', { class: 'ai-acts' },
-                h('span', { class: 'muted small ai-model' }, [d.model, d.batchSize > 1 ? `合并请求 ${d.batchSize} 项` : '', d.truncated ? '输出被截断' : ''].filter(Boolean).join(' · ')),
+                h('span', { class: 'muted small ai-model' }, [d.model, d.edited ? '手动改过回复' : '', d.batchSize > 1 ? `合并请求 ${d.batchSize} 项` : '', d.truncated ? '输出被截断' : ''].filter(Boolean).join(' · ')),
                 h('span', { class: 'grow' }),
                 rawBtn,
                 btn('重写', { icon: 'refresh', cls: 'sm ghost', onclick: async () => {

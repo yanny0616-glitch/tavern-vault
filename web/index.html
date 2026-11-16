@@ -22,6 +22,14 @@
     if (mode === 'auto') mode = matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
     d.dataset.mode = mode;
     if (skin) d.dataset.skin = skin;
+    // 自定义主题：上次存在本机的样式先套上（地址里带 notheme 时不套，用来救场）
+    try {
+      var th = JSON.parse(localStorage.getItem('tv_theme') || 'null');
+      if (th && th.id && typeof th.css === 'string' && !/[?&#]notheme\b/.test(location.href)) {
+        var st = document.createElement('style'); st.id = 'tv-theme'; st.textContent = th.css;
+        document.head.appendChild(st); d.dataset.theme = th.id;
+      }
+    } catch (e) {}
   })();
 </script>
 <link rel="stylesheet" href="/css/base.css">

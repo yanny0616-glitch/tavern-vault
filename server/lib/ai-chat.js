@@ -292,6 +292,36 @@ export function createAiChat({ dataDir, store, config, loadContent, broadcast, s
             reply(s);
             return s;
         },
+        /** 重新生成某一条回复：这条和它后面的都删掉，从它前面那句提问重新回答 */
+        regen(id, msgId) {
+            const s = get(id);
+            if (s.pending) throw new AiError('上一条还在回复中');
+            const p = profileOf(s);
+            if (!p || !p.baseUrl || !p.model || !(p.apiKey || p.noKey)) throw new AiError('还没有配置好 AI 服务（地址、模型、密钥）');
+            const i = s.messages.findIndex((m) => m.id === msgId && m.role === 'assistant');
+            if (i < 0) throw new AiError('找不到这条回复');
+            if (s.messages[i - 1]?.role !== 'user') throw new AiError('这条回复前面没有提问，没法重新生成');
+            s.messages.splice(i);
+            s.pending = true;
+            s.updatedAt = now();
+            save();
+            notify(s);
+            reply(s);
+            return s;
+        },
+        /** 撤回一句提问：这句和它后面的都删掉，原文交还给网页放回输入框 */
+        rewind(id, msgId) {
+            const s = get(id);
+            if (s.pending) throw new AiError('上一条还在回复中');
+            const i = s.messages.findIndex((m) => m.id === msgId && m.role === 'user');
+            if (i < 0) throw new AiError('找不到这句提问');
+            const text = s.messages[i].text || '';
+            s.messages.splice(i);
+            s.updatedAt = now();
+            save();
+            notify(s);
+            return { session: s, text };
+        },
         stop(id) {
             running.get(id)?.abort();
         },

@@ -3,6 +3,7 @@ import { h, clear, toast, confirmDialog, choiceDialog, promptDialog, sheet, down
 import { api } from '../api.js';
 import { bridge } from '../bridge.js';
 import { native, LAUNCHER_URL } from '../native.js';
+import { themesPanel } from './themes.js';
 import { state, savePrefs, applyAccent, reload, TYPE_META, SKINS, uiFont, readZoom, UI_FONT, READ_ZOOM, notify, allTags, resetView, cardPrefOf, setCardPref, resetCardPref, userNameOn, tagGroups } from '../state.js';
 import { CARD_PARTS, ENTRY_FLAGS } from '../sig.js';
 import { SORTS } from './library.js';
@@ -15,7 +16,7 @@ const PLUGIN_REPO = 'https://github.com/yanny0616-glitch/tavern-vault';
 const ACCENTS = ['', '#8b4a2b', '#007aff', '#d4a24c', '#e0607e', '#c23a2b', '#22d3ee', '#2f8f6f', '#8a5cb8'];
 
 const SECTIONS = [
-    { key: 'appearance', title: '外观', icon: 'palette', desc: () => `${SKINS[state.settings.skin]?.name || '典藏'} · ${{ auto: '跟随系统', light: '浅色', dark: '深色' }[state.prefs.mode || 'auto']}`, render: appearance },
+    { key: 'appearance', title: '外观', icon: 'palette', desc: () => `${(state.settings.themes || []).find((t) => t.id === state.settings.theme)?.name || SKINS[state.settings.skin]?.name || '典藏'} · ${{ auto: '跟随系统', light: '浅色', dark: '深色' }[state.prefs.mode || 'auto']}`, render: appearance },
     { key: 'browse', title: '浏览', icon: 'grid', desc: () => '打开页面、卡片显示、详情页', render: browse },
     { key: 'import', title: '导入与导出', icon: 'upload', desc: () => `同时上传 ${state.prefs.uploadConc || 3} 个 · 同名${CONFLICTS[state.prefs.conflict] || CONFLICTS.ask}`, render: importPrefs },
     { key: 'tags', title: '标签', icon: 'tag', desc: () => `${tagCounts().size} 个标签`, render: tagsSection },
@@ -133,7 +134,7 @@ function skinPreview(key) {
 
 /** 改风格 / 强调色：马上换、马上重画选中标记，再存到服务器（不等服务器的变更通知，通知断了也不会停在旧的选中状态） */
 async function saveLook(patch) {
-    const before = { skin: state.settings.skin, accent: state.settings.accent };
+    const before = { skin: state.settings.skin, accent: state.settings.accent, theme: state.settings.theme };
     Object.assign(state.settings, patch);
     applyAccent();
     // 输入框还有焦点时这一页不会重画（Safari 点按钮不会带走焦点），先让出焦点
@@ -151,15 +152,19 @@ async function saveLook(patch) {
 
 function appearance() {
     const current = SKINS[state.settings.skin] ? state.settings.skin : 'atelier';
+    const usingTheme = (state.settings.themes || []).some((t) => t.id === state.settings.theme);
     const title = h('input', { class: 'input', value: state.settings.title || '', placeholder: '卡匣', onchange: () => api.put('/api/settings', { title: title.value }) });
     return [
         panel('风格', 'palette', null,
             h('div', { class: 'skin-grid' }, Object.entries(SKINS).map(([k, v]) => h('button', {
-                class: `skin-opt ${current === k ? 'active' : ''}`,
-                onclick: () => saveLook({ skin: k }),
+                class: `skin-opt ${current === k && !usingTheme ? 'active' : ''}`,
+                onclick: () => saveLook({ skin: k, theme: '' }),
 
-            }, skinPreview(k), h('div', { class: 'skin-name' }, h('b', {}, v.name), h('span', {}, v.desc)), current === k ? h('span', { class: 'skin-check' }, icon('check', { size: 13, stroke: 3 })) : null))),
+            }, skinPreview(k), h('div', { class: 'skin-name' }, h('b', {}, v.name), h('span', {}, v.desc)), current === k && !usingTheme ? h('span', { class: 'skin-check' }, icon('check', { size: 13, stroke: 3 })) : null))),
             help( '风格、强调色和仓库名称对所有设备生效（网页和酒馆插件里一致）。'),
+            h('div', { class: 'sub-label theme-head' }, '我的主题'),
+            themesPanel({ preview: skinPreview, rerender }),
+            help('自己的主题建立在一套内置风格上：可以改颜色、圆角、字体，也可以直接写样式改任何部件。用自己的主题时，下面的强调色不起作用（主题里自己定）。'),
             setRow('强调色', '按钮、选中状态等使用的颜色', h('div', { class: 'color-picker' }, ACCENTS.map((c) => h('button', {
                 class: `${(state.settings.accent || '') === c ? 'active' : ''} ${c ? '' : 'auto'}`, style: { '--sw': c || 'var(--accent)' }, title: c || '跟随风格',
                 onclick: () => saveLook({ accent: c }),

@@ -28,7 +28,7 @@
       "language": "2052",
       "shortcutName": "卡匣",
       "uninstallDisplayName": "卡匣",
-      "createDesktopShortcut": true,
+      "createDesktopShortcut": "always",
       "createStartMenuShortcut": true,
       "runAfterFinish": true,
       "deleteAppDataOnUninstall": false

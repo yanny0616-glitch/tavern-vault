@@ -8,8 +8,25 @@ export const FORMATS = {
     anthropic: { label: 'Claude', base: 'https://api.anthropic.com/v1' },
 };
 
+// 读取范围选「自定义」时：读角色卡的哪些部分、每部分读多少、世界书怎么读
+export const DEFAULT_READ = Object.freeze({
+    level: 'standard', // 每一部分读多少：standard（开头一段）| full（几乎全部）
+    notes: true, description: true, personality: true, scenario: true, greeting: true, alt: true, example: true, system: false,
+    book: 'enabled', // none 不读 | enabled 只读启用的条目 | all 关闭的也读
+    bookBody: true, // 世界书读不读条目内容；false 只读标题和关键词
+});
+export function cleanRead(v) {
+    const o = v && typeof v === 'object' && !Array.isArray(v) ? v : {};
+    const out = { ...DEFAULT_READ };
+    for (const k of ['notes', 'description', 'personality', 'scenario', 'greeting', 'alt', 'example', 'system', 'bookBody']) if (typeof o[k] === 'boolean') out[k] = o[k];
+    if (['standard', 'full'].includes(o.level)) out.level = o.level;
+    if (['none', 'enabled', 'all'].includes(o.book)) out.book = o.book;
+    return out;
+}
+
 export const DEFAULT_ORGANIZE = {
-    scope: 'standard', // brief | standard | full
+    scope: 'standard', // brief | standard | full | custom（按 read 里勾选的读）
+    read: { ...DEFAULT_READ },
     template: 'default', // 用哪套提示词模板
     fields: ['nsfw', 'language'],
     concurrency: 2,
@@ -127,7 +144,8 @@ export class AiConfig {
         if (body.organize && typeof body.organize === 'object') {
             const o = { ...this.data.organize, ...body.organize };
             this.data.organize = {
-                scope: ['brief', 'standard', 'full'].includes(o.scope) ? o.scope : 'standard',
+                scope: ['brief', 'standard', 'full', 'custom'].includes(o.scope) ? o.scope : 'standard',
+                read: cleanRead(o.read),
                 template: String(o.template || 'default'),
                 fields: Array.isArray(o.fields) ? o.fields.map(String).slice(0, 30) : [],
                 concurrency: clampNum(o.concurrency, 1, 4, 2),
