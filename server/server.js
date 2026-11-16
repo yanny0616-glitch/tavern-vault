@@ -887,6 +887,10 @@ route('PATCH', '/api/items/:id', async ({ req, p }) => {
     const it = store.updateItem(p.id, body);
     // 来源链接换了帖子：之前记的标题不作数了
     if (it.track && it.track.ch !== parseSource(it.source)?.channel) delete it.track;
+    // 刚填上（或换了）Discord 来源链接：马上读一次标题记下来，不等下一轮检查。不拖慢保存
+    if (!it.track && 'source' in body && parseSource(it.source) && discord.ready) {
+        checkSource(it).catch((e) => { if (e.status === 401 || /令牌/.test(e.message)) return; console.error(`[discord] 记录标题失败：${e.message}`); });
+    }
     broadcast('change', { ids: [p.id] });
     return slim(it);
 });
@@ -1633,7 +1637,7 @@ async function checkSource(it) {
         const name = await discord.title(src.channel);
         t.checkedAt = Date.now();
         t.title = name;
-        if (!t.seen) t.seen = name;
+        if (!t.seen) { t.seen = name; t.seenAt = Date.now(); }
         const changed = name !== t.seen;
         if (changed && !t.changed) t.changedAt = Date.now();
         if (changed) t.changed = true; else { delete t.changed; delete t.changedAt; }
@@ -1712,7 +1716,7 @@ route('POST', '/api/discord/fetch', async ({ req }) => {
     const it = getItem(String(body.id || ''));
     const src = parseSource(it.source);
     if (!src) throw new HttpError(400, '来源链接不是 Discord 的帖子链接');
-    const command = String(body.command || '').trim().replace(/^\//, '').slice(0, 40);
+    const command = String(body.command || '').trim().replace(/^\//, '').slice(0, 90);
     if (!command) throw new HttpError(400, '先填 bot 的命令名');
     botEnd();
     const s = new BotSession({ token: discord.data.token, guild: src.guild, channel: src.channel });
@@ -1724,13 +1728,58 @@ route('POST', '/api/discord/fetch', async ({ req }) => {
     } catch (e) {
         botEnd();
         if (e.status === 401) discord.pause('令牌失效或被 Discord 拒绝，已停止检查。重新填令牌后才会继续。');
-        throw new HttpError(e.status === 401 ? 409 : 502, e.message + (e.commands?.length ? `。这里能用的命令有：${e.commands.map((c) => `/${c}`).join('、')}` : ''));
+        // 不记令牌，只记 Discord 给的错误，方便之后查原因
+        console.error(`[discord] 取新版本失败：${e.message}${e.detail ? ` ${e.detail}` : ''}`);
+        // 用 422 而不是 502：502 会被前面的反向代理换成它自己的错误页，原因就显示不出来了
+        throw new HttpError(e.status === 401 ? 409 : 422, e.message + (e.commands?.length ? `。这里能用的命令有：${e.commands.map((c) => `/${c}`).join('、')}` : ''));
     }
     // 记住这个社区用的命令名，下次不用再填
     discord.data.commands = { ...(discord.data.commands || {}), [src.guild]: command };
     discord.save();
     await s.wait(0, 15000);
     return { sid, ...s.view() };
+});
+/** 从帖子文字里挑出像是口令的内容 */
+function passHints(text) {
+    const KEY = '口令|密码|暗号|提取码|密钥|password|passcode';
+    const hints = [];
+    const push = (x) => { const v = String(x || '').replace(/^[\s:：=>＞\-—·•*_~`|「『“"'（(【\[]+|[\s*_~`|」』”"'）)】\]。，,.;；!！]+$/g, ''); if (v && v.length <= 60 && !new RegExp(`^(${KEY}|是|为|在|见|看)`, 'i').test(v) && !hints.includes(v)) hints.push(v); };
+    const lines = String(text).split(/\n/).map((x) => x.trim()).filter(Boolean);
+    lines.forEach((ln, i) => {
+        const m = new RegExp(`(?:${KEY})[^:：=是为\\n]{0,8}(?:是|为|[:：=])\\s*(.+)$`, 'i').exec(ln);
+        if (!m) { if (new RegExp(`(?:${KEY})\\s*[:：]?$`, 'i').test(ln) && lines[i + 1]) push(lines[i + 1]); return; }
+        const rest = m[1].trim();
+        // 被 || 或 ` 包起来的优先；否则取到第一个空格或标点
+        const wrapped = /\|\|(.+?)\|\||`(.+?)`|[「『“"](.+?)[」』”"]|\*\*(.+?)\*\*/.exec(rest);
+        push(wrapped ? wrapped.slice(1).find(Boolean) : rest.split(/[\s，。,；;（(]/)[0]);
+    });
+    return hints.slice(0, 6);
+}
+// 提交 bot 弹出的表单（比如提取口令）。填什么由用户决定
+route('POST', '/api/discord/fetch/:sid/modal', async ({ req, p }) => {
+    const b = botGet(p.sid);
+    const body = await readJson(req);
+    const m = b.s.modalView();
+    if (!m) throw new HttpError(400, '表单已经不在了，重新点一下按钮');
+    if (m.other) throw new HttpError(400, '这个表单里有这里填不了的内容，请到 Discord 里操作');
+    const values = {};
+    for (const f of m.fields) {
+        const v = String(body.values?.[f.id] ?? '').slice(0, f.max);
+        if (f.required && !v.trim()) throw new HttpError(400, `「${f.label || '内容'}」还没填`);
+        if (v && v.length < f.min) throw new HttpError(400, `「${f.label || '内容'}」至少要 ${f.min} 个字`);
+        values[f.id] = v;
+    }
+    const rev = b.s.rev;
+    try { await b.s.submit(values); } catch (e) { console.error(`[discord] 提交表单失败：${e.message}${e.detail ? ` ${e.detail}` : ''}`); throw new HttpError(422, e.message); }
+    await b.s.wait(rev + 1, 15000);
+    return { sid: b.sid, ...b.s.view() };
+});
+// 读帖子首楼的文字，并挑出像是口令的几行。只读，用户点了才读
+route('GET', '/api/discord/fetch/:sid/post', async ({ p }) => {
+    const b = botGet(p.sid);
+    let posts = [];
+    try { posts = await b.s.starter(); } catch (e) { throw new HttpError(422, `读帖子时，${e.message}`); }
+    return { posts, hints: passHints(posts.map((x) => x.text).join('\n')) };
 });
 // 等 bot 的消息有变化（最多等 20 秒）
 route('GET', '/api/discord/fetch/:sid', async ({ p, url }) => {
@@ -1747,7 +1796,7 @@ route('POST', '/api/discord/fetch/:sid/act', async ({ req, p }) => {
     const values = c.kind === 'select' ? [String(body.value ?? '')] : undefined;
     if (values && !c.options.some((o) => o.value === values[0])) throw new HttpError(400, '没有这个选项');
     const rev = b.s.rev;
-    try { await b.s.act(c.id, values); } catch (e) { throw new HttpError(502, e.message); }
+    try { await b.s.act(c.id, values); } catch (e) { console.error(`[discord] 点选失败：${e.message}${e.detail ? ` ${e.detail}` : ''}`); throw new HttpError(422, e.message); }
     await b.s.wait(rev, 15000);
     return { sid: b.sid, ...b.s.view() };
 });
@@ -1786,7 +1835,7 @@ route('POST', '/api/discord/fetch/:sid/save', async ({ req, p }) => {
     }
     // 存成了这张卡的新版本（或内容一样）：这次更新算看过了
     if (it.track?.title && out.some((x) => x.item === it.id && (x.status === 'version' || x.status === 'duplicate'))) {
-        it.track.seen = it.track.title; delete it.track.changed; delete it.track.changedAt;
+        it.track.seen = it.track.title; it.track.seenAt = Date.now(); delete it.track.changed; delete it.track.changedAt;
         store.save(); broadcast('change', { ids: [it.id] });
     }
     return { results: out };
@@ -1797,7 +1846,7 @@ route('DELETE', '/api/discord/fetch/:sid', ({ p }) => { if (botSession?.sid === 
 route('POST', '/api/items/:id/track/seen', ({ p }) => {
     const it = getItem(p.id);
     if (!it.track) throw new HttpError(400, '这个条目没有在追踪');
-    if (it.track.title) it.track.seen = it.track.title;
+    if (it.track.title) { it.track.seen = it.track.title; it.track.seenAt = Date.now(); }
     delete it.track.changed; delete it.track.changedAt;
     store.save();
     broadcast('change', { ids: [p.id] });

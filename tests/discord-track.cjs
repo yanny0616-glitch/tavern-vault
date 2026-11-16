@@ -28,10 +28,14 @@ const T2 = 'https://discord.com/channels/111111111111111111/333333333333333333/4
   ok((await send('POST', '/api/discord/check', { id: a.id })).status === 400, 'an item without a Discord link is not checked');
   await send('PATCH', `/api/items/${a.id}`, { source: T1 });
   await send('PATCH', `/api/items/${b.id}`, { source: T2 });
+  // 保存链接时就读一次标题记下来，不用等检查
+  let saved = null;
+  for (let i = 0; i < 40 && !saved?.track?.seen; i++) { await new Promise((x) => setTimeout(x, 100)); saved = (await send('GET', '/api/state')).j.items.find((x) => x.id === a.id); }
+  ok(saved?.track?.seen === '【角色卡】林雨眠 v1.0' && saved.track.seenAt, `saving the link records the title right away (${JSON.stringify(saved?.track)})`);
   r = await send('POST', '/api/discord/check', { id: a.id });
   ok(r.j.track?.title === '【角色卡】林雨眠 v1.0' && r.j.track.seen === r.j.track.title && !r.j.track.changed, `first check remembers the title (${JSON.stringify(r.j.track)})`);
   const log = await (await fetch(`${MOCK}/__log`)).json();
-  ok(log.length === 1 && log[0].id === '222222222222222222' && log[0].method === 'GET' && log[0].auth === 'good-token', 'one read-only request per check');
+  ok(log.length === 3 && log.every((x) => x.method === 'GET' && x.auth === 'good-token') && log.filter((x) => x.id === '222222222222222222').length === 2, 'one read-only request per saved link and per check');
   await mock({ '222222222222222222': '【角色卡】林雨眠 v2.0（已更新）' });
   r = await send('POST', '/api/discord/check', { id: a.id });
   ok(r.j.track.changed === true && r.j.track.seen === '【角色卡】林雨眠 v1.0' && r.j.track.title.includes('v2.0') && r.j.track.changedAt, 'a changed title is flagged');

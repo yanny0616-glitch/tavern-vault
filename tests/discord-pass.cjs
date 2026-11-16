@@ -1,0 +1,52 @@
+// 取新版本时 bot 要提取口令：弹出的表单显示在页面里，可以去帖子里找口令（楼主写的首楼、前几楼、标注），填和提交都由用户来
+const { chromium } = require('playwright');
+const B = 'http://127.0.0.1:5199'; const MOCK = 'http://127.0.0.1:5196';
+const ok = (c, m) => { console.log(c ? 'PASS' : 'FAIL', m); if (!c) process.exitCode = 1; };
+const send = async (method, p, body) => { const r = await fetch(B + p, { method, headers: { 'Content-Type': 'application/json' }, body: body ? JSON.stringify(body) : undefined }); return { status: r.status, j: await r.json().catch(() => null) }; };
+const mlog = async () => (await fetch(`${MOCK}/__log`)).json();
+(async () => {
+  const st = (await send('GET', '/api/state')).j;
+  const a = st.items.find((i) => i.type === 'character');
+  await send('PATCH', `/api/items/${a.id}`, { source: 'https://discord.com/channels/111111111111111111/222222222222222222' });
+  await send('PUT', '/api/discord', { enabled: true, token: 'good-token' });
+  await fetch(`${MOCK}/__pass`, { method: 'POST', body: '1' });
+  let r = await send('POST', '/api/discord/fetch', { id: a.id, command: '获取作品@雪霁' });
+  const sid = r.j.sid;
+  const until = async (fn, ms = 6000) => { const t = Date.now(); for (;;) { const v = await fn(); if (v || Date.now() - t > ms) return v; await new Promise((x) => setTimeout(x, 120)); } };
+  await until(async () => (await send('GET', `/api/discord/fetch/${sid}?rev=0`)).j.components.length);
+  r = await send('POST', `/api/discord/fetch/${sid}/act`, { id: 'confirm' });
+  ok(r.status === 200 && r.j.modal && r.j.modal.title === '输入提取口令' && r.j.modal.fields.length === 1 && r.j.modal.fields[0].label === '提取口令', `the bot's form is shown (${JSON.stringify(r.j.modal)})`);
+  ok((await send('POST', `/api/discord/fetch/${sid}/modal`, { values: {} })).status === 400, 'an empty passphrase is not sent');
+  const n0 = (await mlog()).filter((x) => x.interaction).length;
+  r = await send('GET', `/api/discord/fetch/${sid}/post`);
+  ok(r.status === 200 && r.j.posts.length === 3 && r.j.posts[0].where === '首楼' && r.j.posts[1].where === '第 3 楼' && r.j.posts[2].where === '标注' && !r.j.posts.some((x) => /路人/.test(x.text)), `reads what the author wrote: first post, early replies, pins (${r.j.posts.map((x) => x.where)})`);
+  ok(r.j.hints.length === 1 && r.j.hints[0] === '镜花', `candidates come only from the author's posts (${r.j.hints})`);
+  ok((await mlog()).filter((x) => x.interaction).length === n0, 'looking for the passphrase sends nothing to the bot');
+  r = await send('POST', `/api/discord/fetch/${sid}/modal`, { values: { code: '错的' } });
+  ok(r.status === 200 && !r.j.modal && /口令错误/.test(r.j.content), 'a wrong passphrase shows what the bot said');
+  const sent = (await mlog()).filter((x) => x.interaction).pop().interaction;
+  ok(sent.type === 5 && sent.data.custom_id === 'pass_modal' && sent.data.id === '990000000000000001' && sent.data.components[0].components[0].value === '错的', 'sent as a form submission');
+  await send('DELETE', `/api/discord/fetch/${sid}`);
+
+  // 页面上走一遍
+  const browser = await chromium.launch({ executablePath: process.env.CHROMIUM || undefined, args: ['--no-sandbox'] });
+  const p = await (await browser.newContext({ viewport: { width: 1280, height: 900 } })).newPage();
+  const errs = []; p.on('pageerror', (e) => errs.push(e.message));
+  await p.goto(`${B}/#/library?item=${a.id}`); await p.reload();
+  await p.waitForSelector('.detail-sheet');
+  await p.locator('.detail-sheet .sheet-head button[title*="更多"], .detail-sheet .sheet-head .btn:has(svg)').first().click();
+  await p.locator('.menu-item:has-text("从 Discord 来源帖取新版本")').click();
+  await p.locator('.bot-fetch .btn.primary:has-text("开始")').click();
+  await p.locator('.bot-btn:has-text("确定")').click();
+  await p.waitForSelector('.bot-hint');
+  await p.waitForFunction(() => document.querySelector('.bot-modal input')?.value === '镜花');
+  ok(true, 'the passphrase is looked up in the thread and filled in without asking');
+  ok((await mlog()).filter((x) => x.interaction).pop().interaction.type !== 5 || (await mlog()).filter((x) => x.interaction && x.interaction.type === 5).length === 1, 'it is not submitted for you');
+  await p.screenshot({ path: `${process.argv[2]}/pass.png` });
+  await p.locator('.bot-modal .btn:has-text("提交")').click();
+  await p.waitForSelector('.bot-opt');
+  ok(await p.locator('.bot-modal').count() === 0 && await p.locator('.bot-opt').count() === 2, 'after the right passphrase the flow continues');
+  ok(!errs.length, `no page errors ${errs.join(' | ')}`);
+  await fetch(`${MOCK}/__pass`, { method: 'POST', body: '0' });
+  await browser.close();
+})().catch((e) => { console.log('FAIL crashed', e); process.exit(1); });

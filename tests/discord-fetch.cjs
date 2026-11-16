@@ -21,18 +21,20 @@ const until = async (fn, ms = 6000) => { const t = Date.now(); for (;;) { const 
   await fetch(`${MOCK}/__set`, { method: 'POST', body: JSON.stringify({ '222222222222222222': '【角色卡】v2 已更新' }) });
   await send('POST', '/api/discord/check', { id: a.id });
   let r = await send('POST', '/api/discord/fetch', { id: a.id, command: '不存在的命令' });
-  ok(r.status === 502 && /没有找到/.test(r.j.error) && /获取作品/.test(r.j.error), `an unknown command is reported with the ones that exist (${r.j.error})`);
+  ok(r.status === 422 && /没有找到/.test(r.j.error) && /获取作品/.test(r.j.error), `an unknown command is reported with the ones that exist (${r.j.error})`);
   r = await send('POST', '/api/discord/fetch', { id: a.id, command: '按id获取作品' });
-  ok(r.status === 502 && /参数/.test(r.j.error), 'a command that needs arguments is refused');
+  ok(r.status === 422 && /参数/.test(r.j.error), 'a command that needs arguments is refused');
   const before = (await mlog()).filter((x) => x.interaction).length;
   ok(before === 0, 'refused commands send nothing to the bot');
   r = await send('POST', '/api/discord/fetch', { id: a.id, command: '/获取作品' });
+  ok(r.status === 422 && /Dev Bot、雪霁/.test(r.j.error) && /@雪霁/.test(r.j.error) && (await mlog()).filter((x) => x.interaction).length === 0, `two bots with the same command name: asks which one, sends nothing (${r.j.error})`);
+  r = await send('POST', '/api/discord/fetch', { id: a.id, command: '/获取作品@雪霁' });
   const sid = r.j.sid;
   ok(r.status === 200 && sid && r.j.rev >= 1, `the command is used and the bot answers (${JSON.stringify(r.j).slice(0, 200)})`);
   let v = await until(async () => { const x = (await send('GET', `/api/discord/fetch/${sid}?rev=0`)).j; return x.components.length ? x : null; });
   ok(v && /声明/.test(v.embeds[0].title) && v.components[0].kind === 'button' && v.components[0].label === '确定' && !v.files.length, 'the notice and its confirm button are shown, nothing is clicked for you');
   let lg = (await mlog()).filter((x) => x.interaction);
-  ok(lg.length === 1 && lg[0].interaction.type === 2 && /^sess-/.test(lg[0].interaction.session_id) && lg[0].interaction.data.name === '获取作品' && lg[0].interaction.channel_id === '222222222222222222' && lg[0].interaction.guild_id === '111111111111111111', 'one command interaction, in the right thread, with the gateway session');
+  ok(lg.length === 1 && lg[0].interaction.type === 2 && /^sess-/.test(lg[0].interaction.session_id) && lg[0].interaction.data.name === '获取作品' && lg[0].interaction.channel_id === '222222222222222222' && lg[0].interaction.guild_id === '111111111111111111' && lg[0].interaction.application_id === '900000000000000001', 'one command interaction, in the right thread, with the gateway session');
   ok((await send('POST', `/api/discord/fetch/${sid}/act`, { id: 'nope' })).status === 400, 'only buttons that are on the message can be pressed');
   r = await send('POST', `/api/discord/fetch/${sid}/act`, { id: 'confirm' });
   v = r.j.components.length && r.j.components[0].kind === 'select' ? r.j : await until(async () => { const x = (await send('GET', `/api/discord/fetch/${sid}?rev=${r.j.rev}`)).j; return x.components[0]?.kind === 'select' ? x : null; });
@@ -41,6 +43,10 @@ const until = async (fn, ms = 6000) => { const t = Date.now(); for (;;) { const 
   r = await send('POST', `/api/discord/fetch/${sid}/act`, { id: 'pick', value: '19788' });
   v = await until(async () => { const x = (await send('GET', `/api/discord/fetch/${sid}?rev=0`)).j; return x.files.length ? x : null; });
   ok(v && v.files.length === 2 && v.files[0].name === '最新版.json' && /707\.95 KB/.test(v.files[0].size) && v.files[1].name === '世界书2.0.json', `the file list is read out of the bot's message, other links are left out (${JSON.stringify(v?.files)})`);
+  const all = await mlog();
+  const idf = all.filter((x) => x.identify).pop().identify; const hd = all.filter((x) => x.headers).pop().headers;
+  ok(/Chrome/.test(idf.ua) && idf.build > 100000 && idf.caps > 0 && /Chrome/.test(hd.ua) && hd.sp && hd.origin === 'https://discord.com', 'login and requests carry the same browser identity');
+  ok(all.find((x) => x.interaction).interaction.data.guild_id === '111111111111111111', 'a guild command is sent with its guild id');
   lg = (await mlog()).filter((x) => x.interaction);
   ok(lg.length === 3 && lg[2].interaction.type === 3 && lg[2].interaction.data.values[0] === '19788' && lg[2].interaction.message_id, 'the choice was sent as a select interaction on that message');
   ok((await items()).find((i) => i.id === a.id).files.length === a.files.length, 'nothing is downloaded until asked');
@@ -53,7 +59,7 @@ const until = async (fn, ms = 6000) => { const t = Date.now(); for (;;) { const 
   ok(!it.track.changed && it.track.seen === '【角色卡】v2 已更新', 'the update counts as seen');
   await send('DELETE', `/api/discord/fetch/${sid}`);
   ok((await send('GET', `/api/discord/fetch/${sid}?rev=0`)).status === 410, 'the session is gone after closing');
-  ok((await send('GET', '/api/discord')).j.commands['111111111111111111'] === '获取作品', 'the command is remembered for that community');
+  ok((await send('GET', '/api/discord')).j.commands['111111111111111111'] === '获取作品@雪霁', 'the command is remembered for that community');
 
   // ---- 网页
   const browser = await chromium.launch({ executablePath: process.env.CHROMIUM || undefined, args: ['--no-sandbox'] });
@@ -67,13 +73,15 @@ const until = async (fn, ms = 6000) => { const t = Date.now(); for (;;) { const 
   await p.locator('.detail-sheet .sheet-head button[title*="更多"], .detail-sheet .sheet-head .btn:has(svg)').first().click();
   await p.locator('.menu-item:has-text("从 Discord 来源帖取新版本")').click();
   await p.waitForSelector('.bot-fetch input.input');
-  ok(await p.locator('.bot-fetch input.input').inputValue() === '获取作品', 'the remembered command is filled in');
+  ok(await p.locator('.bot-fetch input.input').inputValue() === '获取作品@雪霁', 'the remembered command is filled in');
   await p.screenshot({ path: `${process.argv[2]}/start.png` });
   await p.locator('.bot-fetch .btn:has-text("开始")').click();
   await p.waitForSelector('.bot-btn:has-text("确定")');
   await p.screenshot({ path: `${process.argv[2]}/confirm.png` });
   await p.locator('.bot-btn:has-text("确定")').click();
   await p.waitForSelector('.bot-opt:has-text("最新版.json")');
+  const shown = await p.locator('.bot-fetch').innerText();
+  ok(!/<t:\d+/.test(shown) && /2026年11月\d+日 \d\d:\d\d/.test(shown) && /2026年11月\d+日/.test(await p.locator('.bot-opt:has-text("最新版.json")').innerText()), 'Discord timestamps are shown as dates, also on the option of the same ID');
   await p.screenshot({ path: `${process.argv[2]}/pick.png` });
   await p.locator('.bot-opt:has-text("最新版.json")').click();
   await p.waitForSelector('.bot-file');

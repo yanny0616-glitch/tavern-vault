@@ -4,8 +4,43 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-const api = () => (process.env.TV_DISCORD_API || 'https://discord.com/api/v10').replace(/\/+$/, '');
+const api = () => (process.env.TV_DISCORD_API || 'https://discord.com/api/v9').replace(/\/+$/, '');
 export const EVERY = [6, 24, 72, 168]; // 多少小时查一次
+
+// 和网页版 Discord 发出的请求保持一样的客户端标识。不带这些的请求一眼就能看出不是正常客户端。
+const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36';
+const real = () => !process.env.TV_DISCORD_API;
+let build = { n: 673869, at: 0 };
+/** 网页版当前的版本号：从登录页读（不带令牌），12 小时读一次；读不到就用上次的 */
+async function buildNumber() {
+    if (!real() || Date.now() - build.at < 12 * 3600e3) return build.n;
+    build.at = Date.now();
+    try {
+        const res = await fetch('https://discord.com/login', { headers: { 'User-Agent': UA, 'Accept-Language': 'zh-CN,zh;q=0.9' }, signal: AbortSignal.timeout(10000) });
+        const m = /"BUILD_NUMBER":"(\d{5,8})"/.exec(await res.text());
+        if (m) build.n = Number(m[1]);
+    } catch { /* 用旧的 */ }
+    return build.n;
+}
+/** 登录网关时报的客户端信息 */
+export async function clientProps() {
+    return {
+        os: 'Windows', browser: 'Chrome', device: '', system_locale: 'zh-CN', has_client_mods: false,
+        browser_user_agent: UA, browser_version: '141.0.0.0', os_version: '10',
+        referrer: '', referring_domain: '', referrer_current: '', referring_domain_current: '',
+        release_channel: 'stable', client_build_number: await buildNumber(), client_event_source: null,
+    };
+}
+/** 每个请求都带的头 */
+export async function clientHeaders() {
+    return {
+        'User-Agent': UA, Accept: '*/*', 'Accept-Language': 'zh-CN,zh;q=0.9',
+        Origin: 'https://discord.com', Referer: 'https://discord.com/channels/@me',
+        'X-Discord-Locale': 'zh-CN', 'X-Discord-Timezone': 'Asia/Shanghai', 'X-Debug-Options': 'bugReporterEnabled',
+        'X-Super-Properties': Buffer.from(JSON.stringify(await clientProps())).toString('base64'),
+    };
+}
+export const CLIENT_UA = UA;
 
 /** 来源链接是不是 Discord 的帖子 / 消息链接；是的话取出服务器、频道（帖子）、消息的 id */
 export function parseSource(url) {
@@ -69,7 +104,7 @@ export class DiscordTrack {
     async title(channelId) {
         let res;
         try {
-            res = await fetch(`${api()}/channels/${channelId}`, { headers: { Authorization: this.data.token }, signal: AbortSignal.timeout(15000) });
+            res = await fetch(`${api()}/channels/${channelId}`, { headers: { ...(await clientHeaders()), Authorization: this.data.token }, signal: AbortSignal.timeout(15000) });
         } catch (e) {
             throw new Error(e.name === 'TimeoutError' ? '连接 Discord 超时' : '连不上 Discord');
         }

@@ -1440,6 +1440,13 @@ div.bar-row { cursor: default; }
 .bot-file { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--radius-sm); cursor: pointer; }
 .bot-file .select { width: auto; flex: none; }
 .bot-file b { overflow-wrap: anywhere; }
+.bot-thumb { width: 52px; height: 52px; flex: none; object-fit: cover; border-radius: var(--radius-sm); border: 1px solid var(--line); background: var(--bg-2, transparent); cursor: zoom-in; }
+.track-base { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+.track-base b { font-weight: 600; color: var(--ink, inherit); overflow-wrap: anywhere; }
+.bot-modal { display: flex; flex-direction: column; gap: 10px; }
+.bot-post summary { cursor: pointer; color: var(--muted); font-size: 13px; }
+.bot-post .bot-text { max-height: 220px; overflow: auto; margin-top: 6px; white-space: pre-wrap; }
+.bot-used { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 @media (max-width: 480px) { .bot-file { flex-wrap: wrap; } .bot-file .select { width: 100%; } }
 
 /* 自带标记当普通角标用、来源有更新 */

@@ -5,7 +5,7 @@ import crypto from 'node:crypto';
 const PORT = 5196; const BASE = `http://127.0.0.1:${PORT}/discord`;
 const titles = {}; const log = []; const files = {}; const socks = new Set();
 const APP = '900000000000000001';
-const CMD = { id: '800000000000000001', application_id: APP, version: '800000000000000002', name: '获取作品', type: 1, description: '获取本帖作品', options: [] };
+const CMD = { id: '800000000000000001', application_id: APP, version: '800000000000000002', guild_id: '111111111111111111', name: '获取作品', type: 1, description: '获取本帖作品', options: [] };
 const OTHER = { id: '800000000000000003', application_id: APP, version: '1', name: '按id获取作品', type: 1, description: '', options: [{ type: 4, name: 'id', required: true }] };
 
 // ---- 最小的 WebSocket 服务端：只收发文本帧
@@ -36,7 +36,7 @@ function onUpgrade(req, sock) {
             if (op !== 1) continue;
             const p = JSON.parse(data.toString());
             if (p.op === 2) {
-                log.push({ identify: { token: p.d.token, hasIntents: 'intents' in p.d } });
+                log.push({ identify: { token: p.d.token, hasIntents: 'intents' in p.d, build: p.d.properties?.client_build_number, ua: p.d.properties?.browser_user_agent, caps: p.d.capabilities } });
                 if (p.d.token !== 'good-token') { sock.write(Buffer.from([0x88, 2, 0x0f, 0xa4])); sock.end(); return; } // 4004
                 sock.ready = true; sock.session = 'sess-' + crypto.randomBytes(4).toString('hex');
                 sock.write(frame(JSON.stringify({ op: 0, t: 'READY', s: ++seq, d: { session_id: sock.session, user: { id: '1' } } })));
@@ -49,8 +49,9 @@ function onUpgrade(req, sock) {
 const msgs = {}; let nextId = 700000000000000000n;
 const base = (channel, extra) => ({ channel_id: channel, author: { id: APP, bot: true, username: '雪霁' }, application_id: APP, flags: 64, content: '', embeds: [], components: [], attachments: [], ...extra });
 const edit = (m, patch) => { Object.assign(m, patch); push('MESSAGE_UPDATE', { id: m.id, channel_id: m.channel_id, flags: m.flags, content: m.content, embeds: m.embeds, components: m.components }); };
+let needPass = false;
 function interact(b) {
-    log.push({ interaction: { type: b.type, session_id: b.session_id, channel_id: b.channel_id, guild_id: b.guild_id, nonce: b.nonce, data: b.data, message_id: b.message_id } });
+    if (!b.quiet) log.push({ interaction: { type: b.type, application_id: b.application_id, session_id: b.session_id, channel_id: b.channel_id, guild_id: b.guild_id, nonce: b.nonce, data: b.data, message_id: b.message_id } });
     if (b.type === 2) {
         const m = base(b.channel_id, { id: String(nextId++), nonce: b.nonce, flags: 64 | 128 });
         msgs[m.id] = m;
@@ -58,9 +59,20 @@ function interact(b) {
         setTimeout(() => edit(m, { flags: 64, embeds: [{ title: '⏳ 请阅读以下声明', description: '禁止商用，禁止虐崽，记得开关世界书条目\n阅读完毕后请点击下方"确定"按钮继续' }], components: [{ type: 1, components: [{ type: 2, style: 3, label: '确定', custom_id: 'confirm' }] }] }), 350);
         return;
     }
+    if (b.type === 5) {
+        const last = Object.values(msgs).pop(); if (!last) return;
+        const code = b.data.components?.[0]?.components?.[0]?.value;
+        if (b.data.custom_id === 'pass_modal' && code === '镜花') { needPass = false; interact({ ...b, type: 3, message_id: last.id, data: { custom_id: 'confirm' }, quiet: true }); needPass = true; }
+        else setTimeout(() => edit(last, { embeds: [], content: '❌ 口令错误' }), 60);
+        return;
+    }
     const m = msgs[b.message_id]; if (!m) return;
+    if (b.data.custom_id === 'confirm' && needPass) {
+        setTimeout(() => push('INTERACTION_MODAL_CREATE', { id: '990000000000000001', nonce: b.nonce, channel_id: b.channel_id, title: '输入提取口令', custom_id: 'pass_modal', application: { id: APP }, components: [{ type: 1, components: [{ type: 4, custom_id: 'code', label: '提取口令', style: 1, required: true, max_length: 50 }] }] }), 60);
+        return;
+    }
     if (b.data.custom_id === 'confirm') {
-        setTimeout(() => edit(m, { embeds: [], content: '📂 **本帖共有 2 个发布作品，请选择要获取的版本：**', components: [{ type: 1, components: [{ type: 3, custom_id: 'pick', placeholder: '请选择要获取的作品', options: [{ label: '初版.json', value: '19739', description: '2026年9月22日' }, { label: '最新版.json', value: '19788', description: '2026年9月23日' }] }] }] }), 120);
+        setTimeout(() => edit(m, { embeds: [], content: '📂 **本帖共有 2 个发布作品，请选择要获取的版本：**\n\n• 初版.json — 仅点赞 · 3.35 MB · <t:1790938077:f> · ID: `19739`\n• 最新版.json — 仅点赞 · 3.60 MB · <t:1794553053:f> · ID: `19788`', components: [{ type: 1, components: [{ type: 3, custom_id: 'pick', placeholder: '请选择要获取的作品', options: [{ label: '初版.json', value: '19739', description: '仅点赞 · 3.35 MB' }, { label: '最新版.json', value: '19788', description: '仅点赞 · 3.60 MB' }] }] }] }), 120);
     } else if (b.data.custom_id === 'pick') {
         setTimeout(() => edit(m, { content: '✅ 验证通过，加载文件中...', components: [] }), 80);
         setTimeout(() => edit(m, { content: '', embeds: [{ title: '🌹 获取作品', description: `今日剩余可获取作品量：**66 / 75**\n\n作品 ID：\`${b.data.values[0]}\`\n📥 **文件列表**\n1. [最新版.json](${BASE}/files/card.json) · 707.95 KB\n2. [世界书2.0.json](${BASE}/files/wb.json) · 168.90 KB\n[作者主页](https://example.com/author)`, footer: { text: '本作品为作者原创，未经授权禁止二次传播' } }] }), 500);
@@ -75,6 +87,16 @@ http.createServer((req, res) => {
         const send = (st, o) => { res.writeHead(st, { 'content-type': 'application/json' }); res.end(o === undefined ? '' : JSON.stringify(o)); };
         if (u === '/__set') { Object.assign(titles, JSON.parse(body.toString() || '{}')); return send(200, { ok: true }); }
         if (u === '/__log') return send(200, log);
+        if (u === '/__pass') { needPass = body.toString() === '1'; return send(200, { ok: true }); }
+        const OP = { id: '5', username: '楼主' };
+        // 和真的一样：普通账号不能按 id 读单条消息
+        if (/^\/channels\/\d+\/messages\/\d+$/.test(u)) return send(403, { message: 'Only bots can use this endpoint', code: 20002 });
+        if (/^\/channels\/\d+\/messages$/.test(u)) {
+            const ch = u.split('/')[2]; const after = BigInt(new URL(req.url, 'http://x').searchParams.get('after') || '0');
+            const all = [{ id: ch, author: OP, content: '【角色卡】测试\n请先看完规则。口令在下面楼层' }, { id: '333333333333333334', author: { id: '6' }, content: '口令：路人乱说的' }, { id: '333333333333333335', author: OP, content: '提取口令：||镜花||，请勿外传' }];
+            return send(200, all.filter((m) => BigInt(m.id) > after).reverse());
+        }
+        if (/^\/channels\/\d+\/pins$/.test(u)) return send(200, [{ id: '333333333333333399', author: OP, content: '更新日志 v2' }]);
         if (u.startsWith('/__file/')) { files[decodeURIComponent(u.slice(8))] = body; return send(200, { ok: true }); }
         if (u.startsWith('/files/')) { const f = files[decodeURIComponent(u.slice(7))]; if (!f) return send(404, {}); res.writeHead(200, { 'content-length': f.length }); return res.end(f); }
         if (req.headers.authorization !== 'good-token') { log.push({ id: u, auth: req.headers.authorization || '', method: req.method }); return send(401, { message: '401: Unauthorized' }); }
@@ -87,8 +109,8 @@ http.createServer((req, res) => {
             if (!c) return send(404, { message: 'Unknown Channel' });
             return send(200, { id: m[1], name: c, type: 11 });
         }
-        if (/^\/guilds\/\d+\/application-command-index$/.test(u)) return send(200, { applications: [{ id: APP, name: '雪霁' }], application_commands: [OTHER, CMD], version: '1' });
-        if (u === '/interactions' && req.method === 'POST') { interact(JSON.parse(body.toString())); return send(204); }
+        if (/^\/guilds\/\d+\/application-command-index$/.test(u)) return send(200, { applications: [{ id: '700000000000000009', name: 'Dev Bot' }, { id: APP, name: '雪霁' }], application_commands: [{ ...CMD, id: '800000000000000009', application_id: '700000000000000009', permissions: {} }, OTHER, CMD], version: '1' });
+        if (u === '/interactions' && req.method === 'POST') { log.push({ headers: { ua: req.headers['user-agent'], sp: Boolean(req.headers['x-super-properties']), origin: req.headers.origin } }); interact(JSON.parse(body.toString())); return send(204); }
         return send(404, { message: 'Not Found' });
     });
 }).on('upgrade', onUpgrade).listen(PORT, '127.0.0.1');

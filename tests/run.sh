@@ -94,6 +94,7 @@ run dropdown       seed 0 dropdown.cjs
 run marks-builtin  seed 0 marks-builtin.cjs
 run discord-track  seed 0 discord-track.cjs
 run discord-fetch  seed 0 discord-fetch.cjs
+run discord-pass   seed 0 discord-pass.cjs
 run tavern-live    seed 1 tavern-live.cjs
 
 echo
