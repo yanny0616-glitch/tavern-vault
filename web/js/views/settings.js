@@ -22,7 +22,7 @@ const SECTIONS = [
     { key: 'tags', title: '标签', icon: 'tag', desc: () => `${tagCounts().size} 个标签`, render: tagsSection },
     { key: 'fields', title: '自定义字段', icon: 'sliders', desc: () => `${state.fields.filter((f) => !f.hidden).length} 个字段在用`, render: fieldsSection },
     { key: 'ai', title: 'AI 助手', icon: 'sparkles', desc: () => (state.settings.ai?.ready ? '已配置' : '还没有配置'), render: () => panel('AI 助手', 'sparkles', null, aiSettings()) },
-    { key: 'connect', title: '连接与设备', icon: 'beer', desc: () => (bridge.host ? `已连接 ${bridge.host.host}` : '酒馆插件、iPhone'), render: () => (native ? [iosApp(), connection()] : desktop ? [desktopApp(), connection()] : [connection(), shortcut()]) },
+    { key: 'connect', title: '连接与设备', icon: 'beer', desc: () => (bridge.host ? `已连接 ${bridge.host.host}` : '酒馆插件、iPhone'), render: () => (native ? [iosApp(), connection(), discordPanel()] : desktop ? [desktopApp(), connection(), discordPanel()] : [connection(), shortcut(), discordPanel()]) },
     { key: 'security', title: '访问密码', icon: 'lock', desc: () => (state.settings.auth ? '已启用' : '未设置'), render: () => [security(), state.settings.auth ? loginLogPanel() : null] },
     { key: 'data', title: '数据与存储', icon: 'database', desc: () => `${state.stats?.total ?? 0} 项 · ${fmtBytes(state.stats?.bytes || 0)}`, render: data },
     { key: 'about', title: '关于', icon: 'info', desc: () => `v${state.settings.version || '1.0.0'}`, render: about },
@@ -792,6 +792,35 @@ function desktopApp() {
         help('界面就是服务器上的网页，服务端更新后这里马上是新的，不用重新下载。别的网站的链接会用系统浏览器打开。'),
         btn('更换服务器', { icon: 'refresh', cls: 'sm', onclick: () => window.tvDesktop.changeServer() }));
 }
+
+// Discord 来源追踪：令牌只往服务器送，服务器不会再发回来
+function discordPanel() {
+    const box = h('div', { class: 'stack-s' }, h('span', { class: 'muted small' }, '正在读取…'));
+    const put = async (body, okMsg) => { try { draw(await api.put('/api/discord', body)); if (okMsg) toast(okMsg, 'ok'); } catch (e) { toast(e.message, 'err'); } };
+    const draw = (d) => {
+        const token = h('input', { class: 'input', type: 'password', autocomplete: 'off', spellcheck: false, placeholder: d.hasToken ? '已保存，要换就填新的' : '粘贴 Discord 账号令牌' });
+        const saveTok = () => { const v = token.value.trim(); if (!v) { toast('先填令牌', 'err'); return; } put({ token: v }, '令牌已保存'); };
+        clear(box,
+            setRow('自动检查来源帖', '开着的时候，服务器按下面的间隔去看每个来源帖的标题，变了就在仓库和条目里提醒。', switchEl(d.enabled, (v) => { if (v && !d.hasToken) { toast('先保存令牌', 'err'); draw(d); return; } put({ enabled: v }); })),
+            h('div', { class: 'field' }, h('label', {}, 'Discord 账号令牌'),
+                h('div', { class: 'row-actions' }, token, btn('保存', { cls: 'primary', onclick: saveTok }),
+                    d.hasToken ? btn('清除', { cls: 'ghost danger', title: '删掉服务器上保存的令牌并停止追踪', onclick: async () => { if (await confirmDialog('删掉服务器上保存的令牌？追踪会停止，已经记下的标题还在。', { ok: '清除', danger: true, title: '清除令牌' })) put({ token: '' }, '已清除'); } }) : null)),
+            setRow('多久查一次', '每个帖子隔多久看一次。查得越勤越容易被 Discord 注意到，一般每天一次就够。', seg(d.every, [[6, '6 小时'], [24, '每天'], [72, '3 天'], [168, '每周']], (v) => put({ every: v }))),
+            d.paused ? h('div', { class: 'note warn' }, icon('alert', { size: 15 }), h('span', { class: 'grow' }, d.paused.reason, d.paused.until ? `（${fmtDate(new Date(d.paused.until).toISOString())} 之后恢复）` : '')) : null,
+            h('div', { class: 'row-actions wrap' },
+                h('span', { class: 'muted small grow track-stat' }, d.tracked ? `${d.tracked} 个条目填了 Discord 帖子链接${d.changed ? ` · ${d.changed} 个有更新` : ''}${d.failed ? ` · ${d.failed} 个检查失败` : ''}${d.lastRun ? ` · 上次检查 ${timeAgoOf(d.lastRun)}` : ''}` : '还没有条目的来源链接是 Discord 帖子。'),
+                d.enabled && d.hasToken && !d.paused && d.tracked ? btn(d.busy ? '正在检查…' : '现在全部查一遍', { icon: 'refresh', cls: 'sm', disabled: d.busy, onclick: async (e) => {
+                    e.currentTarget.disabled = true;
+                    try { const r = await api.post('/api/discord/check', { all: true }); toast(`开始检查 ${r.queued} 个帖子，一个一个来，要等一会儿`, 'ok'); } catch (err) { toast(err.message, 'err'); }
+                } }) : null),
+            help('用法：在条目的「来源链接」里填 Discord 帖子的链接（在帖子上右键 → 复制链接）。第一次检查时记下标题，之后标题变了就提醒。只读帖子标题，不下载文件。'));
+    };
+    api.get('/api/discord').then(draw).catch((e) => clear(box, h('span', { class: 'muted small' }, e.message)));
+    return panel('Discord 来源追踪', 'refresh', null,
+        h('div', { class: 'note warn' }, icon('alert', { size: 15 }), h('span', {}, '这个功能要用你 Discord 账号的令牌，让服务器替你去读帖子标题。Discord 的条款不允许程序这样使用普通账号，被发现可能封号；令牌等于账号的全部权限，服务器被入侵也会连带丢号。只读、低频，但不保证安全，自己决定要不要开。')),
+        box);
+}
+const timeAgoOf = (ms) => { const s = (Date.now() - ms) / 1000; return s < 60 ? '刚刚' : s < 3600 ? `${Math.floor(s / 60)} 分钟前` : s < 86400 ? `${Math.floor(s / 3600)} 小时前` : `${Math.floor(s / 86400)} 天前`; };
 
 function shortcut() {
     return panel('iPhone 使用', 'phone', null,

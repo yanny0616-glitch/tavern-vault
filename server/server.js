@@ -15,6 +15,7 @@ import { entriesOf, entryKeys, entryKeys2, effectivePrompts } from '../web/js/ca
 import { stripSyncEntries, DEFAULT_SYNC_EXCLUDE, SYNC_OPTIONS, PARTS_VERSION, sameParts, mergeParts, sigOf, syncParts, partsDiff } from '../web/js/sig.js';
 import { diffFiles, diffSummary } from './lib/diff.js';
 import { AiConfig, listModels, chat, AiError } from './lib/ai.js';
+import { DiscordTrack, parseSource } from './lib/discord.js';
 import { cleanThemes } from '../web/js/themecore.js';
 import { createAiTasks } from './lib/ai-tasks.js';
 import { createAiChat } from './lib/ai-chat.js';
@@ -34,6 +35,7 @@ const MAX_RESTORE = Number(process.env.TV_MAX_RESTORE_MB || 2048) * 1024 * 1024;
 // db.json 损坏或丢失时，从最近一份备份（自动或手动）里取回索引
 const store = new Store(DATA_DIR, { recover: () => recoverDb(path.join(DATA_DIR, 'backups')) });
 const aiConfig = new AiConfig(DATA_DIR);
+const discord = new DiscordTrack(DATA_DIR);
 
 // ---------------- 认证 ----------------
 function hashPassword(pw) {
@@ -882,6 +884,8 @@ route('PATCH', '/api/items/:id', async ({ req, p }) => {
     getItem(p.id);
     const body = await readJson(req);
     const it = store.updateItem(p.id, body);
+    // 来源链接换了帖子：之前记的标题不作数了
+    if (it.track && it.track.ch !== parseSource(it.source)?.channel) delete it.track;
     broadcast('change', { ids: [p.id] });
     return slim(it);
 });
@@ -1610,6 +1614,100 @@ function purgeTrash() {
     return old.length;
 }
 setTimeout(purgeTrash, 5000).unref();
+
+// ---------------- Discord 来源追踪 ----------------
+// 条目的 track：{ ch 帖子 id, title 现在的标题, seen 上次看过的标题, changed, changedAt, checkedAt, error }
+const DISCORD_GAP = Number(process.env.TV_DISCORD_GAP ?? 8000); // 两次请求之间至少隔多久（毫秒）
+const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
+const trackable = (it) => !it.deletedAt && parseSource(it.source);
+
+/** 查一个条目的来源帖；标题和上次看过的不一样就标成有更新 */
+async function checkSource(it) {
+    const src = parseSource(it.source);
+    if (!src) { if (it.track) { delete it.track; store.save(); } return null; }
+    const before = JSON.stringify(it.track || null);
+    const t = it.track?.ch === src.channel ? { ...it.track } : { ch: src.channel };
+    delete t.error;
+    try {
+        const name = await discord.title(src.channel);
+        t.checkedAt = Date.now();
+        t.title = name;
+        if (!t.seen) t.seen = name;
+        const changed = name !== t.seen;
+        if (changed && !t.changed) t.changedAt = Date.now();
+        if (changed) t.changed = true; else { delete t.changed; delete t.changedAt; }
+    } catch (e) {
+        if (e.global) throw e;
+        t.checkedAt = Date.now();
+        t.error = e.message;
+    }
+    it.track = t;
+    store.save();
+    const { checkedAt: _a, ...now } = t;
+    const { checkedAt: _b, ...old } = JSON.parse(before) || {};
+    if (JSON.stringify(now) !== JSON.stringify(old)) broadcast('change', { ids: [it.id] });
+    return t;
+}
+
+let discordBusy = false;
+/** 把到期的查一遍（一次最多几个，一个一个来）。all 为真是用户点了「现在全部查一遍」 */
+async function discordTick(all = false) {
+    if (discordBusy || !discord.ready) return 0;
+    discordBusy = true;
+    let n = 0;
+    try {
+        const stale = Date.now() - discord.data.every * 3600e3;
+        const due = Object.values(store.db.items)
+            .filter((it) => { const s = trackable(it); return s && (all || it.track?.ch !== s.channel || (it.track.checkedAt || 0) < stale); })
+            .sort((a, b) => (a.track?.checkedAt || 0) - (b.track?.checkedAt || 0))
+            .slice(0, all ? 300 : 5);
+        for (const it of due) {
+            if (!discord.ready) break;
+            if (n) await sleep(DISCORD_GAP + Math.random() * DISCORD_GAP);
+            try { await checkSource(it); n += 1; } catch (e) { console.log(`  [Discord] 已停止：${e.message}`); break; }
+        }
+        if (n) { discord.data.lastRun = Date.now(); discord.save(); }
+    } finally { discordBusy = false; }
+    return n;
+}
+setTimeout(() => discordTick().catch(() => {}), 90e3).unref();
+setInterval(() => discordTick().catch(() => {}), 600e3).unref();
+
+const discordInfo = () => {
+    const items = Object.values(store.db.items).filter(trackable);
+    return { ...discord.public(), busy: discordBusy, tracked: items.length, changed: items.filter((it) => it.track?.changed).length, failed: items.filter((it) => it.track?.error).length };
+};
+route('GET', '/api/discord', () => discordInfo());
+route('PUT', '/api/discord', async ({ req }) => {
+    try { discord.update(await readJson(req)); } catch (e) { throw new HttpError(e.status || 400, e.message); }
+    broadcast('change', {});
+    return discordInfo();
+});
+route('POST', '/api/discord/check', async ({ req }) => {
+    const body = await readJson(req);
+    if (!discord.data.token) throw new HttpError(400, '还没有填 Discord 令牌');
+    if (discord.paused) throw new HttpError(409, discord.paused.reason);
+    if (body.all === true) {
+        if (!discord.data.enabled) throw new HttpError(400, '先打开来源追踪');
+        if (discordBusy) throw new HttpError(409, '正在检查，稍等一会儿');
+        discordTick(true).then(() => broadcast('change', {})).catch(() => {});
+        return { queued: Object.values(store.db.items).filter(trackable).length };
+    }
+    const it = getItem(String(body.id || ''));
+    if (!parseSource(it.source)) throw new HttpError(400, '来源链接不是 Discord 的帖子链接');
+    try { await checkSource(it); } catch (e) { throw new HttpError(409, e.message); }
+    return slim(it);
+});
+// 看过了：把现在的标题记成「已看过」，提醒消掉
+route('POST', '/api/items/:id/track/seen', ({ p }) => {
+    const it = getItem(p.id);
+    if (!it.track) throw new HttpError(400, '这个条目没有在追踪');
+    if (it.track.title) it.track.seen = it.track.title;
+    delete it.track.changed; delete it.track.changedAt;
+    store.save();
+    broadcast('change', { ids: [p.id] });
+    return slim(it);
+});
 setInterval(purgeTrash, 6 * 3600e3).unref();
 
 // 封面缩略图：浏览器第一次显示封面时生成（宽 480），之后列表只加载缩略图

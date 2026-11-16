@@ -1,6 +1,7 @@
 // 仓库主页：搜索、类型分段、筛选面板、多选批量操作
 import { h, clear, toast, confirmDialog, promptDialog, debounce, downloadBlob, sheet, icon, btn, emptyState, switchEl } from '../ui.js';
 import { api } from '../api.js';
+import { sourceChanged, renderTrackNotice } from './track.js';
 import { bridge } from '../bridge.js';
 import { tagCloud } from '../tagcloud.js';
 import { state, live, allTags, savePrefs, TYPE_META, reload, viewOf, setView, resetView, inCollection, manualCollections } from '../state.js';
@@ -53,6 +54,7 @@ export const QUICK = {
     unsorted: ['未整理', (it) => !it.tags.length && !it.notes && !it.rating && !it.favorite && !it.collections.length],
     multi: ['多个版本', (it) => versionCount(it) > 1],
     unopened: ['没打开过', (it) => !it.openedAt],
+    srcChanged: ['来源有更新', sourceChanged],
     // 下面两个只在酒馆插件里打开时出现；酒馆不支持的类型两个都不算
     notInTavern: ['未导入酒馆', (it) => inTavern(it) === false, true],
     inTavern: ['已在酒馆', (it) => inTavern(it) === true, true],
@@ -166,9 +168,10 @@ export function renderLibrary(root) {
         const content = h('div', { class: 'lib-content' });
         const notice = h('div', { class: 'lib-notice', hidden: true });
         const health = h('div', { class: 'lib-notice warn', hidden: true });
+        const track = h('div', { class: 'lib-notice', hidden: true });
         const selbar = h('div', { class: 'selbar', hidden: true });
-        root.append(head, h('div', { class: 'page' }, health, notice, content), selbar);
-        const r = { seg, content, selbar, search, actions, sub, activeRow, notice, health };
+        root.append(head, h('div', { class: 'page' }, health, track, notice, content), selbar);
+        const r = { seg, content, selbar, search, actions, sub, activeRow, notice, health, track };
         bindSelectGestures(r, root);
         return r;
     });
@@ -229,6 +232,7 @@ export function renderLibrary(root) {
 
     renderHealth(refs.health);
     renderDupNotice(refs.notice, fc || state.filter.q || state.selecting);
+    renderTrackNotice(refs.track, fc || state.filter.q || state.selecting, () => { Object.assign(state.filter, { quick: ['srcChanged'], type: 'all', q: '' }); renderLibrary(root); });
 
     if (!items.length) {
         clear(refs.content, emptyState('archive', '仓库还是空的', '上传角色卡、世界书、预设、正则、脚本、主题等文件，类型会自动识别。', btn('添加第一件藏品', { icon: 'plus', cls: 'primary', onclick: () => openImporter() })));

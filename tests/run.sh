@@ -34,7 +34,7 @@ run() {
   local out="$WORK/shots/$name" log="$WORK/logs/$name.log"; mkdir -p "$out"
   # 安全测试要读写数据目录本身，其它测试拿截图目录
   case $name in security|backups) out="$WORK/run" ;; esac
-  TV_HOST=127.0.0.1 TV_PORT=5199 TV_DATA="$WORK/run" node "$ROOT/server/server.js" > "$WORK/logs/$name-server.log" 2>&1 & local sp=$!
+  TV_DISCORD_API=http://127.0.0.1:5197/discord TV_DISCORD_GAP=0 TV_HOST=127.0.0.1 TV_PORT=5199 TV_DATA="$WORK/run" node "$ROOT/server/server.js" > "$WORK/logs/$name-server.log" 2>&1 & local sp=$!
   local mp=""
   if [ "$tavern" = 1 ]; then node "$T/mock/tavern.mjs" > "$WORK/logs/$name-tavern.log" 2>&1 & mp=$!; wait_port 5198; fi
   wait_port 5199 || { echo "!! $name：测试服务没起来，见 $WORK/logs/$name-server.log"; }
@@ -90,6 +90,7 @@ run merge-smart-stats seed 0 merge-smart-stats.cjs
 run themes         seed 0 themes.cjs
 run editors        seed 0 editors.cjs
 run dropdown       seed 0 dropdown.cjs
+run discord-track  seed 0 discord-track.cjs
 run tavern-live    seed 1 tavern-live.cjs
 
 echo

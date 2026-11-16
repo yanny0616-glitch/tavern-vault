@@ -19,6 +19,7 @@ import { runRegex, vetScripts, applyScripts, displayScripts, looksHtml, stView, 
 import { cardPng } from '../pngcard.js';
 import { discordAppUrl, sourceLinkProps } from '../source-links.js';
 import { tagCloud } from '../tagcloud.js';
+import { trackNote } from './track.js';
 import { entriesOf, entryKeys, entryKeys2, effectivePrompts, presetRegex } from '../cardfmt.js';
 import { inTavern } from '../tavern-index.js';
 
@@ -543,6 +544,7 @@ export function openDetail(id, { seq = null, onLeave = null, src = null } = {}) 
                     icon('book', { size: 14 }), h('span', {}, `阅读全文 · ${source.length} 字`)))
             : clampBox((t) => h('p', { class: 'lead' }, t), desc, '简介');
         return h('div', { class: 'stack' },
+            !src ? trackNote(it) : null,
             lead || (!src && !it.deletedAt && !it.ai?.summary ? h('button', { class: 'lead-empty', onclick: () => editItem(it, 'description') }, icon('pencil', { size: 14 }), '写一句简介') : null),
             !src ? aiStamp(it, !it.deletedAt ? () => editItem(it, 'ai') : null) : null,
             it.type === 'character' && hasFiles(it) ? greetingCard(it) : null,

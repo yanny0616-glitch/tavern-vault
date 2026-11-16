@@ -252,6 +252,16 @@ https://github.com/yanny0616-glitch/tavern-vault
 
 使用：在仓库里多选条目点「AI 整理」，或在条目详情里点「AI 整理」。右下角会显示进度和待审核数量。筛选里可以只看「未整理」的条目。
 
+## Discord 来源追踪（可选，默认关闭）
+
+从 Discord 社区下载的卡，可以让服务器定期看一下来源帖的标题有没有变（作者更新时一般会改标题），变了就在仓库和条目里提醒。
+
+- 在「设置 → 连接与设备 → Discord 来源追踪」里填 Discord 账号令牌并打开开关；条目的「来源链接」填帖子链接（帖子上右键 → 复制链接）。
+- 只读、低频：每个帖子按设定的间隔（默认每天）读一次帖子信息，一次一个请求，不发消息、不点按钮、不下载文件。
+- 令牌保存在服务器的 `data/discord.json`（权限 600），网页和酒馆插件都拿不到，也不会进备份。
+- 令牌失效或被限流时会自动停下并在设置页说明原因，不会反复重试。
+- **风险自担**：Discord 的条款不允许程序使用普通用户账号，被发现可能封号；令牌等于账号的全部权限。
+
 ## 七、数据与备份
 
 - 数据都在 `server/data/`：`db.json` 是索引，`files/` 存按 SHA-256 命名的原始文件
@@ -285,6 +295,9 @@ https://github.com/yanny0616-glitch/tavern-vault
 | POST | `/api/items/:id/booksets` | 加一套：`from: "current"` 存卡里现在的，`itemId` 用卡匣里的世界书，`book` 直接给内容 |
 | POST | `/api/items/:id/booksets/:fid/use` | 换用这一套（`fid` 为 `none` 是去掉世界书）；`keep` 有值时先把卡里现在这套用这个名字存起来 |
 | GET | `/api/items/:id/booksets/:fid/world` | 把一套世界书转成酒馆的世界书文件（`fid` 为 `current` 是卡里现在这套） |
+| GET / PUT | `/api/discord` | 来源追踪的开关、间隔、令牌（只写不读）和状态 |
+| POST | `/api/discord/check` | 现在查一个条目（`id`）或全部（`all`）的来源帖 |
+| POST | `/api/items/:id/track/seen` | 来源帖的变化看过了，把现在的标题记成基准 |
 | POST | `/api/tavern/status` | 插件问：酒馆里这张卡 / 这本世界书（`kind`、`name`、`data`）和卡匣比是新是旧 |
 | POST | `/api/tavern/chat` | 插件归档一段聊天（`key`、`filename`、`char`，正文是 jsonl）；同一段聊天只留最新一份 |
 | POST | `/api/ai/drafts/reparse` | 用改过的原始回复重新解析一份草稿（`id`、`raw`） |

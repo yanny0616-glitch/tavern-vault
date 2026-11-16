@@ -1425,3 +1425,8 @@ div.bar-row { cursor: default; }
   .card-tools > .btn { flex: 1; padding-left: 6px; padding-right: 6px; }
   .card-tools > .btn > svg { display: none; }
 }
+
+/* 来源追踪 */
+.track-note .track-titles { display: flex; flex-direction: column; gap: 2px; margin: 4px 0 8px; color: var(--text); }
+.track-note .track-titles s { color: var(--text-3); }
+.track-acts { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
