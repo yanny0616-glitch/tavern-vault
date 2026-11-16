@@ -4,7 +4,8 @@
 export function tokens(text) {
     const lines = text.split('\n');
     if (lines.length >= 6 || text.length < 160) return lines;
-    return text.split(/(?<=[。！？!?.…\n])/).map((s) => s.replace(/\n$/, '')).filter((s, i, a) => s || i < a.length - 1);
+    // 不用后行断言 (?<=…)：Safari 16.4 之前不认，整个页面会加载不出来
+    return text.replace(/[。！？!?.…\n]/g, '$&\u0000').replace(/\u0000$/, '').split('\u0000').map((s) => s.replace(/\n$/, '')).filter((s, i, a) => s || i < a.length - 1);
 }
 
 /** 最长公共子序列，得到 same / del / add 序列；太大时返回 null */

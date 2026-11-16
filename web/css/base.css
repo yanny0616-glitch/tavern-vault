@@ -1055,12 +1055,9 @@ mark { background: color-mix(in srgb, var(--accent) 22%, transparent); color: in
 /* 避开角上原有的东西：右上的收藏 / 多选勾，左上的类型标签和评分，右下的评分和编号 */
 .card:has(.card-fav) .card-corner.corner-tr, .card.selecting .card-corner.corner-tr { --cy: 38px; }
 html[data-skin="sakura"] .card-corner.corner-tl, html[data-skin="neon"] .card.has-cover .card-corner.corner-tl { --cy: 34px; }
-html[data-skin="tavern"] .card:not(.no-rating):has(.card-rank) .card-corner.corner-tl { --cy: 36px; }
 html[data-skin="sakura"] .card:not(.no-rating):has(.card-rank) .card-corner.corner-br { --cy: 36px; }
 html[data-skin="neon"] .card-corner.corner-bl { --cx: calc(var(--cut, 0px) + 4px); }
 html[data-skin="neon"] .card:not(.no-no) .card-corner.corner-br { --cy: 22px; }
-html[data-skin="tavern"] .card-corner.corner-bl, html[data-skin="tavern"] .card-corner.corner-br { --cy: 64px; }
-html[data-skin="tavern"] .grid.dense .card-corner.corner-bl, html[data-skin="tavern"] .grid.dense .card-corner.corner-br { --cy: 44px; }
 /* 标签管理 */
 .tag-admin-tools { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .tag-admin-tools .opts { flex-shrink: 0; }

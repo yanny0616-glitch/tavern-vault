@@ -11,7 +11,7 @@ import { startOrganize, aiReady, aiStamp } from './ai.js';
 import { openAiChat } from './aichat.js';
 import { richText, dialogView } from '../richtext.js';
 import { coverImg, coverSrc } from '../thumbs.js';
-import { runRegex, applyScripts, displayScripts, looksHtml, stView, hasHtmlFence, hasScript, PLACEMENT } from '../stview.js';
+import { runRegex, vetScripts, applyScripts, displayScripts, looksHtml, stView, hasHtmlFence, hasScript, PLACEMENT } from '../stview.js';
 import { cardPng } from '../pngcard.js';
 import { discordAppUrl, sourceLinkProps } from '../source-links.js';
 import { entriesOf, entryKeys, entryKeys2, effectivePrompts, presetRegex } from '../cardfmt.js';
@@ -258,9 +258,10 @@ export function openDetail(id, { seq = null, onLeave = null, src = null } = {}) 
     const names = (it) => ({ char: content?.data?.name || it.name, user: state.prefs.userName?.trim() || '你' });
 
     /** 开场白阅读页：可以左右翻，有美化正则或 HTML 时可以切到「酒馆效果」 */
-    function readGreetings(it, list, start = 0) {
+    async function readGreetings(it, list, start = 0) {
         const n = names(it);
         const scripts = displayScripts(content?.data?.extensions?.regex_scripts);
+        await vetScripts(scripts, list, n); // 卡里的正则先限时试跑，太慢的跳过
         const styledOf = (t) => applyScripts(t, scripts, n);
         const canStyle = list.some((g) => looksHtml(g) || hasHtmlFence(g) || (scripts.length && styledOf(String(g)).hits));
         const label = (k) => (k === 0 ? '开场白' : `备选开场白 ${k}`);
@@ -845,8 +846,12 @@ export function openDetail(id, { seq = null, onLeave = null, src = null } = {}) 
         const runJs = h('input', { type: 'checkbox', checked: Boolean(state.prefs.stScripts), onchange: () => { state.prefs.stScripts = runJs.checked; savePrefs(); draw(); } });
         const input = h('textarea', { class: 'textarea st-sample', rows: 3, placeholder: '粘贴一段 AI 回复，看这条正则会把它变成什么样', value: sample });
         let timer = 0;
-        const draw = () => {
+        let seq = 0;
+        const draw = async () => {
             const text = input.value;
+            const my = ++seq;
+            if (text) await vetScripts([r], [text], n); // 先限时试跑，免得写得很慢的正则卡住页面
+            if (my !== seq) return;
             const res = text ? runRegex(text, r, n) : { out: '', hits: 0 };
             if (res.error) { info.textContent = res.error; clear(out); return; }
             let html;
@@ -965,8 +970,9 @@ export function openDetail(id, { seq = null, onLeave = null, src = null } = {}) 
     function filesTab(it) {
         const asPrimary = h('input', { type: 'checkbox', checked: true });
         const fileInput = h('input', { type: 'file', hidden: true, multiple: true, onchange: async () => {
-            for (const f of fileInput.files) {
-                try { await api.uploadVersion(id, f, { primary: asPrimary.checked }); } catch (e) { toast(e.message, 'err'); }
+            const forId = id; // 上传途中切到别的条目，也还是传给开始时的这一个
+            for (const f of [...fileInput.files]) {
+                try { await api.uploadVersion(forId, f, { primary: asPrimary.checked }); } catch (e) { toast(e.message, 'err'); }
             }
             toast('上传完成', 'ok');
             fileInput.value = '';
@@ -1008,8 +1014,9 @@ export function openDetail(id, { seq = null, onLeave = null, src = null } = {}) 
             const files = [...input.files];
             input.value = '';
             let n = 0;
+            const forId = id;
             for (const f of files) {
-                try { await api.uploadVersion(id, f, { primary: false, label: '封面收藏' }); n++; } catch (e) { toast(`${f.name}：${e.message}`, 'err'); }
+                try { await api.uploadVersion(forId, f, { primary: false, label: '封面收藏' }); n++; } catch (e) { toast(`${f.name}：${e.message}`, 'err'); }
             }
             if (n) toast(`已添加 ${n} 张图片，点一下就能设为封面`, 'ok');
         } });

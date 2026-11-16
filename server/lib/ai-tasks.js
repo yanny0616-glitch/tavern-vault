@@ -259,6 +259,8 @@ export function createAiTasks({ dataDir, store, config, loadContent, broadcast }
     const file = path.join(dataDir, 'ai-drafts.json');
     let db = { drafts: {}, explains: {} };
     try { db = { drafts: {}, explains: {}, ...JSON.parse(fs.readFileSync(file, 'utf8')) }; } catch { /* 首次 */ }
+    db.drafts = Object.assign(Object.create(null), db.drafts);
+    db.explains = Object.assign(Object.create(null), db.explains);
     for (const d of Object.values(db.drafts)) {
         if (d.status === 'queued' || d.status === 'running') Object.assign(d, { status: 'error', error: '服务重启时任务中断，可以重试' });
     }

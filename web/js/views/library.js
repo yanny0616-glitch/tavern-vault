@@ -49,9 +49,26 @@ export const QUICK = {
     inTavern: ['已在酒馆', (it) => inTavern(it) === true, true],
 };
 
+/** 搜索时的先后：名称完全一样 → 名称以它开头 → 名称里有 → 作者、标签里有 → 只在内容里有 */
+function searchRank(it, terms) {
+    const name = String(it.name || '').toLowerCase();
+    const q = terms.join(' ');
+    if (name === q) return 0;
+    if (name.startsWith(q)) return 1;
+    if (terms.every((t) => name.includes(t))) return 2;
+    const meta = `${name}\n${String(it.author || '').toLowerCase()}\n${it.tags.join('\n').toLowerCase()}`;
+    return terms.every((t) => meta.includes(t)) ? 3 : 4;
+}
+const searching = () => parseQuery(state.filter.q).pos.length > 0;
+
 export function filtered() {
     const ok = matcher();
-    return live().filter((it) => it.type === state.filter.type && ok(it)).sort((state.prefs.groupTime ? SORTS.created : SORTS[state.prefs.sort] || SORTS.updated)[1]);
+    const list = live().filter((it) => it.type === state.filter.type && ok(it)).sort((state.prefs.groupTime && !searching() ? SORTS.created : SORTS[state.prefs.sort] || SORTS.updated)[1]);
+    const terms = parseQuery(state.filter.q).pos;
+    if (!terms.length) return list;
+    // 同一档里保持原来的排序
+    const rank = new Map(list.map((it) => [it.id, searchRank(it, terms)]));
+    return list.sort((a, b) => rank.get(a.id) - rank.get(b.id));
 }
 
 /** 除了类型以外的所有筛选条件（搜索、标签、合集、收藏……） */
@@ -103,7 +120,7 @@ function timeBucket(iso) {
 }
 
 function withTimeGroups(list, make, cls) {
-    if (!state.prefs.groupTime) return list.map(make);
+    if (!state.prefs.groupTime || searching()) return list.map(make); // 搜索时按匹配程度排，不按时间分组
     const out = [];
     const counts = new Map();
     for (const it of list) { const b = timeBucket(it.createdAt); counts.set(b, (counts.get(b) || 0) + 1); }

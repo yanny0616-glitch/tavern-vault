@@ -1,5 +1,5 @@
 /* =========================================================
-   TavernVault — 六套风格
+   TavernVault — 五套风格
    每套风格 = 设计变量（浅/深）+ 结构改写（标题栏、分段、卡片、列表、按钮、面板、导航、详情）
    结构改写一律限定在 html[data-skin=…] 下；设置页的预览缩略图用 .skin-pv[data-skin=…]
    ========================================================= */
@@ -209,121 +209,6 @@ html[data-skin="minimal"] .sheet { border-radius: 14px 14px 0 0; }
 html[data-skin="minimal"] .sheet-foot { border-top: .5px solid var(--line); }
 html[data-skin="minimal"] .kpi { border: 0; }
 html[data-skin="minimal"] .shelf { border: 0; }
-
-/* =========================================================
-   3. 暗夜酒馆 Tavern —— 深木 + 琥珀 + 金框
-   ========================================================= */
-[data-skin="tavern"] {
-  --font-head: var(--serif);
-  --bg: #efe3c8; --surface: #f8efdc; --surface-2: #e7d7b5;
-  --text: #2b1e0f; --text-2: #5c4629; --text-3: #94784f;
-  --line: rgba(120, 75, 20, .2); --line-2: rgba(120, 75, 20, .38);
-  --accent: #9a6215; --on-accent: #fff6e3; --gold-1: #c99a45; --gold-2: #8a5c17;
-  --danger: #a33222; --ok: #5b7a2a; --warn: #b5791a;
-  --radius: 3px; --radius-sm: 3px; --radius-lg: 8px;
-  --shadow: 0 8px 18px -10px rgba(80, 45, 5, .5);
-  --shadow-lg: 0 24px 60px -18px rgba(60, 30, 0, .55);
-  --title-size: 27px; --title-weight: 700; --label-spacing: .12em;
-}
-[data-skin="tavern"][data-mode="dark"] {
-  --bg: #120e0a; --surface: #1d1712; --surface-2: #282017;
-  --text: #f1e4ca; --text-2: #cdb68d; --text-3: #8b7858;
-  --line: rgba(212, 162, 76, .17); --line-2: rgba(212, 162, 76, .36);
-  --accent: #d6a44e; --on-accent: #1a1209; --gold-1: #f0c873; --gold-2: #b07b2c;
-  --shadow: 0 10px 24px -12px rgba(0, 0, 0, .8);
-  --shadow-lg: 0 30px 70px -20px rgba(0, 0, 0, .9);
-}
-html[data-skin="tavern"] body {
-  background:
-    radial-gradient(ellipse 120% 60% at 50% -5%, color-mix(in srgb, var(--accent) 22%, transparent), transparent 60%),
-    repeating-linear-gradient(92deg, transparent 0 46px, color-mix(in srgb, var(--text) 2.5%, transparent) 46px 48px),
-    var(--bg);
-  background-attachment: fixed;
-}
-html[data-skin="tavern"] .topbar { background: color-mix(in srgb, var(--bg) 90%, transparent); border-bottom: 1px solid var(--line-2); box-shadow: 0 1px 0 var(--line), 0 3px 0 -1px var(--line); align-items: stretch; }
-html[data-skin="tavern"] .tb-row { position: relative; justify-content: center; min-height: 52px; align-items: center; }
-html[data-skin="tavern"] .tb-titles { flex: 0 1 auto; text-align: center; padding: 0 92px; }
-html[data-skin="tavern"] .tb-actions { position: absolute; right: 0; top: 50%; transform: translateY(-50%); }
-html[data-skin="tavern"] .tb-kicker { display: flex; align-items: center; justify-content: center; gap: 8px; font-family: var(--serif); color: var(--accent); letter-spacing: .3em; font-size: calc(10.5px * var(--fs)); }
-html[data-skin="tavern"] .tb-kicker::before, html[data-skin="tavern"] .tb-kicker::after { content: ""; width: 5px; height: 5px; background: var(--accent); transform: rotate(45deg); }
-html[data-skin="tavern"] .tb-title { letter-spacing: .14em; color: var(--text); display: flex; align-items: center; justify-content: center; gap: 10px; }
-html[data-skin="tavern"] .tb-title::before, html[data-skin="tavern"] .tb-title::after { content: ""; flex: 0 0 26px; height: 1px; background: linear-gradient(90deg, transparent, var(--accent)); }
-html[data-skin="tavern"] .tb-title::after { background: linear-gradient(90deg, var(--accent), transparent); }
-html[data-skin="tavern"] .tb-sub { font-family: var(--serif); font-style: italic; }
-@media (max-width: 480px) { html[data-skin="tavern"] .tb-titles { flex: 1 1 auto; padding: 0 0 0 0; text-align: left; } html[data-skin="tavern"] .tb-row { justify-content: flex-start; } html[data-skin="tavern"] .tb-actions { position: static; transform: none; } html[data-skin="tavern"] .tb-kicker, html[data-skin="tavern"] .tb-title { justify-content: flex-start; } html[data-skin="tavern"] .tb-title::before { display: none; } }
-html[data-skin="tavern"] .search .search-input { background: var(--surface); border: 1px solid var(--line-2); }
-html[data-skin="tavern"] .seg-item { border-radius: 2px; border: 1px solid var(--line-2); background: color-mix(in srgb, var(--surface) 70%, transparent); font-family: var(--serif); letter-spacing: .1em; color: var(--text-2); }
-html[data-skin="tavern"] .seg-item.active { background: linear-gradient(180deg, var(--gold-1), var(--gold-2)); color: var(--on-accent); border-color: var(--gold-2); box-shadow: 0 0 14px -2px color-mix(in srgb, var(--accent) 60%, transparent); }
-/* 卡片：金色双线画框，名字叠在画上 */
-html[data-skin="tavern"] .card-media { padding: 4px; background: linear-gradient(145deg, var(--gold-1), var(--gold-2) 50%, var(--gold-1)); border-radius: 3px; box-shadow: var(--shadow); }
-html[data-skin="tavern"] .card-frame { inset: 4px; border-radius: 1px; box-shadow: inset 0 0 0 1px rgba(0, 0, 0, .5), inset 0 0 0 3px color-mix(in srgb, var(--gold-1) 50%, transparent); }
-html[data-skin="tavern"] .card-frame::after { content: ""; position: absolute; inset: 0; box-shadow: inset 0 0 40px rgba(0, 0, 0, .45); pointer-events: none; }
-html[data-skin="tavern"] .card.has-cover .card-body { display: none; }
-html[data-skin="tavern"] .card-overlay { display: block; position: absolute; left: 4px; right: 4px; bottom: 4px; padding: 30px 10px 9px; background: linear-gradient(to top, rgba(14, 9, 4, .92), rgba(14, 9, 4, .55) 60%, transparent); text-align: center; z-index: 1; }
-html[data-skin="tavern"] .card-overlay .card-title { font-family: var(--serif); color: #f6dfae; font-size: calc(15px * var(--fs)); letter-spacing: .08em; text-shadow: 0 1px 6px rgba(0, 0, 0, .9); }
-html[data-skin="tavern"] .card-overlay .card-sub { color: rgba(246, 223, 174, .7); font-size: calc(11px * var(--fs)); font-family: var(--serif); font-style: italic; }
-html[data-skin="tavern"] .card-type { display: none; }
-html[data-skin="tavern"] .card-rank { display: inline-flex; position: absolute; top: 10px; left: 10px; align-items: center; gap: 3px; height: 20px; padding: 0 7px; font: 700 calc(11px * var(--fs)) var(--serif); color: #2a1a06; background: linear-gradient(180deg, #f6d88d, #c4923b); border-radius: 2px; box-shadow: 0 2px 6px rgba(0, 0, 0, .5); z-index: 2; }
-html[data-skin="tavern"] .card-fav { top: 10px; right: 10px; background: rgba(14, 9, 4, .7); color: #f0c873; box-shadow: 0 0 0 1px rgba(240, 200, 115, .5); }
-html[data-skin="tavern"] .doc { inset: 4px; border-radius: 1px; border: 0; background: radial-gradient(ellipse at 50% 0%, color-mix(in srgb, var(--tc) 18%, transparent), transparent 70%), var(--surface); box-shadow: inset 0 0 0 1px rgba(0, 0, 0, .35), inset 0 0 30px rgba(0, 0, 0, .25); text-align: center; align-items: center; padding-top: 16px; }
-html[data-skin="tavern"] .doc-head { color: var(--accent); font-family: var(--serif); letter-spacing: .24em; font-size: calc(10px * var(--fs)); }
-html[data-skin="tavern"] .doc-head .ic { display: none; }
-html[data-skin="tavern"] .doc-title { font-family: var(--serif); letter-spacing: .06em; padding-bottom: 8px; border-bottom: 1px solid var(--line-2); width: 100%; }
-html[data-skin="tavern"] .doc-lines { align-items: center; font-family: var(--serif); width: 100%; }
-html[data-skin="tavern"] .doc-lines li { padding: 0; max-width: 100%; }
-html[data-skin="tavern"] .doc-lines li::before { display: none; }
-html[data-skin="tavern"] .doc-mark { right: 50%; transform: translateX(50%); bottom: 18px; opacity: .06; color: var(--accent); }
-html[data-skin="tavern"] .card.is-doc .card-body { text-align: center; }
-html[data-skin="tavern"] .card-body .card-sub { font-family: var(--serif); font-style: italic; }
-/* 列表：牌匾 */
-html[data-skin="tavern"] .row-item { border-radius: 2px; border: 1px solid var(--line-2); background: linear-gradient(90deg, color-mix(in srgb, var(--accent) 9%, var(--surface)), var(--surface)); box-shadow: inset 3px 0 0 var(--accent); }
-html[data-skin="tavern"] .row-thumb { border-radius: 2px; box-shadow: 0 0 0 1px var(--gold-2); }
-html[data-skin="tavern"] .row-title { font-family: var(--serif); letter-spacing: .04em; }
-html[data-skin="tavern"] .row-type { color: var(--accent); }
-/* 按钮与面板 */
-html[data-skin="tavern"] .btn { border-radius: 2px; border-color: var(--line-2); background: color-mix(in srgb, var(--surface) 80%, transparent); font-family: var(--serif); letter-spacing: .08em; }
-html[data-skin="tavern"] .btn.primary { background: linear-gradient(180deg, var(--gold-1), var(--gold-2)); color: var(--on-accent); border: 1px solid var(--gold-2); box-shadow: inset 0 1px 0 rgba(255, 255, 255, .35), 0 4px 14px -4px color-mix(in srgb, var(--accent) 70%, transparent); text-shadow: 0 1px 0 rgba(255, 255, 255, .25); }
-html[data-skin="tavern"] .btn.ghost { background: transparent; border-color: transparent; }
-html[data-skin="tavern"] .panel { position: relative; border-radius: 2px; border-color: var(--line-2); background: color-mix(in srgb, var(--surface) 92%, transparent); }
-html[data-skin="tavern"] .panel::before, html[data-skin="tavern"] .panel::after { content: ""; position: absolute; width: 12px; height: 12px; border: 1.5px solid var(--accent); pointer-events: none; }
-html[data-skin="tavern"] .panel::before { top: 4px; left: 4px; border-right: 0; border-bottom: 0; }
-html[data-skin="tavern"] .panel::after { bottom: 4px; right: 4px; border-left: 0; border-top: 0; }
-html[data-skin="tavern"] .panel-head h3 { letter-spacing: .16em; }
-html[data-skin="tavern"] .panel-head .ic { color: var(--accent); }
-html[data-skin="tavern"] .fact { background: none; border: 1px solid var(--line); border-radius: 2px; text-align: center; padding: 10px 6px; }
-html[data-skin="tavern"] .fact b { color: var(--accent); }
-html[data-skin="tavern"] .tabs { background: none; border: 1px solid var(--line-2); border-radius: 2px; padding: 3px; }
-html[data-skin="tavern"] .tabs button { border-radius: 1px; font-family: var(--serif); letter-spacing: .12em; }
-html[data-skin="tavern"] .tabs button.active { background: linear-gradient(180deg, var(--gold-1), var(--gold-2)); color: var(--on-accent); box-shadow: none; }
-html[data-skin="tavern"] .tag { border-radius: 2px; background: transparent; box-shadow: inset 0 0 0 1px var(--line-2); color: var(--accent); }
-html[data-skin="tavern"] .prose { font-family: var(--serif); background: color-mix(in srgb, var(--bg) 60%, transparent); border: 1px solid var(--line); }
-html[data-skin="tavern"] .fold { border-radius: 2px; border-color: var(--line-2); }
-/* 导航 */
-html[data-skin="tavern"] .sidebar { background: linear-gradient(180deg, var(--surface), var(--bg)); border-right: 1px solid var(--line-2); box-shadow: 1px 0 0 var(--line), 3px 0 0 -1px var(--line); }
-html[data-skin="tavern"] .brand-mark { border-radius: 2px; background: linear-gradient(180deg, var(--gold-1), var(--gold-2)); }
-html[data-skin="tavern"] .brand-text b { letter-spacing: .14em; }
-html[data-skin="tavern"] .nav-item { border-radius: 2px; font-family: var(--serif); letter-spacing: .12em; }
-html[data-skin="tavern"] .nav-item.active { background: linear-gradient(90deg, color-mix(in srgb, var(--accent) 22%, transparent), transparent); box-shadow: inset 2px 0 0 var(--accent); }
-html[data-skin="tavern"] .tabbar { background: linear-gradient(180deg, color-mix(in srgb, var(--surface) 96%, transparent), var(--bg)); border-top: 1px solid var(--line-2); box-shadow: 0 -1px 0 var(--line), 0 -3px 0 -1px var(--line); }
-html[data-skin="tavern"] .tabbar button { font-family: var(--serif); letter-spacing: .14em; }
-html[data-skin="tavern"] .tabbar button.active { color: var(--accent); text-shadow: 0 0 12px color-mix(in srgb, var(--accent) 70%, transparent); }
-html[data-skin="tavern"] .tabbar button.active .ic { filter: drop-shadow(0 0 6px color-mix(in srgb, var(--accent) 70%, transparent)); }
-html[data-skin="tavern"] .fab { border-radius: 4px; transform: rotate(45deg); width: 48px; height: 48px; background: linear-gradient(135deg, var(--gold-1), var(--gold-2)); box-shadow: 0 0 0 3px var(--bg), 0 0 0 4px var(--gold-2), 0 10px 30px -6px rgba(0, 0, 0, .6); }
-html[data-skin="tavern"] .fab .ic { transform: rotate(-45deg); }
-html[data-skin="tavern"] .fab:active { transform: rotate(45deg) scale(.92); }
-/* 详情 */
-html[data-skin="tavern"] .hero-bg { opacity: .3; filter: blur(30px) sepia(.6); }
-html[data-skin="tavern"] .hero-cover { border-radius: 2px; padding: 4px; background: linear-gradient(145deg, var(--gold-1), var(--gold-2) 50%, var(--gold-1)); }
-html[data-skin="tavern"] .hero-cover img, html[data-skin="tavern"] .hero-ph { border-radius: 1px; }
-html[data-skin="tavern"] .hero-title { letter-spacing: .08em; color: var(--text); }
-html[data-skin="tavern"] .type-badge { border-radius: 2px; color: var(--accent); background: none; box-shadow: inset 0 0 0 1px var(--line-2); letter-spacing: .1em; }
-html[data-skin="tavern"] .fav-btn { border-radius: 2px; }
-html[data-skin="tavern"] .stars span.on { color: var(--accent); }
-html[data-skin="tavern"] .sheet { border-radius: 6px 6px 0 0; box-shadow: 0 -1px 0 var(--line-2), var(--shadow-lg); }
-html[data-skin="tavern"] .toast { border-radius: 2px; font-family: var(--serif); letter-spacing: .06em; }
-html[data-skin="tavern"] .login-mark { border-radius: 2px; transform: rotate(45deg); background: none; box-shadow: inset 0 0 0 1px var(--accent); }
-html[data-skin="tavern"] .login-mark .ic { transform: rotate(-45deg); }
-html[data-skin="tavern"] .login-title { letter-spacing: .2em; }
 
 /* =========================================================
    4. 樱色图鉴 Sakura —— 手游图鉴
@@ -774,13 +659,6 @@ html[data-skin="neon"] .empty-ic { border-radius: 0; clip-path: polygon(25% 0, 7
 .skin-pv[data-skin="minimal"] .pv-tabs i { flex: 1; height: 7px; background: none; }
 .skin-pv[data-skin="minimal"] .pv-tabs i.on { background: var(--surface); }
 .skin-pv[data-skin="minimal"] .pv-nav { margin: 0 6px 6px; border-radius: 10px; border: 0; box-shadow: 0 2px 6px rgba(0, 0, 0, .15); }
-.skin-pv[data-skin="tavern"] { background: radial-gradient(ellipse at 50% 0, color-mix(in srgb, var(--accent) 25%, transparent), transparent 70%), var(--bg); }
-.skin-pv[data-skin="tavern"] .pv-top { align-items: center; }
-.skin-pv[data-skin="tavern"] .pv-title { letter-spacing: .3em; font-weight: 700; }
-.skin-pv[data-skin="tavern"] .pv-tabs { justify-content: center; }
-.skin-pv[data-skin="tavern"] .pv-tabs i { border-radius: 0; }
-.skin-pv[data-skin="tavern"] .pv-img, .skin-pv[data-skin="tavern"] .pv-lines { border-radius: 1px; border: 2px solid var(--gold-1); box-shadow: inset 0 -16px 12px -6px rgba(0, 0, 0, .55); }
-.skin-pv[data-skin="tavern"] .pv-nav { border-top: 1px solid var(--line-2); }
 .skin-pv[data-skin="sakura"] { background: radial-gradient(circle at 10% 10%, color-mix(in srgb, var(--accent) 22%, transparent), transparent 50%), radial-gradient(circle at 90% 60%, color-mix(in srgb, var(--accent-2) 22%, transparent), transparent 50%), var(--bg); }
 .skin-pv[data-skin="sakura"] .pv-title { background: linear-gradient(90deg, var(--accent), var(--accent-2)); -webkit-background-clip: text; background-clip: text; color: transparent; }
 .skin-pv[data-skin="sakura"] .pv-tabs i.on { background: linear-gradient(90deg, var(--accent), var(--accent-2)); }
@@ -813,10 +691,31 @@ html[data-skin] .pill.active { background: var(--accent); color: var(--on-accent
 /* 插件里悬浮弹窗的下圆角，和上面各风格弹窗的上圆角一致 */
 html[data-skin="atelier"] { --sheet-r: 10px; }
 html[data-skin="minimal"] { --sheet-r: 14px; }
-html[data-skin="tavern"] { --sheet-r: 6px; }
 html[data-skin="sakura"] { --sheet-r: 28px; }
 html[data-skin="ink"], html[data-skin="neon"] { --sheet-r: 0px; }
 
 /* 选中的选项里再放小标签、排除状态的标签：所有风格统一，不被各自的 .opt 背景覆盖 */
 html[data-skin] .opt.active .chip-s { background: color-mix(in srgb, currentColor 20%, transparent); color: inherit; }
 html[data-skin] .opt.tag-opt.active.out { background: transparent; color: var(--danger, #b4483c); border: 1px solid currentColor; box-shadow: none; }
+
+/* 手机上标题栏收紧，多留些地方给内容：各风格都不显示标题上方的小字；
+   樱色图鉴原来最占地方（小标签 + 大标题 + 副标题三行），改成标题和数量排在同一行 */
+@media (max-width: 480px) {
+  html[data-skin] .tb-kicker { display: none; }
+  html[data-skin="sakura"] .topbar { gap: 8px; padding-top: calc(8px + var(--safe-top)); padding-bottom: 8px; border-radius: 0 0 20px 20px; }
+  html[data-skin="sakura"] .tb-row { align-items: center; }
+  html[data-skin="sakura"] .tb-titles { display: flex; align-items: baseline; gap: 8px; }
+  html[data-skin="sakura"] .tb-title { flex: 0 1 auto; font-size: calc(22px * var(--fs)); }
+  html[data-skin="sakura"] .tb-sub { flex: 1 1 0; min-width: 0; margin: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  html[data-skin="sakura"] .search .search-input { height: 36px; }
+  html[data-skin="sakura"] .seg-item { height: 30px; }
+  /* 底部导航：两个悬浮式的（樱色、极简）原来比普通的高出一截，收到和其它风格差不多 */
+  html[data-skin="sakura"] .tabbar { height: 52px; bottom: calc(var(--sb) + 6px); border-radius: 22px; }
+  html[data-skin="sakura"] .tabbar button { gap: 1px; }
+  html[data-skin="sakura"] .tabbar button .tab-ic { width: 40px; height: 24px; }
+  html[data-skin="sakura"] .tabbar button .tab-ic .ic { width: 19px; height: 19px; }
+  html[data-skin="sakura"] .fab { bottom: calc(var(--sb) + 70px); }
+  html[data-skin="minimal"] .tabbar { height: 54px; bottom: calc(var(--sb) + 6px); border-radius: 27px; }
+  html[data-skin="minimal"] .tabbar button { margin: 4px 0; border-radius: 23px; }
+  html[data-skin="minimal"] .fab { bottom: calc(var(--sb) + 72px); }
+}

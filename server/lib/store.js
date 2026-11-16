@@ -17,6 +17,7 @@ export const DEFAULT_FIELDS = [
 ];
 
 const now = () => new Date().toISOString();
+export const bare = (o) => Object.assign(Object.create(null), o && typeof o === 'object' ? o : {});
 export const newId = () => crypto.randomBytes(8).toString('hex');
 
 export class Store {
@@ -78,6 +79,9 @@ export class Store {
         db.settings.secret ||= crypto.randomBytes(32).toString('hex');
         db.settings.skin ||= 'atelier';
         if (db.settings.accent === '#c084fc') db.settings.accent = ''; // 旧版默认值 → 跟随风格
+        // 条目、合集按 id 查：用没有原型的对象，id 写成 __proto__ 之类也查不到东西
+        db.items = bare(db.items);
+        db.collections = bare(db.collections);
         this.#normalize(db);
         return db;
     }
@@ -202,8 +206,8 @@ export class Store {
         const stat = { added: 0, updated: 0, kept: 0, collections: 0 };
         const items = backup.items || {};
         if (mode === 'replace') {
-            this.db.items = {};
-            this.db.collections = {};
+            this.db.items = bare();
+            this.db.collections = bare();
             if (Array.isArray(backup.fields) && backup.fields.length) this.db.fields = backup.fields;
         }
         for (const [id, c] of Object.entries(backup.collections || {})) {
@@ -275,9 +279,13 @@ export class Store {
         if (!it) return null;
         const allowed = ['type', 'subtype', 'name', 'description', 'tags', 'collections', 'favorite', 'rating', 'source', 'author', 'version', 'notes', 'fields', 'cover', 'meta', 'searchText', 'ai'];
         for (const k of allowed) {
-            if (k in patch) it[k] = patch[k];
+            if (!(k in patch)) continue;
+            // 标签、合集必须是数组，字段必须是对象；类型不对的不收，免得存坏条目
+            if ((k === 'tags' || k === 'collections') && !Array.isArray(patch[k])) continue;
+            if (k === 'fields' && (!patch[k] || typeof patch[k] !== 'object' || Array.isArray(patch[k]))) continue;
+            it[k] = patch[k];
         }
-        if (patch.tags) it.tags = this.canonTags(patch.tags);
+        if (Array.isArray(patch.tags)) it.tags = this.canonTags(patch.tags);
         it.updatedAt = now();
         this.save();
         return it;

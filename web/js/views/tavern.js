@@ -2,7 +2,7 @@
 import { h, clear, toast, sheet, icon, btn, emptyState, choiceDialog, fmtDate, lightbox } from '../ui.js';
 import { api } from '../api.js';
 import { bridge } from '../bridge.js';
-import { state, findByName, typeMeta, reload, savePrefs, notify } from '../state.js';
+import { state, findByName, findAllByName, typeMeta, reload, savePrefs, notify } from '../state.js';
 import { setTavernList, loadTavernIndex, normName } from '../tavern-index.js';
 import { sigOf, stripSyncEntries, syncParts, sameParts, partsDiff, CARD_PARTS, ENTRY_FLAGS, SYNC_OPTIONS } from '../sig.js';
 import { topbar, ensureView } from './common.js';
@@ -77,8 +77,20 @@ function sameAs(f, t, kind) {
     return ign.length > 0 && sameParts(f.parts, t.parts, ign);
 }
 
+/**
+ * 酒馆里的这一行对应藏馆的哪个条目。同名的只有一个就是它；
+ * 有好几个（同名不同作者）时，看哪个条目里有和酒馆内容一样的版本；都没有就认不出（sure = false）
+ */
+function vaultItemFor(kind, r) {
+    const all = findAllByName(kind, r.name);
+    if (all.length <= 1) return { item: all[0] || null, sure: true };
+    const t = ui.sigs.get(sigKey(kind, r.id));
+    const hit = t?.sig ? all.find((it) => it.files.some((f) => sameAs(f, t, kind))) : null;
+    return { item: hit || all[0], sure: Boolean(hit) };
+}
+
 function statusOf(kind, r) {
-    const item = findByName(kind, r.name);
+    const { item } = vaultItemFor(kind, r);
     if (!item) return { s: 'new' };
     const t = ui.sigs.get(sigKey(kind, r.id));
     const cur = item.files.find((f) => f.primary) || item.files[item.files.length - 1];
@@ -203,7 +215,7 @@ export function renderTavern(root) {
                     note = st.s === 'older' ? '酒馆里是旧版本，藏馆有更新' : '酒馆里是藏馆的另一个版本（不是当前版本）';
                     right = h('div', { class: 'row-actions' },
                         btn('对比', { icon: 'eye', cls: 'sm ghost', onclick: stop(() => compareWithTavern(r, st.item)) }),
-                        btn('更新到酒馆', { cls: 'sm primary', onclick: stop(() => importItemsToTavern([st.item], { decide: 'replace' })) }));
+                        btn('更新到酒馆', { cls: 'sm primary', onclick: stop(() => importItemsToTavern([st.item], { decide: 'replace', rows: [r] })) }));
                     break;
                 default:
                     right = h('button', { class: 'chip-s ok as-btn', title: '在仓库中查看', onclick: stop(() => openDetail(st.item.id)) }, icon('check', { size: 11, stroke: 3 }), '已收藏');
@@ -225,11 +237,12 @@ export function renderTavern(root) {
     refs.selbar.hidden = !n;
     if (n) {
         const picked = withStatus.filter(({ r }) => ui.selected.has(r.id));
-        const olderItems = picked.filter(({ st }) => st.s === 'older' || st.s === 'other').map(({ st }) => st.item);
+        const older = picked.filter(({ st }) => st.s === 'older' || st.s === 'other');
+        const olderItems = older.map(({ st }) => st.item);
         clear(refs.selbar, h('div', { class: 'sel-top' }, h('span', { class: 'sel-count' }, `已选 ${n} 项`),
             h('span', { class: 'grow' }),
             btn('取消', { cls: 'sm ghost', onclick: () => { ui.selected.clear(); ui.selecting = false; renderTavern(root); } }),
-            olderItems.length ? btn(`更新到酒馆 · ${olderItems.length}`, { cls: 'sm', onclick: () => importItemsToTavern(olderItems, { decide: 'replace' }) }) : null,
+            olderItems.length ? btn(`更新到酒馆 · ${olderItems.length}`, { cls: 'sm', onclick: () => importItemsToTavern(olderItems, { decide: 'replace', rows: older.map(({ r }) => r) }) }) : null,
             btn('收藏到仓库', { icon: 'download', cls: 'sm primary', onclick: () => collect(picked.map(({ r }) => r)) })));
     }
 }
@@ -348,7 +361,7 @@ function openRow(kind, r, rows) {
             const inVault = st.item ? btn('在藏馆中查看', { icon: 'archive', onclick: () => { close(); openDetail(st.item.id); } }) : null;
             if (st.s === 'new') return [btn('收藏到藏馆', { icon: 'download', cls: 'primary', onclick: () => collect([row]) })];
             if (st.s === 'changed') return [inVault, btn('对比', { icon: 'eye', onclick: () => compareWithTavern(row, st.item) }), btn('同步', { cls: 'primary', onclick: () => syncChoice(row, st.item, changedNote(kind, st.parts).text) })];
-            if (st.s === 'older' || st.s === 'other') return [inVault, btn('对比', { icon: 'eye', onclick: () => compareWithTavern(row, st.item) }), btn('更新到酒馆', { cls: 'primary', onclick: () => importItemsToTavern([st.item], { decide: 'replace' }) })];
+            if (st.s === 'older' || st.s === 'other') return [inVault, btn('对比', { icon: 'eye', onclick: () => compareWithTavern(row, st.item) }), btn('更新到酒馆', { cls: 'primary', onclick: () => importItemsToTavern([st.item], { decide: 'replace', rows: [row] }) })];
             return [inVault];
         },
     });
@@ -406,7 +419,7 @@ function compareWithTavern(r, item) {
                     rerender();
                 };
                 return [
-                    btn('藏馆的较新：更新到酒馆', { onclick: () => { close(); importItemsToTavern([item], { decide: 'replace' }); } }),
+                    btn('藏馆的较新：更新到酒馆', { onclick: () => { close(); importItemsToTavern([item], { decide: 'replace', rows: [r] }); } }),
                     res.status === 'conflict' ? btn('酒馆的较旧：存为旧版本', { onclick: save(false) }) : null,
                     res.status === 'conflict' ? btn('酒馆的较新：存为新版本', { cls: 'primary', onclick: save(true) }) : null,
                 ];
@@ -432,7 +445,7 @@ function syncChoice(r, item, diffText) {
             h('div', { class: 'menu' },
                 opt('download', '酒馆的较新：存为新版本', '存进藏馆，并设为当前版本', () => collect([r], { primary: true })),
                 opt('clock', '酒馆的较旧：存为旧版本', '存进藏馆的历史版本，藏馆当前版本不变', () => collect([r], { primary: false })),
-                opt('upload', '藏馆的较新：更新到酒馆', '用藏馆当前版本覆盖酒馆里的', () => importItemsToTavern([item], { decide: 'replace' })),
+                opt('upload', '藏馆的较新：更新到酒馆', '用藏馆当前版本覆盖酒馆里的', () => importItemsToTavern([item], { decide: 'replace', rows: [r] })),
                 opt('eye', '先对比再决定', '看看两边具体哪里不同', () => compareWithTavern(r, item)))),
     });
 }
@@ -447,8 +460,9 @@ async function collect(rows, { primary } = {}) {
         prog.update(i, rows.length, r.name);
         try {
             const { blob, filename } = await exportFromTavern(kind, r);
-            const item = findByName(kind, r.name);
-            const res = await api.upload(blob, { filename, origin: 'tavern', type: kind === 'background' ? 'background' : '', ...(item ? { target: item.id, match: 'version', primary } : { match: 'ask' }) });
+            // 同名的有好几个又认不出是哪个：不指定目标，让服务端按名字和作者找，找到了再问
+            const { item, sure } = vaultItemFor(kind, r);
+            const res = await api.upload(blob, { filename, origin: 'tavern', type: kind === 'background' ? 'background' : '', ...(item && sure ? { target: item.id, match: 'version', primary } : { match: 'ask' }) });
             if (res.status === 'conflict') conflicts.push(res);
             else n[res.status === 'version' ? 'version' : res.duplicate ? 'duplicate' : 'created']++;
         } catch (e) {
@@ -474,8 +488,16 @@ async function collect(rows, { primary } = {}) {
 /**
  * 把仓库条目导入酒馆
  * opts.decide: 遇到酒馆里同名条目时的处理，'replace' | 'new' | 'skip'；不传则询问
+ * opts.rows: 和 items 一一对应的酒馆行（从酒馆页某一行点进来时传），覆盖的就是这一行，不再按名字找
  */
-export async function importItemsToTavern(items, { decide } = {}) {
+export async function importItemsToTavern(items, { decide, rows } = {}) {
+    const rowOf = new Map();
+    if (rows) items.forEach((it, i) => { if (rows[i]) rowOf.set(it.id, rows[i]); });
+    // 酒馆里和条目同名的那一个：预设要同一类（指令模板和上下文模板常常同名）；同名不止一个时不猜，当作没有
+    const sameNamed = (list, it) => {
+        const hits = list.filter((r) => normName(r.name) === normName(it.name) && (it.type !== 'preset' || !it.meta?.apiId || !r.apiId || r.apiId === it.meta.apiId));
+        return hits.length === 1 ? hits[0] : null;
+    };
     if (!bridge.host) { toast('未连接酒馆', 'err'); return; }
     const supported = items.filter((it) => TAVERN_IMPORTABLE.has(it.type) && it.files.length);
     const skipped = items.length - supported.length;
@@ -487,7 +509,7 @@ export async function importItemsToTavern(items, { decide } = {}) {
     for (const kind of new Set(supported.map((it) => it.type))) {
         if (!ui.lists[kind]) { try { ui.lists[kind] = await bridge.call('list', { kind }); } catch { ui.lists[kind] = []; } }
         const its = supported.filter((it) => it.type === kind);
-        const matches = its.map((it) => ({ it, existing: ui.lists[kind].find((r) => normName(r.name) === normName(it.name)) || null }));
+        const matches = its.map((it) => ({ it, existing: rowOf.get(it.id) || sameNamed(ui.lists[kind], it) }));
         if (canReplace) await checkSigs(kind, matches.filter((m) => m.existing).map((m) => m.existing));
         plan.push(...matches);
     }
@@ -497,7 +519,8 @@ export async function importItemsToTavern(items, { decide } = {}) {
     for (const m of plan) {
         const cur = m.it.files.find((f) => f.primary) || m.it.files[m.it.files.length - 1];
         const t = m.existing ? ui.sigs.get(sigKey(m.it.type, m.existing.id)) : null;
-        if (m.existing && sameAs(cur, t, m.it.type)) same.push(m); else todo.push(m);
+        // 这里要一字不差才算一致：「不算差异」只管从酒馆同步，不然藏馆里改过的那几段永远推不过去
+        if (m.existing && cur?.sig && cur.sig === t?.sig) same.push(m); else todo.push(m);
     }
     const clashes = todo.filter((m) => m.existing);
     let action = decide;

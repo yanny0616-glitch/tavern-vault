@@ -87,7 +87,7 @@ const ok = (c, m) => { console.log(c ? 'PASS' : 'FAIL', m); if (!c) process.exit
   const d = await c.browser().newContext({ viewport: { width: 1280, height: 860 } });
   await d.addInitScript((t) => localStorage.setItem('tv_token', t), token);
   const q = await d.newPage(); q.on('pageerror', (e) => errs.push(e.message));
-  for (const skin of ['atelier', 'ink', 'neon', 'sakura', 'minimal', 'tavern']) {
+  for (const skin of ['atelier', 'ink', 'neon', 'sakura', 'minimal']) {
     await fetch(B + '/api/settings', { method: 'PUT', headers: { ...H, 'Content-Type': 'application/json' }, body: JSON.stringify({ skin }) });
     await q.goto(B + '/#/settings/browse'); await q.waitForSelector('.set-title'); await q.waitForTimeout(300);
     if (skin === 'atelier') ok(await q.isVisible('.set-nav') && await q.isVisible('.set-content') && !(await q.isVisible('.set-back')), 'desktop: two columns');

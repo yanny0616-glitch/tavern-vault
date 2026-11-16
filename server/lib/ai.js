@@ -32,6 +32,8 @@ export const DEFAULT_TEMPLATE = Object.freeze({
 });
 const TEMPLATE_TEXT = ['role', 'tagRule', 'summaryRule', 'forbidden', 'extra'];
 
+/** 地址指向的服务器（协议 + 主机 + 端口）；没填时按该格式的默认地址算 */
+const hostOf = (url, format) => { try { return new URL(String(url || '').trim() || FORMATS[format]?.base || '').origin; } catch { return ''; } };
 const clampNum = (v, lo, hi, d) => (Number.isFinite(Number(v)) ? Math.min(hi, Math.max(lo, Number(v))) : d);
 
 /** ai.json：服务配置与整理规则。不进 db.json，不进备份，不下发密钥 */
@@ -140,13 +142,16 @@ export class AiConfig {
     /** 合并一个配置（网页传来的密钥为空时用已保存的） */
     sanitize(p, old = {}) {
         const format = FORMATS[p.format] ? p.format : 'openai';
+        const baseUrl = String(p.baseUrl || '').trim().slice(0, 300);
+        // 沿用已保存的密钥只限同一个服务器：地址换了主机就要重新填，免得密钥被发到别处
+        const keepKey = Boolean(old?.apiKey) && hostOf(baseUrl, format) === hostOf(old.baseUrl, old.format);
         const temp = p.temperature === '' || p.temperature == null ? null : clampNum(p.temperature, 0, 2, null);
         return {
             id: String(p.id || crypto.randomBytes(4).toString('hex')).replace(/[^\w-]/g, '').slice(0, 24) || crypto.randomBytes(4).toString('hex'),
             name: String(p.name || FORMATS[format].label).slice(0, 40),
             format,
-            baseUrl: String(p.baseUrl || '').trim().slice(0, 300),
-            apiKey: p.clearKey ? '' : (p.apiKey ? String(p.apiKey).trim() : old?.apiKey || ''),
+            baseUrl,
+            apiKey: p.clearKey ? '' : (p.apiKey ? String(p.apiKey).trim() : keepKey ? old.apiKey : ''),
             noKey: Boolean(p.noKey),
             model: String(p.model || '').trim().slice(0, 120),
             temperature: temp,

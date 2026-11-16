@@ -6,7 +6,7 @@ const ok = (c, m) => { console.log(c ? 'PASS' : 'FAIL', m); if (!c) process.exit
   for (const [label, vp, mobile] of [['phone', { width: 393, height: 760 }, true], ['desk', { width: 1280, height: 800 }, false]]) {
     const c = await b.newContext({ viewport: vp, deviceScaleFactor: mobile ? 2 : 1, isMobile: mobile, hasTouch: mobile });
     const p = await c.newPage();
-    for (const skin of ['atelier', 'sakura', 'tavern', 'minimal', 'ink']) {
+    for (const skin of ['atelier', 'sakura', 'minimal', 'ink']) {
       await fetch(B + '/api/settings', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ skin }) });
       await p.goto(B + '/#/library'); await p.waitForSelector('.card'); await p.waitForTimeout(300);
       await p.click('button[title="筛选与排序"]'); await p.waitForTimeout(450);

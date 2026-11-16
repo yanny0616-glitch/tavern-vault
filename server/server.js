@@ -1089,13 +1089,13 @@ route('POST', '/api/batch', async ({ req }) => {
     const stamp = new Date().toISOString();
     for (const it of items) {
         switch (action) {
-            case 'addTags': it.tags = store.canonTags([...it.tags, ...value]); break;
-            case 'removeTags': it.tags = it.tags.filter((t) => !value.includes(t)); break;
+            case 'addTags': it.tags = store.canonTags([...it.tags, ...(Array.isArray(value) ? value : [])]); break;
+            case 'removeTags': it.tags = it.tags.filter((t) => !(Array.isArray(value) ? value : []).includes(t)); break;
             case 'addCollection': if (!it.collections.includes(value)) it.collections.push(value); break;
             case 'removeCollection': it.collections = it.collections.filter((c) => c !== value); break;
             case 'favorite': it.favorite = Boolean(value); break;
             case 'setType': if (TYPES[value]) it.type = value; break;
-            case 'setField': it.fields[value.id] = value.value; break;
+            case 'setField': if (store.db.fields.some((f) => f.id === value?.id)) it.fields[value.id] = value.value; break;
             case 'delete': it.deletedAt = stamp; break;
             case 'restore': it.deletedAt = null; break;
             case 'purge': delete store.db.items[it.id]; break;
@@ -1126,9 +1126,17 @@ route('POST', '/api/export', async ({ req, res }) => {
 });
 
 /** 完整备份 ZIP：db.json + 所有被引用的文件（不含缩略图、AI 密钥） */
+/** 下载出去的备份不带密码和登录密钥（拿到密钥就能算出登录令牌）；服务器上留的那份原样保存，恢复时要用 */
+function publicDb(buf) {
+    try {
+        const db = JSON.parse(buf.toString('utf8'));
+        if (db?.settings && typeof db.settings === 'object') { delete db.settings.passwordHash; delete db.settings.secret; }
+        return Buffer.from(JSON.stringify(db));
+    } catch { return buf; }
+}
 function buildBackup() {
     store.flush();
-    const entries = [{ name: 'db.json', data: fs.readFileSync(store.dbPath) }];
+    const entries = [{ name: 'db.json', data: publicDb(fs.readFileSync(store.dbPath)) }];
     const seen = new Set();
     for (const it of Object.values(store.db.items)) {
         for (const sha of [...it.files.map((f) => f.sha), it.cover].filter(Boolean)) {
@@ -1261,7 +1269,7 @@ route('POST', '/api/backups/ack', () => { const b = makeBackup('auto'); broadcas
 route('POST', '/api/health/ack', () => { delete store.db.settings.recoveredNote; store.save(); broadcast('change', {}); return { ok: true }; });
 route('POST', '/api/backups', () => makeBackup('manual'));
 route('GET', '/api/backups/:name', ({ res, p }) => {
-    const buf = backups.zip(backupName(p.name));
+    const buf = buildZip(backups.entries(backupName(p.name)).map((e) => ({ name: e.name, data: e.name === 'db.json' ? publicDb(e.read()) : e.read() })));
     send(res, 200, buf, { 'Content-Type': 'application/zip', 'Content-Disposition': contentDisposition(p.name, true) });
     return null;
 });
@@ -1361,6 +1369,9 @@ route('DELETE', '/api/collections/:id', ({ p }) => {
 });
 
 // 自定义字段 & 设置
+const SKIN_IDS = ['atelier', 'minimal', 'sakura', 'ink', 'neon'];
+// 以前选过已经下架的风格（暗夜酒馆）：换回默认的典藏
+if (!SKIN_IDS.includes(store.db.settings.skin)) { store.db.settings.skin = 'atelier'; store.save(); }
 route('PUT', '/api/fields', async ({ req }) => {
     const { fields } = await readJson(req);
     if (!Array.isArray(fields)) throw new HttpError(400, 'fields 必须是数组');
@@ -1386,7 +1397,7 @@ route('POST', '/api/fields/reset', () => {
 route('PUT', '/api/settings', async ({ req }) => {
     const body = await readJson(req);
     for (const k of ['title', 'accent']) if (typeof body[k] === 'string') store.db.settings[k] = body[k].slice(0, 80);
-    if (['atelier', 'minimal', 'tavern', 'sakura', 'ink', 'neon'].includes(body.skin)) store.db.settings.skin = body.skin;
+    if (SKIN_IDS.includes(body.skin)) store.db.settings.skin = body.skin;
     if ([0, 7, 14, 30, 90].includes(body.trashDays)) store.db.settings.trashDays = body.trashDays;
     if (body.autoBackup && typeof body.autoBackup === 'object') {
         const cur = autoBackupCfg();

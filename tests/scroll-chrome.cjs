@@ -1,4 +1,4 @@
-// 往下滚：仓库页顶栏收起标题行、「+」藏起来，往上滑恢复；「+」只在仓库和合集页；暗夜酒馆两处排版
+// 往下滚：仓库页顶栏收起标题行、「+」藏起来，往上滑恢复；「+」只在仓库和合集页
 const { chromium } = require('playwright');
 const B = 'http://127.0.0.1:5199'; const OUT = process.argv[2];
 let fails = 0; const ok = (c, m) => { console.log(c ? 'PASS' : 'FAIL', m); if (!c) fails++; };
@@ -20,7 +20,7 @@ let fails = 0; const ok = (c, m) => { console.log(c ? 'PASS' : 'FAIL', m); if (!
     return { down: document.documentElement.classList.contains('scrolling-down'), title: r('.main > .topbar .tb-title')?.bottom, search: r('.main > .topbar .search')?.top, fabShown: !!cs && cs.display !== 'none' && cs.opacity === '1', fabDisplay: cs?.display };
   });
 
-  for (const skin of ['atelier', 'tavern']) {
+  for (const skin of ['atelier', 'sakura']) {
     const p = await open(skin);
     await p.goto(B + '/#/library'); await p.waitForSelector('.card'); await p.waitForTimeout(400);
     let s = await info(p);
@@ -39,17 +39,6 @@ let fails = 0; const ok = (c, m) => { console.log(c ? 'PASS' : 'FAIL', m); if (!
     s = await info(p);
     ok(!s.down && s.title > 0 && s.fabShown, `${skin}: scrolling up restores`);
     await p.screenshot({ path: `${OUT}/${skin}-up.png` });
-    if (skin === 'tavern') {
-      await scrollTo(p, 0);
-      const right = await p.evaluate(() => document.querySelector('.main > .topbar .tb-actions').getBoundingClientRect().right);
-      ok(right > 393 - 30, 'tavern: topbar icons at the right edge: ' + right);
-      await p.click('.card >> nth=3'); await p.waitForSelector('.detail-sheet .fact'); await p.waitForTimeout(300);
-      const cut = await p.evaluate(() => [...document.querySelectorAll('.detail-sheet .fact b')].filter((b) => b.scrollWidth > b.clientWidth + 1).map((b) => b.textContent));
-      ok(!cut.length, 'tavern: no truncated detail numbers: ' + cut.join(','));
-      await p.locator('.detail-sheet .fact').first().scrollIntoViewIfNeeded();
-      await p.screenshot({ path: `${OUT}/tavern-facts.png` });
-      await p.keyboard.press('Escape'); await p.waitForTimeout(300);
-    }
     for (const [r, want] of [['stats', false], ['settings', false], ['collections', true], ['library', true]]) {
       await p.goto(B + '/#/' + r); await p.waitForTimeout(500);
       ok(((await info(p)).fabDisplay !== 'none') === want, `${skin}: + on ${r} ${want ? 'shown' : 'hidden'}`);

@@ -187,7 +187,7 @@ const putSettings = (o) => fetch(`${V}/api/settings`, { method: 'PUT', headers: 
     return bad;
   });
   await fetch(`${V}/api/items/${lily.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ favorite: true, rating: 4 }) });
-  for (const skin of ['atelier', 'minimal', 'tavern', 'sakura', 'ink', 'neon']) {
+  for (const skin of ['atelier', 'minimal', 'sakura', 'ink', 'neon']) {
     await putSettings({ skin });
     await frame.waitForFunction((s) => document.documentElement.dataset.skin === s, skin, { timeout: 10000 });
     for (const dense of [false, true]) {

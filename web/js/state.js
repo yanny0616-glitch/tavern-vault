@@ -19,7 +19,6 @@ export const TYPE_META = {
 export const SKINS = {
     atelier: { name: '典藏', en: 'Atelier', desc: '精装收藏册：宋体、卡纸边框、编号目录' },
     minimal: { name: '极简', en: 'Minimal', desc: 'iOS 原生风：大标题、毛玻璃、悬浮胶囊导航' },
-    tavern: { name: '暗夜酒馆', en: 'Tavern', desc: '深木与琥珀：金色画框、装饰线、烛光氛围' },
     sakura: { name: '樱色图鉴', en: 'Sakura', desc: '手游图鉴：大圆角、彩色描边、评分角标' },
     ink: { name: '墨白', en: 'Ink', desc: '杂志排版：直角细线、大号编号、红黑点缀' },
     neon: { name: '霓虹', en: 'Neon', desc: '终端 HUD：等宽字体、切角发光、方括号标签' },
@@ -186,6 +185,12 @@ export function findByName(type, name) {
     const n = norm(name);
     if (!n) return null;
     return live().find((i) => i.type === type && norm(i.name) === n) || null;
+}
+/** 仓库里所有同名条目（同名不同作者的卡会有好几个） */
+export function findAllByName(type, name) {
+    const norm = (s) => String(s || '').trim().toLowerCase().replace(/\.(png|jpe?g|webp|gif|avif|bmp|json)$/, '');
+    const n = norm(name);
+    return n ? live().filter((i) => i.type === type && norm(i.name) === n) : [];
 }
 
 export function fieldsFor(type) {

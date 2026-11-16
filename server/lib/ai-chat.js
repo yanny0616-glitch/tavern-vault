@@ -40,6 +40,7 @@ export function createAiChat({ dataDir, store, config, loadContent, broadcast, s
     const file = path.join(dataDir, 'ai-chats.json');
     let db = { sessions: {} };
     try { db = { sessions: {}, ...JSON.parse(fs.readFileSync(file, 'utf8')) }; } catch { /* 首次 */ }
+    db.sessions = Object.assign(Object.create(null), db.sessions); // 按 id 查，不让 __proto__ 之类查到原型
     // 服务重启时还没回复完的：标成失败，可以重试
     for (const s of Object.values(db.sessions)) {
         if (s.pending) { s.pending = false; s.messages.push({ id: newId(), role: 'assistant', error: '服务重启，这条回复中断了，可以重试', at: now() }); }
