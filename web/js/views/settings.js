@@ -31,10 +31,11 @@ const CONFLICTS = { ask: '每次询问', version: '存为新版本', new: '另�
 const wideMq = matchMedia('(min-width: 900px)');
 let lastSec = null;
 
-const rerender = () => renderSettings(document.querySelector('main.main'));
+// 自己点出来的重画：焦点在下拉框上也照画（不然选完下拉框，页面要等下一次才变）
+const rerender = () => renderSettings(document.querySelector('main.main'), true);
 wideMq.addEventListener?.('change', () => { if (document.documentElement.dataset.route === 'settings') rerender(); });
 
-export function renderSettings(root) {
+export function renderSettings(root, mine = false) {
     const refs = ensureView(root, 'settings', () => {
         const nav = h('nav', { class: 'set-nav' });
         const content = h('div', { class: 'set-content stack' });
@@ -42,7 +43,8 @@ export function renderSettings(root) {
         root.append(topbar('设置', { kicker: 'Preferences' }), h('div', { class: 'page' }, layout));
         return { nav, content, layout };
     });
-    if (refs.content.contains(document.activeElement) && /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName)) return;
+    const act = document.activeElement;
+    if (refs.content.contains(act) && /^(INPUT|TEXTAREA|SELECT)$/.test(act.tagName) && !(mine && act.tagName === 'SELECT')) return;
     const key = location.hash.split('?')[0].split('/')[2] || '';
     // 手机：先显示分类列表，点进去是单独一页；电脑：左边分类，右边内容
     const sec = SECTIONS.find((x) => x.key === key) || (wideMq.matches ? SECTIONS[0] : null);

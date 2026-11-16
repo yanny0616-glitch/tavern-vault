@@ -89,6 +89,7 @@ run compare-draw-chat seed 0 compare-draw-chat.cjs
 run merge-smart-stats seed 0 merge-smart-stats.cjs
 run themes         seed 0 themes.cjs
 run editors        seed 0 editors.cjs
+run dropdown       seed 0 dropdown.cjs
 run tavern-live    seed 1 tavern-live.cjs
 
 echo

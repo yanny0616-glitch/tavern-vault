@@ -42,6 +42,7 @@ window.addEventListener('scroll', () => {
     if (y > lastY + 12) { if (!collapsed) setCollapsed(true); lastY = y; } else if (y < lastY - 12) { if (collapsed) setCollapsed(false); lastY = y; }
 }, { passive: true });
 import { openDetail } from './views/detail.js';
+import './dropdown.js';
 import { handleAiEvent, renderChip } from './views/ai.js';
 import { handleAiChatEvent } from './views/aichat.js';
 
